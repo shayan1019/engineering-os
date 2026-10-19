@@ -15,6 +15,8 @@ id_ed25519
 .netrc
 
 # Project data, evidence and logs stay on the machine that produced them.
+# The patterns are anchored to the repository root: a skill package may carry
+# its own `runtime/` and `evidence/` documents, and those are product files.
 *.db
 *.sqlite
 *.sqlite3
@@ -24,8 +26,8 @@ id_ed25519
 *.hcc
 *.mdf
 *.ldf
-evidence/
-backups/
+/evidence/
+/backups/
 *.jsonl
 
 # Build and runtime output.
@@ -52,6 +54,7 @@ engine/registry/SKILL_INDEX.json
 engine/registry/SKILL_CATALOG.json
 
 # Bundled interpreter is staged at build time, never tracked (145 MB).
-runtime/
-installer/out/
-installer/stage/
+# Anchored: a skill package may ship a `runtime/` directory of its own.
+/runtime/
+/installer/out/
+/installer/stage/
