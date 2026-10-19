@@ -24,8 +24,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import quality_gate as qg  # noqa: E402
 
 ROOT = qg.ROOT
-PROMOTIONS = os.path.join(ROOT, ".agents", "evidence", "promotions")
+WORKSPACE = qg.WORKSPACE
+PROMOTIONS = qg.PROMOTION_EVIDENCE
 SCHEMA = 1
+
+
+def set_workspace(args) -> None:
+    global WORKSPACE
+    explicit = getattr(args, "root", None)
+    if explicit:
+        WORKSPACE = qg.ep.resolve_workspace(explicit)
 
 
 def utc_stamp() -> str:
@@ -33,10 +41,14 @@ def utc_stamp() -> str:
 
 
 def safe_rel(path: str) -> str:
+    """Promoted files must live in the workspace. Gate artifacts and other
+    evidence may also live under EOS_HOME. Everything else is refused."""
     absolute = os.path.abspath(path)
-    if not absolute.startswith(ROOT + os.sep):
-        raise ValueError(f"path outside the workspace: {path}")
-    return os.path.relpath(absolute, ROOT).replace(os.sep, "/")
+    in_workspace = absolute == WORKSPACE or absolute.startswith(WORKSPACE + os.sep)
+    in_home = absolute == qg.ep.EOS_HOME or absolute.startswith(qg.ep.EOS_HOME + os.sep)
+    if not (in_workspace or in_home):
+        raise ValueError(f"path outside the workspace and outside EOS_HOME: {path}")
+    return qg.ep.store_path(absolute, WORKSPACE)
 
 
 def cmd_promote(args) -> int:
@@ -59,7 +71,7 @@ def cmd_promote(args) -> int:
         except ValueError as exc:
             problems.append(str(exc))
             continue
-        full = os.path.join(ROOT, rel)
+        full = qg.ep.load_stored_path(rel, WORKSPACE)
         if not os.path.isfile(full):
             problems.append(f"artifact file missing: {rel}")
             continue
@@ -79,7 +91,7 @@ def cmd_promote(args) -> int:
         "label": label,
         "gate": {
             "path": safe_rel(args.gate),
-            "sha256": qg.sha256_file(args.gate),
+            "sha256": qg.sha256_file(qg.ep.load_stored_path(safe_rel(args.gate), WORKSPACE)),
             "suite": gate_artifact.get("suite"),
             "created_at": gate_artifact.get("created_at"),
             "baseline": gate_artifact.get("baseline"),
@@ -100,7 +112,7 @@ def cmd_promote(args) -> int:
     print(f"PASS: promotion recorded for {args.project} ({len(files)} artifact(s))")
     print(f"  gate     : {record['gate']['path']} ({record['gate']['suite']})")
     print(f"  baseline : {(record['gate']['baseline'] or {}).get('label')}")
-    print(f"  record   : {os.path.relpath(out, ROOT).replace(os.sep, '/')}")
+    print(f"  record   : {qg.ep.store_path(out, WORKSPACE)}")
     return 0
 
 
@@ -118,7 +130,7 @@ def cmd_verify(args) -> int:
     if rec.get("schema") != SCHEMA or rec.get("kind") != "promotion":
         problems.append("wrong schema or kind")
 
-    gate_path = os.path.join(ROOT, (rec.get("gate") or {}).get("path", ""))
+    gate_path = qg.ep.load_stored_path((rec.get("gate") or {}).get("path", ""), WORKSPACE)
     if not os.path.isfile(gate_path):
         problems.append("gate artifact referenced by the promotion is missing")
     elif qg.sha256_file(gate_path) != (rec.get("gate") or {}).get("sha256"):
@@ -128,7 +140,7 @@ def cmd_verify(args) -> int:
         problems.extend(f"gate: {p}" for p in gate["problems"])
 
     for item in rec.get("artifacts", []):
-        full = os.path.join(ROOT, item["path"])
+        full = qg.ep.load_stored_path(item["path"], WORKSPACE)
         if not os.path.isfile(full):
             problems.append(f"promoted file missing: {item['path']}")
         elif qg.sha256_file(full) != item["sha256"]:
@@ -153,13 +165,16 @@ def main() -> int:
     p.add_argument("--artifact", action="append", default=[])
     p.add_argument("--label")
     p.add_argument("--max-age-min", type=int, default=1440)
+    p.add_argument("--root")
     p.set_defaults(func=cmd_promote)
 
     v = sub.add_parser("verify")
     v.add_argument("--file", required=True)
+    v.add_argument("--root")
     v.set_defaults(func=cmd_verify)
 
     args = ap.parse_args()
+    set_workspace(args)
     return args.func(args)
 
 

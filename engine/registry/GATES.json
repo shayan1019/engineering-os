@@ -1,44 +1,50 @@
 {
-  "version": 1,
-  "note": "Executable command authority for the EOS quality gate. An agent can choose a project and suite, never a command. Paths are relative to the workspace root. Suites marked status=NOT_CONFIGURED deliberately have no commands so the gate returns BLOCKED instead of a fake green.",
+  "version": 2,
+  "note": "Executable command authority for the EOS quality gate. An agent can choose a project and suite, never a command. `%ENGINE%` and `%WORKSPACE%` are the only path tokens; nothing here records a machine-specific absolute path. A suite with no verified entry point is marked NOT_CONFIGURED so the gate returns BLOCKED instead of a fake green. `interpreters` names an interpreter a suite needs; if it is absent the suite is BLOCKED (the tests did not run), not FAIL.",
   "defaults": {
     "timeout_seconds": 300
   },
+  "interpreters": {
+    "bighero-venv": {
+      "path": "%WORKSPACE%/6.0_final_merge/.venv-win/Scripts/python.exe",
+      "description": "BigHero's Windows virtual environment (Python 3.11.9 + pytest 9.0.3), verified present 2026-10-19. The system interpreter has no pytest, so this suite cannot run without it."
+    }
+  },
   "projects": {
     "eos": {
-      "path": ".agents/eos/selftest",
+      "path": "%ENGINE%",
       "suites": {
         "pass": {
           "description": "Self-test fixture that must pass. Proves the gate can return PASS.",
           "commands": [
-            { "name": "pass_case", "cmd": ["python", "pass_case.py"], "required": true }
+            { "name": "pass_case", "cmd": ["python", "%SELFTEST%/pass_case.py"], "required": true }
           ]
         },
         "fail": {
           "description": "Self-test fixture that must fail. Proves the gate does not rubber-stamp.",
           "commands": [
-            { "name": "fail_case", "cmd": ["python", "fail_case.py"], "required": true }
+            { "name": "fail_case", "cmd": ["python", "%SELFTEST%/fail_case.py"], "required": true }
           ]
         },
         "mixed": {
           "description": "One passing and one failing required command. Proves a single failure fails the suite.",
           "commands": [
-            { "name": "pass_case", "cmd": ["python", "pass_case.py"], "required": true },
-            { "name": "fail_case", "cmd": ["python", "fail_case.py"], "required": true }
+            { "name": "pass_case", "cmd": ["python", "%SELFTEST%/pass_case.py"], "required": true },
+            { "name": "fail_case", "cmd": ["python", "%SELFTEST%/fail_case.py"], "required": true }
           ]
         },
         "optional_failure": {
           "description": "Passing required command plus a failing optional one. Proves optional steps are recorded without blocking.",
           "commands": [
-            { "name": "pass_case", "cmd": ["python", "pass_case.py"], "required": true },
-            { "name": "fail_optional", "cmd": ["python", "fail_case.py"], "required": false }
+            { "name": "pass_case", "cmd": ["python", "%SELFTEST%/pass_case.py"], "required": true },
+            { "name": "fail_optional", "cmd": ["python", "%SELFTEST%/fail_case.py"], "required": false }
           ]
         },
         "timeout": {
           "description": "Proves a hung command is killed and reported, not waited on forever.",
           "timeout_seconds": 2,
           "commands": [
-            { "name": "slow_case", "cmd": ["python", "slow_case.py"], "required": true }
+            { "name": "slow_case", "cmd": ["python", "%SELFTEST%/slow_case.py"], "required": true }
           ]
         },
         "missing_binary": {
@@ -46,14 +52,51 @@
           "commands": [
             { "name": "missing", "cmd": ["eos-binary-that-does-not-exist", "--version"], "required": true }
           ]
+        },
+        "engine": {
+          "description": "Real behavioural suite of the product itself: a full skill-index rebuild followed by the router's 14 routing scenarios. Discovery runs first because routing resolves skill names against the index it produces; a stale or missing index would make the routing cases fail for the wrong reason.",
+          "timeout_seconds": 300,
+          "commands": [
+            { "name": "skill_index_discover", "cmd": ["python", "tools/skill_index.py", "discover"], "required": true },
+            { "name": "router_tests", "cmd": ["python", "router/route_tests.py"], "required": true }
+          ]
+        },
+        "security": {
+          "description": "Real secret scan over the engine. Fails if a credential-shaped string is committed in the product.",
+          "timeout_seconds": 300,
+          "commands": [
+            { "name": "secret_scan_engine", "cmd": ["python", "tools/secret_scan.py", "%ENGINE%", "--include-tests"], "required": true }
+          ]
         }
       }
     },
     "bighero": {
       "suites": {
+        "thesis_exit": {
+          "status": "CONFIGURED",
+          "description": "Real project tests: the thesis-exit integration file, run in isolation. Measured 2026-10-19: PASS in 10.3 s alone, but 3 of its tests fail inside the full suite, which means those tests are order/state dependent. Recorded as measured fact, not as a project verdict.",
+          "interpreter": "bighero-venv",
+          "timeout_seconds": 300,
+          "commands": [
+            { "name": "pytest_thesis_exit", "cmd": ["python", "-m", "pytest", "python_ai/tests/test_thesis_exit_v1.py", "-q", "--no-header", "-p", "no:cacheprovider"], "required": true }
+          ]
+        },
+        "unit": {
+          "status": "CONFIGURED",
+          "description": "Full python_ai unit suite. Measured 2026-10-19: 4138 passed, 17 failed, 2 skipped in 813 s. The 17 failures pre-date EOS and are recorded here as a project status, not an EOS claim. Timeout is set above the measured runtime.",
+          "interpreter": "bighero-venv",
+          "timeout_seconds": 1500,
+          "commands": [
+            { "name": "pytest_python_ai", "cmd": ["python", "-m", "pytest", "python_ai/tests", "-q", "--no-header", "-p", "no:cacheprovider"], "required": true }
+          ]
+        }
+      }
+    },
+    "vpniran": {
+      "suites": {
         "unit": {
           "status": "NOT_CONFIGURED",
-          "description": "Entry point not yet verified against 6.0_final_merge. Gate must report BLOCKED, not invent a command.",
+          "description": "35 real test files exist at vpniran/iran_resilient_vpn/tests, but no interpreter can run them: the project .venv was built against a Python 3.13 that is no longer installed, and the machine's default interpreter has no pytest. EOS will not install packages into a user project to make its own gate green. Configure an interpreter and this becomes runnable without changing the tests.",
           "commands": []
         }
       }
@@ -62,7 +105,7 @@
       "suites": {
         "unit": {
           "status": "NOT_CONFIGURED",
-          "description": "Entry point not yet verified. Gate must report BLOCKED.",
+          "description": "No verified entry point. package.json build is `tsc && vite build`, and the installed node_modules is incomplete (no tsc or vite binary in node_modules/.bin), so `npm run build` cannot be trusted as a gate. src-tauri/Cargo.toml exists, so `cargo test` is a candidate once the crate builds reproducibly.",
           "commands": []
         }
       }

@@ -19,7 +19,11 @@ import shutil
 import subprocess
 import sys
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _eos_paths as ep  # noqa: E402
+
+# `opencode debug agents` must run in the project whose agents are being checked.
+ROOT = ep.resolve_workspace()
 
 EXPECTED = {
     "chief-architect": {"mode": "primary", "edit": "deny"},

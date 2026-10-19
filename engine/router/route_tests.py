@@ -12,8 +12,11 @@ import subprocess
 import sys
 import tempfile
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))          # <engine>/router
+_ENGINE = os.path.dirname(_SCRIPT_DIR)                           # .agents, or engine/ when installed
+# The scope root only matters for cwd-based resolution; the routing cases below
+# resolve by alias, which must be identical from any location.
+_ROOT = os.environ.get("EOS_WORKSPACE") or os.getcwd()
 
 CASES = [
     {"id": "case1_bighero_entry_bug", "task": "BigHero'da entry bug var, sinyal gelmiyor",
@@ -54,8 +57,7 @@ CASES = [
 ABSOLUTE_PATTERNS = [r"(?<!\w)[a-zA-Z]:[\\/]", r"[\\/]Users[\\/]", r"\bOneDrive\b"]
 CANONICAL_GLOBS = [
     "AGENTS.md", "CLAUDE.md", "GEMINI.md",
-    ".agents/core/*.md", ".agents/registry/*.json", ".agents/registry/*.md",
-    ".agents/router/*.py", ".agents/tools/*.ps1", ".codex/agents/*.toml",
+    "core/*.md", "registry/*.json", "registry/*.md", "router/*.py", "router/*.ps1",
 ]
 PATTERN_DEFS = re.compile(
     r"\[a-zA-Z\]:\[\\\\/\]|\[\\\\/\]Users\[\\\\/\]|\\bOneDrive\\b|-match|re\.(search|match|compile)\("
@@ -64,14 +66,15 @@ PATTERN_DEFS = re.compile(
 
 def run_contract_check(root, contract_rel_path):
     """Runs validate_skills.py --check-contract=<path> and returns its exit code."""
-    cmd = [sys.executable, os.path.join(root, ".agents", "router", "validate_skills.py"),
+    cmd = [sys.executable, os.path.join(_ENGINE, "router", "validate_skills.py"),
            f"--check-contract={contract_rel_path}", f"--root={root}"]
     r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", cwd=root)
     return r.returncode, r.stdout
 
 
-def run_route(root, task, cwd=None):
-    cmd = [sys.executable, os.path.join(root, ".agents", "router", "route_task.py"),
+def run_route(root, task, cwd=None, engine=None):
+    engine = engine or _ENGINE
+    cmd = [sys.executable, os.path.join(engine, "router", "route_task.py"),
            "--task", task, "--root", root]
     if cwd:
         cmd += ["--cwd", cwd]
@@ -84,20 +87,30 @@ def run_route(root, task, cwd=None):
     return json.loads(r.stdout)
 
 
-def abs_leak_scan(root):
+def abs_leak_scan(root, engine=None):
+    """Scan the program files for machine-specific absolute paths.
+
+    The engine is scanned where it actually lives (`<engine>/core`, `<engine>/registry`,
+    `<engine>/router`); `root` is only used to report paths readably and to pick up
+    any workspace-level contract files.
+    """
+    engine = engine or _ENGINE
     leaks = []
-    for pat in CANONICAL_GLOBS:
-        for p in _glob(root, pat):
-            try:
-                lines = open(p, "r", encoding="utf-8", errors="replace").read().splitlines()
-            except OSError:
-                continue
-            for no, line in enumerate(lines, 1):
-                if PATTERN_DEFS.search(line):
-                    continue  # pattern tanim satiri (self-match onlenir)
-                for a in ABSOLUTE_PATTERNS:
-                    if re.search(a, line):
-                        leaks.append(f"{os.path.relpath(p, root)}:{no}: {a}")
+    for base in [engine, root]:
+        if not os.path.isdir(base):
+            continue
+        for pat in CANONICAL_GLOBS:
+            for p in _glob(base, pat):
+                try:
+                    lines = open(p, "r", encoding="utf-8", errors="replace").read().splitlines()
+                except OSError:
+                    continue
+                for no, line in enumerate(lines, 1):
+                    if PATTERN_DEFS.search(line):
+                        continue  # pattern tanim satiri (self-match onlenir)
+                    for a in ABSOLUTE_PATTERNS:
+                        if re.search(a, line):
+                            leaks.append(f"{os.path.relpath(p, engine)}:{no}: {a}")
     return leaks
 
 
@@ -152,27 +165,27 @@ def main():
             fails.append(case["id"])
         print(f"{'PASS' if ok else 'FAIL'} {case['id']} {details}")
 
-    # relocation simulation: copy control plane to temp root, re-run same cases
-    tmp = tempfile.mkdtemp(prefix="opencode_reloc_")
+    # relocation simulation: copy the engine to a temp location and re-run the same
+    # cases. The engine must produce identical routing wherever it lives; that is
+    # exactly the property an installed product depends on, because its engine is
+    # never under the workspace.
+    tmp = tempfile.mkdtemp(prefix="eos_reloc_")
     try:
-        for rel in ["AGENTS.md", ".agents/core", ".agents/registry", ".agents/router"]:
-            src = os.path.join(root, rel)
-            dst = os.path.join(tmp, rel)
+        tmp_engine = os.path.join(tmp, os.path.basename(_ENGINE))
+        for rel in ["core", "registry", "router", "tools", "agents"]:
+            src = os.path.join(_ENGINE, rel)
             if os.path.isdir(src):
-                shutil.copytree(src, dst)
-            elif os.path.isfile(src):
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
+                shutil.copytree(src, os.path.join(tmp_engine, rel))
         rel_ok = True
         for case in CASES:
-            out = run_route(tmp, case["task"])
+            out = run_route(tmp, case["task"], engine=tmp_engine)
             w = run_route(root, case["task"])
             same = out is not None and w is not None and out["resolved"] == w["resolved"] \
                 and out["kg_required"] == w["kg_required"] and out["risk"] == w["risk"]
             if not same:
                 rel_ok = False
                 print(f"FAIL relocation mismatch: {case['id']}")
-        # leakage scan (workspace + relocated copy)
+        # leakage scan: program files must not record absolute machine paths
         leaks = abs_leak_scan(root)
         if leaks:
             rel_ok = False
@@ -188,18 +201,32 @@ def main():
     # fable-5-1 consolidation plan): a deliberately malformed contract must fail,
     # the real one must pass. Both are no-ops (skip, don't fail) if the package
     # doesn't exist yet, so this harness stays green for anyone running it before
-    # fable-5-1 is introduced.
-    malformed_fixture = ".agents/skills/fable-5-1/tests/fixtures/malformed-contract-example.yaml"
-    real_contract = ".agents/skills/fable-5-1/skill.contract.yaml"
-    if os.path.exists(os.path.join(root, malformed_fixture)):
-        code, out = run_contract_check(root, malformed_fixture)
+    # fable-5-1 is introduced. Skills live with the workspace (`.agents/skills`) or
+    # ship inside the engine, so both locations are searched.
+    def skill_file(rel):
+        """Return an absolute path to a skill package, wherever it lives.
+
+        Skills belong to the workspace (`.agents/skills`) but EOS also ships the
+        methodology packages inside the engine, so an installed product can run
+        its own tests without any workspace.
+        """
+        for base, prefix in ((root, ".agents"), (_ENGINE, "")):
+            candidate = os.path.join(base, prefix, rel) if prefix else os.path.join(base, rel)
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    malformed = skill_file("skills/fable-5-1/tests/fixtures/malformed-contract-example.yaml")
+    real = skill_file("skills/fable-5-1/skill.contract.yaml")
+    if malformed:
+        code, out = run_contract_check(root, malformed)
         ok = code != 0 and "ERROR:" in out
         results.append({"case": "fable_5_1_malformed_contract_fails", "pass": ok, "details": [] if ok else [out]})
         if not ok:
             fails.append("fable_5_1_malformed_contract_fails")
         print(f"{'PASS' if ok else 'FAIL'} fable_5_1_malformed_contract_fails (exit={code})")
-    if os.path.exists(os.path.join(root, real_contract)):
-        code, out = run_contract_check(root, real_contract)
+    if real:
+        code, out = run_contract_check(root, real)
         ok = code == 0
         results.append({"case": "fable_5_1_real_contract_passes", "pass": ok, "details": [] if ok else [out]})
         if not ok:

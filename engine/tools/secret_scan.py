@@ -21,10 +21,19 @@ import os
 import re
 import sys
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _eos_paths as ep  # noqa: E402
+
+# What `eos scan` scans by default: the project in scope, not the engine and not
+# whatever directory the interpreter happens to sit in.
+ROOT = ep.resolve_workspace()
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".venv-win", "venv", "target",
-             "dist", "build", ".pytest_cache", ".mypy_cache", "site-packages", ".next"}
+             "dist", "build", ".pytest_cache", ".mypy_cache", "site-packages", ".next",
+             # EOS's own generated data: gate logs, promotion records and baseline
+             # payloads are evidence *about* the code, never part of it. Scanning
+             # them would make the product fail on its own audit trail.
+             "evidence", "backups", "_eos-backup-"}
 SKIP_EXT = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".pdf", ".zip", ".7z", ".rar",
             ".exe", ".dll", ".pyd", ".so", ".dylib", ".woff", ".woff2", ".ttf", ".mp4", ".webm",
             ".graph", ".jsonl"}

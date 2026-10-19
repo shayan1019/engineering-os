@@ -23,7 +23,11 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _eos_paths as ep  # noqa: E402
+
+# Snapshots describe the project in scope, not the engine directory.
+ROOT = ep.resolve_workspace()
 SNAPSHOT_VERSION = 1
 
 INCLUDE_FILES = [
@@ -244,7 +248,7 @@ def cmd_restore(args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="snapshot.py")
-    ap.add_argument("--root", default=ROOT)
+    ap.add_argument("--root", default=ep.resolve_workspace())
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("create")

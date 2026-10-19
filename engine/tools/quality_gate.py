@@ -28,12 +28,16 @@ import sys
 import time
 from datetime import datetime, timezone
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-REGISTRY = os.path.join(ROOT, ".agents", "registry")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _eos_paths as ep  # noqa: E402
+
+ROOT = ep.ENGINE_ROOT                  # program files; the registry lives here
+WORKSPACE = ep.resolve_workspace()     # the project tree being gated
+REGISTRY = ep.REGISTRY
 GATES_PATH = os.path.join(REGISTRY, "GATES.json")
 PROFILES_PATH = os.path.join(REGISTRY, "PROJECT_PROFILES.json")
-EVIDENCE = os.path.join(ROOT, ".agents", "evidence", "gates")
-BACKUPS = os.path.join(ROOT, ".agents", "backups")
+EVIDENCE = ep.GATE_EVIDENCE
+BACKUPS = ep.BACKUPS
 SCHEMA = 1
 DEFAULT_TIMEOUT = 300
 LOG_TAIL = 20000
@@ -64,7 +68,9 @@ def sha256_file(path: str) -> str:
 
 
 def load_json(path: str):
-    with open(path, encoding="utf-8") as fh:
+    # utf-8-sig: a hand-edited registry saved by a Windows editor must not take
+    # the gate down over a byte-order mark.
+    with open(path, encoding="utf-8-sig") as fh:
         return json.load(fh)
 
 
@@ -80,7 +86,7 @@ def latest_baseline():
     if not candidates:
         return None
     _, name, hashes = max(candidates)
-    return {"label": name, "path": os.path.relpath(hashes, ROOT).replace(os.sep, "/"),
+    return {"label": name, "path": ep.store_path(hashes, WORKSPACE),
             "sha256": sha256_file(hashes), "entries": sum(1 for _ in open(hashes, encoding="utf-8"))}
 
 
@@ -96,10 +102,10 @@ def resolve_project(project: str) -> dict:
         if not match:
             raise GateError(f"project '{project}' has no path and no profile")
         path = match.get("path", "")
-    abs_path = os.path.normpath(os.path.join(ROOT, path))
+    abs_path = ep.resolve_project_path(path, WORKSPACE)
     if not os.path.isdir(abs_path):
         raise GateError(f"project path does not exist: {path}")
-    return {"id": project, "root": abs_path, "rel": os.path.relpath(abs_path, ROOT).replace(os.sep, "/"),
+    return {"id": project, "root": abs_path, "rel": ep.store_path(abs_path, WORKSPACE),
             "suites": spec.get("suites") or {}}
 
 
@@ -113,10 +119,41 @@ def build_env(spec_env: dict) -> dict:
     return env
 
 
-def run_command(cmd: list, cwd: str, env: dict, timeout: int) -> dict:
-    argv = list(cmd)
+def expand_tokens(value: str) -> str:
+    """`%ENGINE%`, `%WORKSPACE%` and `%SELFTEST%` keep GATES.json portable: the
+    file records *which* fixture or interpreter, never a machine-specific path.
+    `%SELFTEST%` exists because a workspace keeps the fixtures at
+    `<engine>/eos/selftest` while the product keeps them at `<engine>/selftest`."""
+    return (
+        value.replace("%SELFTEST%", ep.SELFTEST_DIR)
+        .replace("%ENGINE%", ROOT)
+        .replace("%WORKSPACE%", WORKSPACE)
+    )
+
+
+def resolve_interpreter(suite: dict):
+    """A suite may name an interpreter from the registry's `interpreters` map.
+    A missing interpreter is BLOCKED, never FAIL: the tests did not run."""
+    name = suite.get("interpreter")
+    if not name:
+        return sys.executable, None
+    gates = load_json(GATES_PATH)
+    spec = (gates.get("interpreters") or {}).get(name)
+    if not spec:
+        return None, f"suite names interpreter '{name}' which GATES.json does not define"
+    path = expand_tokens(spec.get("path", ""))
+    if not os.path.isfile(path):
+        return None, (
+            f"interpreter '{name}' is not present at {path}. "
+            f"{spec.get('description', '')} The suite is BLOCKED, not passed."
+        )
+    return path, None
+
+
+def run_command(cmd: list, cwd: str, env: dict, timeout: int, python: str | None = None) -> dict:
+    argv = [expand_tokens(str(a)) for a in cmd]
     if argv and argv[0] == "python":
-        argv[0] = sys.executable
+        argv[0] = python or sys.executable
     started = time.time()
     try:
         proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout)
@@ -152,12 +189,25 @@ def cmd_run(args) -> int:
               f"(available: {', '.join(sorted(project['suites'])) or 'none'})")
         return 2
 
+    # A suite with no verified command, or one explicitly marked NOT_CONFIGURED,
+    # is BLOCKED. It must never produce a gate artifact: a file in the evidence
+    # directory is a claim that something ran.
+    if suite.get("status") == "NOT_CONFIGURED" or not (suite.get("commands") or []):
+        reason = suite.get("description") or "no executable command is configured"
+        print(f"BLOCKED: {args.project}/{args.suite} has no runnable command")
+        print(f"  {reason}")
+        return 2
+
     baseline = latest_baseline()
     if not baseline:
         print("BLOCKED: no verified baseline snapshot; a gate without a baseline cannot detect drift")
         return 2
 
     timeout = int(args.timeout or suite.get("timeout_seconds") or DEFAULT_TIMEOUT)
+    interpreter, why = resolve_interpreter(suite)
+    if interpreter is None:
+        print(f"BLOCKED: {why}")
+        return 2
     env = build_env(suite.get("env"))
     results = []
     for step in suite.get("commands") or []:
@@ -168,7 +218,7 @@ def cmd_run(args) -> int:
                             "duration_seconds": 0, "output_sha256": "", "output_bytes": 0,
                             "tail": "[eos] empty command rejected", "required": True})
             continue
-        record = run_command(cmd, project["root"], env, timeout)
+        record = run_command(cmd, project["root"], env, timeout, interpreter)
         record["name"] = name
         record["required"] = bool(step.get("required", True))
         results.append(record)
@@ -209,7 +259,7 @@ def cmd_run(args) -> int:
                                         "output_sha256", "output_bytes", "required")} for r in results],
         "failures": [r["name"] for r in required_failed],
         "optional_failures": [r["name"] for r in optional_failed],
-        "log": {"path": os.path.relpath(log_path, ROOT).replace(os.sep, "/"),
+        "log": {"path": ep.store_path(log_path, WORKSPACE),
                 "sha256": sha256_bytes(log_bytes), "bytes": len(log_bytes)},
         "runtime": {"python": platform.python_version(), "platform": platform.system(),
                     "machine": platform.machine()},
@@ -223,7 +273,7 @@ def cmd_run(args) -> int:
     print(f"{verdict}: {args.project}/{args.suite} ({len(results)} command(s), {len(required_failed)} required failure(s))")
     for r in results:
         print(f"  rc={r['exit_code']:<4} {r['duration_seconds']:>7}s  {r['name']}")
-    print(f"  artifact: {os.path.relpath(art_path, ROOT)}")
+    print(f"  artifact: {ep.store_path(art_path, WORKSPACE)}")
     print(f"  log hash: {artifact['log']['sha256'][:16]}...  baseline: {baseline['label']}")
     return 0 if verdict == "PASS" else 1
 
@@ -256,14 +306,14 @@ def verify_artifact(path: str, project: str | None = None, max_age_min: int | No
     if not baseline.get("sha256"):
         problems.append("no baseline identity recorded")
     else:
-        bl_path = os.path.join(ROOT, baseline.get("path", ""))
+        bl_path = ep.load_stored_path(baseline.get("path", ""), WORKSPACE)
         if not os.path.isfile(bl_path):
             problems.append(f"baseline file missing: {baseline.get('path')}")
         elif sha256_file(bl_path) != baseline["sha256"]:
             problems.append("baseline changed since the gate ran (tampered or replaced snapshot)")
 
     log = a.get("log") or {}
-    log_path = os.path.join(ROOT, log.get("path", ""))
+    log_path = ep.load_stored_path(log.get("path", ""), WORKSPACE)
     if not log.get("path") or not os.path.isfile(log_path):
         problems.append("gate log missing")
     elif sha256_file(log_path) != log.get("sha256"):
@@ -331,6 +381,15 @@ def cmd_show(args) -> int:
     return 0 if result["ok"] else 1
 
 
+def set_workspace(args) -> None:
+    """`--root` (or EOS_WORKSPACE, or cwd) selects the project tree the gate is
+    about. The engine's own location is never used for that decision."""
+    global WORKSPACE
+    explicit = getattr(args, "root", None)
+    if explicit:
+        WORKSPACE = ep.resolve_workspace(explicit)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="quality_gate.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -339,21 +398,25 @@ def main() -> int:
     r.add_argument("--project", required=True)
     r.add_argument("--suite", required=True)
     r.add_argument("--timeout", type=int)
+    r.add_argument("--root", help="workspace the project path is relative to")
     r.set_defaults(func=cmd_run)
 
     v = sub.add_parser("verify")
     v.add_argument("--file", required=True)
     v.add_argument("--project")
     v.add_argument("--max-age-min", type=int, default=1440)
+    v.add_argument("--root")
     v.set_defaults(func=cmd_verify)
 
     sub.add_parser("list").set_defaults(func=cmd_list)
 
     s = sub.add_parser("show")
     s.add_argument("--file", required=True)
+    s.add_argument("--root")
     s.set_defaults(func=cmd_show)
 
     args = ap.parse_args()
+    set_workspace(args)
     return args.func(args)
 
 

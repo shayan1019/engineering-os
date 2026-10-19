@@ -27,11 +27,18 @@ import shutil
 import sys
 from datetime import datetime, timezone
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-CANONICAL = os.path.join(ROOT, ".agents", "eos", "agents")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _eos_paths as ep  # noqa: E402
+
+ROOT = ep.ENGINE_ROOT
+CANONICAL = ep.AGENTS_CANONICAL
 GLOBAL_TARGET = os.path.expanduser(os.path.join("~", ".config", "opencode", "agents"))
-PROJECT_TARGET = os.path.join(ROOT, ".opencode", "agents")
-MANIFEST = os.path.join(ROOT, ".agents", "eos", "agents.manifest.json")
+# Project installs target the project being operated on. `--project <dir>` (or
+# EOS_WORKSPACE, or cwd) selects it; the engine's own directory is never used.
+PROJECT_ROOT = ep.resolve_workspace(os.environ.get("EOS_PROJECT"))
+PROJECT_TARGET = os.path.join(PROJECT_ROOT, ".opencode", "agents")
+MANIFEST = os.path.join(ROOT, "eos", "agents.manifest.json") if os.path.isdir(
+    os.path.join(ROOT, "eos")) else os.path.join(ep.STATE_DIR, "agents.manifest.json")
 
 # Ordered permission rules: broad rule first, exception after. Last match wins.
 DENY_EDIT = [("edit", "*", "deny")]
@@ -264,7 +271,26 @@ def render(name: str, spec: dict) -> str:
 
 def manifest_path(target: str) -> str:
     name = "agents.global.manifest.json" if target == "global" else "agents.manifest.json"
-    return os.path.join(ROOT, ".agents", "eos", name)
+    base = os.path.join(ROOT, "eos") if os.path.isdir(os.path.join(ROOT, "eos")) else ep.STATE_DIR
+    return os.path.join(base, name)
+
+
+def _disp(path: str) -> str:
+    """Human-readable, portable form; absolute when the file lives outside the
+    engine (the state directory legitimately does)."""
+    try:
+        rel = os.path.relpath(path, ROOT)
+    except ValueError:
+        return path.replace(os.sep, "/")
+    return path.replace(os.sep, "/") if rel.startswith("..") else rel.replace(os.sep, "/")
+
+
+def set_project(explicit):
+    """Point the project install at the project being operated on."""
+    global PROJECT_ROOT, PROJECT_TARGET
+    if explicit:
+        PROJECT_ROOT = ep.resolve_workspace(explicit)
+        PROJECT_TARGET = os.path.join(PROJECT_ROOT, ".opencode", "agents")
 
 
 def install(target: str, force: bool) -> int:
@@ -295,7 +321,7 @@ def install(target: str, force: bool) -> int:
 
     manifest = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "canonical": os.path.relpath(CANONICAL, ROOT).replace(os.sep, "/"),
+        "canonical": _disp(CANONICAL),
         "target": dest,
         "target_kind": target,
         "agents": sorted(AGENTS),
@@ -317,7 +343,7 @@ def install(target: str, force: bool) -> int:
     if backed_up:
         print(f"  backed up {len(backed_up)} replaced file(s) to {backup_dir}")
     print(f"  canonical: {CANONICAL}")
-    print(f"  manifest : {os.path.relpath(path, ROOT).replace(os.sep, '/')}")
+    print(f"  manifest : {_disp(path)}")
     return 0 if not conflicts else 1
 
 
@@ -367,10 +393,13 @@ def main() -> int:
     i = sub.add_parser("install")
     i.add_argument("--target", choices=("project", "global"), default="project")
     i.add_argument("--force", action="store_true")
+    i.add_argument("--project", help="project directory to install into")
     sub.add_parser("status")
     u = sub.add_parser("uninstall")
     u.add_argument("--target", choices=("project", "global"), default="project")
+    u.add_argument("--project")
     args = ap.parse_args()
+    set_project(getattr(args, "project", None))
     if args.cmd == "install":
         return install(args.target, args.force)
     if args.cmd == "uninstall":

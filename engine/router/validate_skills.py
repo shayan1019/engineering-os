@@ -22,7 +22,18 @@ import sys
 from datetime import date
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
+_ENGINE_ROOT = os.path.dirname(_SCRIPT_DIR)          # .agents (workspace) or engine (installed)
+# Only a fallback: the scope root is the project in hand, never the engine's parent.
+_DEFAULT_ROOT = os.environ.get("EOS_WORKSPACE") or os.getcwd()
+
+
+def registry_dir(root):
+    """Where the program's registry lives: with the engine, not with the project."""
+    for candidate in (os.path.join(_ENGINE_ROOT, "registry"),
+                      os.path.join(root, ".agents", "registry")):
+        if os.path.isdir(candidate):
+            return candidate
+    return os.path.join(root, ".agents", "registry")
 
 DOMAIN_KEYWORDS = {
     "trading": ["trading", "mt5", "mql", "backtest", "forex", "broker", "alpaca", "portfolio", "option", "risk", "sinyal", "pinescript", "pine"],
@@ -186,6 +197,11 @@ def check_contract(contract_path, skill_dir, root):
                 os.path.join(root, s),
                 os.path.join(root, ".agents", "skills", s),
                 os.path.join(root, ".agents", "core", s),
+                # A contract may point at material EOS ships inside the engine, which
+                # is where it lives once installed (no workspace, no `.agents`).
+                os.path.join(_ENGINE_ROOT, s),
+                os.path.join(_ENGINE_ROOT, "skills", s),
+                os.path.join(_ENGINE_ROOT, "core", s),
             ]
             if not any(os.path.exists(c) for c in candidates):
                 errors.append(f"skill.contract.yaml: do_not_regress.source '{s}' does not resolve to an existing file/dir")
@@ -239,7 +255,8 @@ def discover_sources(root):
         ("workspace-agents", os.path.join(root, ".agents", "skills"), True),
         ("workspace-claude", os.path.join(root, ".claude", "skills"), False),
         ("global-agents", os.path.join(os.path.expanduser("~"), ".agents", "skills"), False),
-    ]
+    ] + ([("engine-agents", os.path.join(_ENGINE_ROOT, "skills"), False)]
+         if os.path.isdir(os.path.join(_ENGINE_ROOT, "skills")) else [])
 
 
 def _scan_source(source_id, skills_root, root, canonical, seen_names, errors, warnings):
@@ -399,7 +416,7 @@ def scan(root, generate=False):
     _scan_openai_yaml(sources, root, errors, warnings)
 
     if generate:
-        cat_path = os.path.join(root, ".agents", "registry", "SKILL_CATALOG.json")
+        cat_path = os.path.join(registry_dir(root), "SKILL_CATALOG.json")
         payload = {
             "version": "2",
             "generated": date.today().isoformat(),

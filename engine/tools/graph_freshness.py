@@ -31,9 +31,12 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-PROFILES = os.path.join(ROOT, ".agents", "registry", "PROJECT_PROFILES.json")
-EVIDENCE = os.path.join(ROOT, ".agents", "evidence", "graph")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _eos_paths as ep  # noqa: E402
+
+ROOT = ep.ENGINE_ROOT
+PROFILES = os.path.join(ep.REGISTRY, "PROJECT_PROFILES.json")
+EVIDENCE = ep.GRAPH_EVIDENCE
 MQL_EXT = (".mq5", ".mqh", ".mq4", ".mqh")
 SRC_EXT = (".py", ".mq5", ".mqh", ".ts", ".tsx", ".js", ".rs", ".go", ".java", ".cs", ".c", ".cpp", ".h")
 SKIP_DIRS = {"node_modules", ".git", "target", "dist", "build", "__pycache__", ".venv", ".venv-win",

@@ -24,10 +24,13 @@ import re
 import sys
 from datetime import datetime, timezone
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-INDEX_PATH = os.path.join(ROOT, ".agents", "registry", "SKILL_INDEX.json")
-CATALOG_PATH = os.path.join(ROOT, ".agents", "registry", "SKILL_CATALOG.json")
-PROFILES_PATH = os.path.join(ROOT, ".agents", "registry", "PROJECT_PROFILES.json")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _eos_paths as ep  # noqa: E402
+
+ROOT = ep.ENGINE_ROOT
+INDEX_PATH = os.path.join(ep.REGISTRY, "SKILL_INDEX.json")
+CATALOG_PATH = os.path.join(ep.REGISTRY, "SKILL_CATALOG.json")
+PROFILES_PATH = os.path.join(ep.REGISTRY, "PROJECT_PROFILES.json")
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 # Task text arrives in Turkish and English. Domains are English, so bridge the
@@ -52,6 +55,7 @@ def normalize(text: str) -> str:
 
 
 HOME = os.path.expanduser("~")
+WORKSPACE = ep.resolve_workspace()
 
 
 def display_path(path: str) -> str:
@@ -61,21 +65,28 @@ def display_path(path: str) -> str:
     valid after the workspace moves. An absolute path violates both.
     """
     absolute = os.path.abspath(path)
-    if absolute.startswith(ROOT + os.sep):
-        return os.path.relpath(absolute, ROOT).replace(os.sep, "/")
+    if absolute == WORKSPACE or absolute.startswith(WORKSPACE + os.sep):
+        return os.path.relpath(absolute, WORKSPACE).replace(os.sep, "/")
+    if absolute == ep.ENGINE_ROOT or absolute.startswith(ep.ENGINE_ROOT + os.sep):
+        return "<engine>/" + os.path.relpath(absolute, ep.ENGINE_ROOT).replace(os.sep, "/")
     if absolute.startswith(HOME + os.sep):
         return "~/" + os.path.relpath(absolute, HOME).replace(os.sep, "/")
     return "<external>/" + os.path.basename(absolute)
 
 # (source_id, path, scope)
+# Project roots belong to the project being operated on, never to the engine: an
+# installed EOS must discover the skills of whatever workspace it is pointed at.
+# `<engine>/skills` carries the skills EOS itself ships.
 SOURCES = [
-    ("project-opencode", os.path.join(ROOT, ".opencode", "skills"), "project"),
-    ("project-claude", os.path.join(ROOT, ".claude", "skills"), "project"),
-    ("project-agents", os.path.join(ROOT, ".agents", "skills"), "project"),
-    ("global-opencode", os.path.expanduser("~/.config/opencode/skills"), "global"),
-    ("global-claude", os.path.expanduser("~/.claude/skills"), "global"),
-    ("global-agents", os.path.expanduser("~/.agents/skills"), "global"),
+    ("project-opencode", os.path.join(WORKSPACE, ".opencode", "skills"), "project"),
+    ("project-claude", os.path.join(WORKSPACE, ".claude", "skills"), "project"),
+    ("project-agents", os.path.join(WORKSPACE, ".agents", "skills"), "project"),
+    ("global-opencode", os.path.join(HOME, ".config", "opencode", "skills"), "global"),
+    ("global-claude", os.path.join(HOME, ".claude", "skills"), "global"),
+    ("global-agents", os.path.join(HOME, ".agents", "skills"), "global"),
 ]
+if os.path.isdir(os.path.join(ep.ENGINE_ROOT, "skills")):
+    SOURCES.append(("engine", os.path.join(ep.ENGINE_ROOT, "skills"), "engine"))
 
 # Canonical source is .agents/skills (single authority per AGENTS.md section 2).
 # .claude/skills is a generated mirror; .opencode/skills is a project-local override.
@@ -338,10 +349,40 @@ def find_profile(project: str):
     return None
 
 
+def infer_profile(task: str):
+    """The project a task is about, when the task names it.
+
+    `eos skills resolve "BigHero'da entry bug var"` has to land on the BigHero
+    profile, otherwise the ranking silently degrades to "no project". The same
+    alias rule the router uses is applied here: a name that appears in the task
+    text wins, and an ambiguous match is refused rather than guessed.
+    """
+    if not task or not os.path.isfile(PROFILES_PATH):
+        return None
+    try:
+        data = json.load(open(PROFILES_PATH, encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    text = task.lower()
+    hits = []
+    for p in data.get("profiles", []):
+        names = [p.get("id", ""), p.get("display", "")] + list(p.get("aliases") or [])
+        for n in names:
+            n = str(n or "").lower()
+            if len(n) < 3:
+                continue
+            if n in text:
+                hits.append(p)
+                break
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
 def resolve(task: str, project: str = "", k: int = 3, rebuild: bool = False):
     index = load_index(rebuild)
     task_tokens = tokens(task)
-    prof = find_profile(project)
+    prof = find_profile(project) or infer_profile(task)
     project_domains = {normalize(str(d)) for d in (prof.get("domains") or [])} if prof else set()
     preferred = set(prof.get("preferred_skills") or []) if prof else set()
     seen, unique = set(), []

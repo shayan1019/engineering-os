@@ -12,8 +12,29 @@ import os
 import re
 import sys
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))          # .agents/router
-_DEFAULT_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))     # workspace root
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))          # <engine>/router
+_ENGINE_ROOT = os.path.dirname(_SCRIPT_DIR)                       # .agents (workspace) or engine (installed)
+_DEFAULT_ROOT = os.environ.get("EOS_WORKSPACE") or os.getcwd()    # the project in scope
+
+sys.path.insert(0, os.path.join(_ENGINE_ROOT, "tools"))
+try:
+    import _eos_paths as _ep  # noqa: E402
+except Exception:  # pragma: no cover - routing must still work without it
+    _ep = None
+
+
+def registry_dir(root: str) -> str:
+    """Program files (profiles, routing map, catalog) live with the engine.
+
+    An installed product has no `<workspace>/.agents` directory, so deriving the
+    registry from the workspace silently produced an empty route map. Deriving it
+    from the engine works for both layouts, with the old location as fallback.
+    """
+    for candidate in (os.path.join(_ENGINE_ROOT, "registry"),
+                      os.path.join(root, ".agents", "registry")):
+        if os.path.isdir(candidate):
+            return candidate
+    return os.path.join(root, ".agents", "registry")
 
 KG_ON = [
     "ontoloji", "ontology", "knowledge graph", "graphrag", "graph rag",
@@ -59,7 +80,7 @@ def norm(p):
 
 
 def resolve_project(task, cwd, root):
-    profiles = load_json(os.path.join(root, ".agents", "registry", "PROJECT_PROFILES.json"))["profiles"]
+    profiles = load_json(os.path.join(registry_dir(root), "PROJECT_PROFILES.json"))["profiles"]
     task_l = task.lower()
     for prof in profiles:
         for alias in prof.get("aliases", []):
@@ -141,7 +162,7 @@ def fable_5_1_signal(task, kg, risk):
 
 
 def load_routing_map(root):
-    p = os.path.join(root, ".agents", "registry", "ROUTING_MAP.json")
+    p = os.path.join(registry_dir(root), "ROUTING_MAP.json")
     if not os.path.exists(p):
         return None
     try:
@@ -151,11 +172,22 @@ def load_routing_map(root):
 
 
 def catalog_skills(root):
-    cat = os.path.join(root, ".agents", "registry", "SKILL_CATALOG.json")
-    if not os.path.exists(cat):
-        return []
-    data = load_json(cat)
-    return data.get("entries", []) if isinstance(data, dict) else []
+    """Curated skill catalog, or the indexed names when none exists.
+
+    The curated catalog carries hand-maintained domains, trust and compatibility
+    metadata for the whole workspace library. An installed engine has no workspace
+    to curate, so it falls back to the index it just built: routing only needs the
+    names to be present, and a missing catalog must not silently disable routing.
+    """
+    cat = os.path.join(registry_dir(root), "SKILL_CATALOG.json")
+    if os.path.exists(cat):
+        data = load_json(cat)
+        return data.get("entries", []) if isinstance(data, dict) else []
+    idx_path = os.path.join(registry_dir(root), "SKILL_INDEX.json")
+    if os.path.exists(idx_path):
+        idx = load_json(idx_path)
+        return [{"name": e.get("name", "")} for e in (idx.get("entries") or [])]
+    return []
 
 
 def catalog_match(catalog, domains):
@@ -214,7 +246,7 @@ def _eos_skill_ranking(task, project_id, limit=3):
     for the task and why, so the choice is auditable.
     """
     try:
-        tools_dir = os.path.join(_DEFAULT_ROOT, ".agents", "tools")
+        tools_dir = os.path.join(_ENGINE_ROOT, "tools")
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
         import skill_index

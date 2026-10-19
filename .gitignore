@@ -46,3 +46,12 @@ venv/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Generated per workspace by `eos skills discover`.
+engine/registry/SKILL_INDEX.json
+engine/registry/SKILL_CATALOG.json
+
+# Bundled interpreter is staged at build time, never tracked (145 MB).
+runtime/
+installer/out/
+installer/stage/
