@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated_at": "2026-10-19T15:29:48+00:00",
+  "generated_at": "2026-10-19T15:38:24+00:00",
   "file_count": 37,
-  "total_bytes": 226577,
+  "total_bytes": 235651,
   "policy": {
     "published": [
       "engine source",
@@ -31,56 +31,56 @@
     {
       "source": ".agents/eos/agents/architect.md",
       "path": "engine/agents/architect.md",
-      "sha256": "110BEA96668561D1B520B73C93789D5B6C55CD1C7685F802CB18E24E0D47F031",
-      "bytes": 965
+      "sha256": "8A9061BA1E969E0DF793AE40511F6DA327EE8840D21BA14BBD869F83CB7E590C",
+      "bytes": 1686
     },
     {
       "source": ".agents/eos/agents/chief-architect.md",
       "path": "engine/agents/chief-architect.md",
-      "sha256": "775BC380EE3C434100DF66B6F484E30A2BE255447969E06FD22B8FD53B28195C",
-      "bytes": 1802
+      "sha256": "6F95861D3E8B15B4D75B300232083F05178D1E36B3F2B5A236D052641B53B364",
+      "bytes": 2578
     },
     {
       "source": ".agents/eos/agents/evidence-analyst.md",
       "path": "engine/agents/evidence-analyst.md",
-      "sha256": "16FD6DFD5513D0CC528BD4B15FCC4571ADE46EDF55D7ABD7C9753ED8CF1258E7",
-      "bytes": 683
+      "sha256": "743CE422407ADE29258C299D3AF9757242F468944B73F0CDEB359C0D681F070F",
+      "bytes": 1472
     },
     {
       "source": ".agents/eos/agents/implementer.md",
       "path": "engine/agents/implementer.md",
-      "sha256": "49B511FCB28A8CA656C9CE7D0BC721994970D75AEEFFEEBEF23DDDF50366D5CF",
-      "bytes": 1016
+      "sha256": "7158EC31A6E562071BC68EBD6308E772E5A99D6CA586EB025AB770386713A022",
+      "bytes": 1746
     },
     {
       "source": ".agents/eos/agents/performance-engineer.md",
       "path": "engine/agents/performance-engineer.md",
-      "sha256": "F62827D5A89534352F29185CA9FDB3DE6BB932E3373D439B9E18DECB6C3E513A",
-      "bytes": 519
+      "sha256": "554644A80A616DDB662CEAD53971ED972B62A3AEBD53CD81E15D0C838E6C5793",
+      "bytes": 868
     },
     {
       "source": ".agents/eos/agents/reviewer.md",
       "path": "engine/agents/reviewer.md",
-      "sha256": "1C3D04BEB0E4B5E0D0FA4F66D197195D8C887AECF5F06ADACFC52A75E29B555D",
-      "bytes": 942
+      "sha256": "A94F744F41F5AC520EBB9D21FFE5B0DD33E7499B8C714CED064B160C876F8697",
+      "bytes": 1685
     },
     {
       "source": ".agents/eos/agents/security-auditor.md",
       "path": "engine/agents/security-auditor.md",
-      "sha256": "DF1C7955D7F7EA6872F60B8757798406322B0510316C73C101D0F4FA93EFC3E3",
-      "bytes": 723
+      "sha256": "8E45E7A6576C16464D6A02784D16B7A5A6B33515A2A5F4570B2DEB8021876661",
+      "bytes": 1501
     },
     {
       "source": ".agents/eos/agents/test-engineer.md",
       "path": "engine/agents/test-engineer.md",
-      "sha256": "A754363CC35C1D027531BA246F2791763ABC36D3714E9B8A74B91FE171DE5B98",
-      "bytes": 714
+      "sha256": "5786E01320FE9C80FE07745D6B3944DAE60359795C0B12A8ECA953F51C47C875",
+      "bytes": 1239
     },
     {
       "source": ".agents/eos/agents/verifier.md",
       "path": "engine/agents/verifier.md",
-      "sha256": "BFE71F887DA66B6A52ED637E82761D4E7CCF3BB53F6D9A1FA5BD39E3A8FEEBAD",
-      "bytes": 953
+      "sha256": "76E674BB8CB36410A9A5CDB0E4646D863F767A0C4960B401CE064DCC2C8ACBCA",
+      "bytes": 1344
     },
     {
       "source": ".agents/core/FABLE_CORE.md",
@@ -181,8 +181,8 @@
     {
       "source": ".agents/tools/agent_install.py",
       "path": "engine/tools/agent_install.py",
-      "sha256": "2E10B87CD920DA2A5D75B2726471D6A8FA068128A7BC4F9213CBBF97F1717D57",
-      "bytes": 14594
+      "sha256": "2BBFFBA397B1216AC465100AAAE765B5CD81FB50296D8B53C0C0E3FB8D7B1E0D",
+      "bytes": 17866
     },
     {
       "source": ".agents/tools/claude_route_hook.py",

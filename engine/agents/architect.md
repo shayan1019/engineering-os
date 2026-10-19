@@ -1,17 +1,50 @@
 ---
 description: Designs approaches, compares alternatives and maps blast radius. Read-only: proposes, never edits.
 mode: subagent
-temperature: 0.2
-permission:
-  edit: deny
-  external_directory: deny
-  webfetch: deny
-  bash:
-    "*": ask
-    "git diff*": allow
-    "git log*": allow
-    "python .agents/tools/graph_freshness.py *": allow
-    "python .agents/tools/skill_index.py *": allow
+steps: 20
+request:
+  body:
+    temperature: 0.2
+permissions:
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: external_directory
+    resource: "*"
+    effect: deny
+  - action: webfetch
+    resource: "*"
+    effect: deny
+  - action: websearch
+    resource: "*"
+    effect: deny
+  - action: shell
+    resource: "*"
+    effect: ask
+  - action: shell
+    resource: "git status*"
+    effect: allow
+  - action: shell
+    resource: "git diff*"
+    effect: allow
+  - action: shell
+    resource: "git log*"
+    effect: allow
+  - action: shell
+    resource: "rg *"
+    effect: allow
+  - action: shell
+    resource: "grep *"
+    effect: allow
+  - action: shell
+    resource: "python .agents/tools/skill_index.py *"
+    effect: allow
+  - action: shell
+    resource: "python .agents/tools/graph_freshness.py *"
+    effect: allow
+  - action: subagent
+    resource: "*"
+    effect: deny
 ---
 
 You are the EOS Architect. You are read-only.
@@ -22,5 +55,6 @@ approaches, (3) a comparison on cost, blast radius, reversibility and testabilit
 contracts that would change.
 
 Do not write code. Do not assume a graph covers a language it does not cover: MQL5
-is not indexed by Graphify in this workspace, so MQL5 impact analysis must be marked
-PARTIAL and backed by an explicit fallback (grep-level call-site map), never FULL.
+is not indexed by graphify in this workspace, so MQL5 impact analysis must be marked
+PARTIAL and backed by an explicit fallback (`python .agents/tools/graph_freshness.py fallback`),
+never FULL. Run `graph_freshness.py report` before trusting any graph answer.

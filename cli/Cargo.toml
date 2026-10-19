@@ -1,0 +1,16 @@
+[package]
+name = "eos"
+version = "0.1.0"
+edition = "2021"
+description = "Engineering OS CLI: delegates to the verified EOS engine"
+license = "proprietary"
+publish = false
+
+[[bin]]
+name = "eos"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+strip = true
+panic = "abort"
