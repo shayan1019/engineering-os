@@ -25,9 +25,17 @@ decision the tool makes is backed by an artifact on disk.
 | `EngineeringOS-Setup-0.2.3-alpha.exe` | 28.8 MB | `b4bc0f5c06f6b9de1b28b2469d00d019ce8c7b19ef0f04805f162a92179677b2` |
 | `EngineeringOS-0.2.3-alpha-portable.zip` | 50.0 MB | `a31cba5492fcaab91374b8e00d934aba349dc1ddb4dd6dd7751cedacdc8c0ad5` |
 | `eos-0.2.3-alpha.exe` | 480 KB | `26e53acb5126713e641a6d229f4709d395e29d897a4d30993573efb4ee3be83a` |
+| `EngineeringOS-0.2.3-alpha-arm64.dmg` | 42.5 MB | `3463b6ad36cf49281a390d1540d7beb8405ec9f1e985673acb76c5e8b3575349` |
+| `EngineeringOS-0.2.3-alpha-arm64-portable.tar.gz` | 27.2 MB | `4fe311cc73dbe8a1515dfc5e2a848452315e31e24ecc097f17b5a741b410c0b4` |
 
-`SHA256SUMS.txt` ships with the release; verify with
-`sha256sum -c SHA256SUMS.txt`.
+`SHA256SUMS.txt` holds the Windows checksums, `SHA256SUMS-macos-arm64.txt` the
+macOS ones. Verify with `sha256sum -c <file>`.
+
+The macOS DMG is produced by the release workflow on a GitHub macOS runner
+(Apple silicon). It is **unsigned and unnotarised**, so macOS will refuse to
+open it until the user allows it explicitly. The Intel build is produced by the
+same workflow on a `macos-13` runner; GitHub's Intel macOS capacity is scarce
+and that job is often queued for a long time.
 
 ## Install
 
