@@ -1,377 +1,419 @@
 {
-  "version": "1",
-  "generated": "2026-08-13",
-  "portability": "ALL paths relative to workspace root. No drive letters, no user home, no fixed user-folder literals.",
-  "resolution_rule": "1) task metninde alias/keyword eslesmesi  2) cwd/discovery  3) new_project route",
-  "profiles": [
-    {
-      "id": "bighero",
-      "display": "BigHero AI Trading System",
-      "path": "./6.0_final_merge",
-      "location": "desktop_sibling",
-      "legacy_path": "../AÄ° TRADER",
-      "aliases": [
-        "bigh",
-        "bighero",
-        "big hero",
-        "bigheroai",
-        "6.0",
-        "6.0_final_merge",
-        "ai trader"
-      ],
-      "domains": [
-        "trading",
-        "mql5",
-        "mt5",
-        "lgbm",
-        "ml",
-        "backtest",
-        "forex",
-        "indicator",
-        "pine",
-        "ea"
-      ],
-      "preferred_skills": [
-        "qc-audit",
-        "mt5-trading",
-        "mql-developer",
-        "backtesting",
-        "risk-management",
-        "alpaca-broker-market-data",
-        "backtest"
-      ],
-      "conditional_skills": [
-        "ai-research-reproduction",
-        "ai-research-explore",
-        "fable-5-1"
-      ],
-      "invariants": [
-        "test disiplini korunur",
-        "evidence/audit kaydi",
-        "anti patch-on-patch",
-        "forward test kayitlari",
-        "canonical = 6.0_final_merge; AÄ° TRADER legacy alias"
-      ],
-      "verify": [
-        "mevcut test suite calistir",
-        "qc-audit gerekliyse calistir"
-      ]
-    },
-    {
-      "id": "aura",
-      "display": "AURA",
-      "path": "./AURA",
-      "location": "workspace",
-      "aliases": [
-        "aura"
-      ],
-      "domains": [
-        "ai-engineering",
-        "llm",
-        "rag",
-        "agent",
-        "context-engineering",
-        "debugging",
-        "terminal",
-        "tui",
-        "python"
-      ],
-      "preferred_skills": [
-        "ai-engineering",
-        "debugging-and-error-recovery",
-        "frontend-ui-engineering",
-        "code-quality"
-      ],
-      "conditional_skills": [],
-      "invariants": [
-        "terminal davranisi korunur",
-        "test suite korunur (335+, Phase-0 dogrulandi)"
-      ],
-      "verify": [
-        "suite calistir"
-      ]
-    },
-    {
-      "id": "indicator",
-      "display": "TradingView Indicator RE",
-      "path": "./indicator",
-      "location": "workspace",
-      "aliases": [
-        "indicator",
-        "indikator",
-        "tradingview",
-        "pine"
-      ],
-      "domains": [
-        "pinescript",
-        "tradingview",
-        "indicator",
-        "reverse-engineering"
-      ],
-      "preferred_skills": [
-        "Pine Script v6",
-        "price-action-uzmani"
-      ],
-      "conditional_skills": [],
-      "invariants": [
-        "REVERSE_ENGINEER.md format: guven puani + kanit satiri",
-        ".agents/.claude eski kopyalar dokunulmaz"
-      ],
-      "verify": []
-    },
-    {
-      "id": "ups",
-      "display": "UPS (analiz goruntuleri)",
-      "path": "./UPS",
-      "location": "workspace",
-      "aliases": [
-        "ups"
-      ],
-      "domains": [
-        "excel",
-        "xlsx",
-        "veri",
-        "analiz",
-        "screenshot"
-      ],
-      "preferred_skills": [
-        "xlsx",
-        "webapp-testing"
-      ],
-      "conditional_skills": [],
-      "invariants": [
-        "UPS goruntuleri icin goruntu destekleyen model gerekir â€” capability discovery"
-      ],
-      "verify": []
-    },
-    {
-      "id": "vpniran",
-      "display": "VPN Iran",
-      "path": "./vpniran",
-      "location": "workspace",
-      "aliases": [
-        "vpn",
-        "iran",
-        "vpniran"
-      ],
-      "domains": [
-        "vpn",
-        "network",
-        "proxy",
-        "security"
-      ],
-      "preferred_skills": [],
-      "conditional_skills": [],
-      "invariants": [
-        "oturumda once kendi AGENTS.md/CLAUDE.md yuklenir",
-        "credential sizdirmaz"
-      ],
-      "verify": []
-    },
-    {
-      "id": "alpha",
-      "display": "Alpha EA Incubator (MQL5 Port + TargetBands %100 Klon)",
-      "path": "./alpha",
-      "location": "workspace",
-      "aliases": [
-        "alpha",
-        "alpha bandsbridge",
-        "targetbands",
-        "royal ea"
-      ],
-      "domains": [
-        "trading",
-        "mql5",
-        "mt5",
-        "ea",
-        "indicator",
-        "backtest",
-        "forex",
-        "gold",
-        "xauusd"
-      ],
-      "preferred_skills": [
-        "mql-developer",
-        "mt5-trading",
-        "backtesting",
-        "risk-management",
-        "backtesting-frameworks"
-      ],
-      "conditional_skills": [
-        "fable-5-1"
-      ],
-      "invariants": [
-        "TEK INDI: TargetBands_fitted.mq5 kanonik — SMA_StDev/Royalindi legacy extracted/legacy'de",
-        "TEK EA: Alpha.mq5 v3.00 kanonik — Process+BandsBridge birlesimi; legacy EA'lar extracted/legacy'de",
-        "GOLD kanonik set: GOLD_M30_fitted*.set (55,0.1,5) — Inp* set'ler legacy",
-        "ALPHA_STRATEGY.md kanonik, README.md ozet, ALPHA_CODEMAP.md harita",
-        "final_verify.py PASSx3 gate --from 2025.07.01 artefakt filtresi zorunlu"
-      ],
-      "verify": [
-        "python alpha/final_verify.py alpha/export_eurusd_m30.csv alpha/export_gbpusd_m30.csv alpha/export_gold_long_m30_long2.csv --from 2025.07.01",
-        "powershell -File alpha/validate_alpha.ps1"
-      ]
-    },
-    {
-      "id": "liquid-demo",
-      "display": "liquid-demo",
-      "path": "./liquid-demo",
-      "location": "workspace",
-      "aliases": [
-        "liquid",
-        "liquid demo"
-      ],
-      "domains": [],
-      "preferred_skills": [],
-      "conditional_skills": [],
-      "invariants": [],
-      "verify": []
-    },
-    {
-      "id": "mycv",
-      "display": "MY CV",
-      "path": "./MY CV",
-      "location": "workspace",
-      "aliases": [
-        "cv",
-        "my cv",
-        "portfolyo",
-        "portfolio"
-      ],
-      "domains": [
-        "cv",
-        "kariyer",
-        "portfolio"
-      ],
-      "preferred_skills": [
-        "docx",
-        "xlsx"
-      ],
-      "conditional_skills": [],
-      "invariants": [],
-      "verify": []
-    },
-    {
-      "id": "tools",
-      "display": "tools (non-project)",
-      "path": "./tools",
-      "location": "workspace",
-      "aliases": [
-        "tools"
-      ],
-      "domains": [
-        "arac"
-      ],
-      "preferred_skills": [],
-      "conditional_skills": [],
-      "invariants": [
-        "fable originalleri â€” DOKUNULMAZ"
-      ],
-      "verify": []
-    },
-    {
-      "id": "test-backup",
-      "display": "test backup (panel QA)",
-      "path": "../test backup",
-      "location": "desktop_sibling",
-      "aliases": [
-        "test backup",
-        "panel qa",
-        "panel"
-      ],
-      "domains": [
-        "panel",
-        "qa",
-        "tradingview"
-      ],
-      "preferred_skills": [
-        "webapp-testing"
-      ],
-      "conditional_skills": [],
-      "invariants": [],
-      "verify": []
-    },
-    {
-      "id": "fanmon",
-      "display": "Fan Mon Pro",
-      "path": "./fanmon",
-      "location": "workspace",
-      "aliases": [
-        "fanmon",
-        "fan mon pro",
-        "fan mon"
-      ],
-      "domains": [
-        "winforms",
-        "csharp",
-        "desktop",
-        "hardware-monitor"
-      ],
-      "preferred_skills": [
-        "frontend-ui-engineering",
-        "ux",
-        "visual-design"
-      ],
-      "conditional_skills": [],
-      "invariants": [
-        "SMC okuma mantigi korunur (anahtarlar/decode degismez)",
-        "Turbo powercfg GUID'leri degismez",
-        "Temp'teki orijinal kopya silinmez"
-      ],
-      "verify": [
-        "Add-Type derlemesi hatasiz",
-        "text modu calisiyor",
-        "screenshot karsilastirma"
-      ]
-    },
-    {
-      "id": "zipforge",
-      "display": "zipforge",
-      "path": "./zipforge",
-      "location": "workspace",
-      "aliases": [
-        "zipforge"
-      ],
-      "domains": [
-        "webdev"
-      ],
-      "preferred_skills": [
-        "frontend-ui-engineering",
-        "webapp-testing",
-        "e2e-testing"
-      ],
-      "conditional_skills": [],
-      "invariants": [],
-      "verify": []
-    }
-  ],
-  "workspace_index": {
-    "root_children": [
-      "alpha",
-      "AURA",
-      "indicator",
-      "liquid-demo",
-      "MY CV",
-      "MY CV_backup_2026-08-08",
-      "tools",
-      "UPS",
-      "vpniran"
-    ],
-    "desktop_siblings": [
-      "6.0_final_merge",
-      "AÄ° TRADER",
-      "test backup",
-      "UPS",
-      "vpniran",
-      "indicator",
-      "backup",
-      "CV",
-      "FOREXNEWS",
-      "GitHub_Showcase_Repositories",
-      "goodbyedpi-0.2.2",
-      "mi 9 lite",
-      "POKAUPLOAD V32UPSET"
-    ],
-    "note": "inventory ile disk reconcilesi validate_workspace.py tarafindan yapilir"
+ "version": "1",
+ "generated": "2026-08-13",
+ "portability": "ALL paths relative to workspace root. No drive letters, no user home, no fixed user-folder literals.",
+ "resolution_rule": "1) task metninde alias/keyword eslesmesi  2) cwd/discovery  3) new_project route",
+ "profiles": [
+  {
+   "id": "bighero",
+   "display": "BigHero AI Trading System",
+   "path": "./6.0_final_merge",
+   "location": "desktop_sibling",
+   "legacy_path": "../AÄ° TRADER",
+   "aliases": [
+    "bigh",
+    "bighero",
+    "big hero",
+    "bigheroai",
+    "6.0",
+    "6.0_final_merge",
+    "ai trader"
+   ],
+   "domains": [
+    "trading",
+    "mql5",
+    "mt5",
+    "lgbm",
+    "ml",
+    "backtest",
+    "forex",
+    "indicator",
+    "pine",
+    "ea"
+   ],
+   "preferred_skills": [
+    "qc-audit",
+    "mt5-trading",
+    "mql-developer",
+    "backtesting",
+    "risk-management",
+    "alpaca-broker-market-data",
+    "backtest"
+   ],
+   "conditional_skills": [
+    "ai-research-reproduction",
+    "ai-research-explore",
+    "fable-5-1"
+   ],
+   "invariants": [
+    "test disiplini korunur",
+    "evidence/audit kaydi",
+    "anti patch-on-patch",
+    "forward test kayitlari",
+    "canonical = 6.0_final_merge; AÄ° TRADER legacy alias"
+   ],
+   "verify": [
+    "mevcut test suite calistir",
+    "qc-audit gerekliyse calistir"
+   ]
+  },
+  {
+   "id": "aura",
+   "display": "AURA",
+   "path": "./AURA",
+   "location": "workspace",
+   "aliases": [
+    "aura"
+   ],
+   "domains": [
+    "ai-engineering",
+    "llm",
+    "rag",
+    "agent",
+    "context-engineering",
+    "debugging",
+    "terminal",
+    "tui",
+    "python"
+   ],
+   "preferred_skills": [
+    "ai-engineering",
+    "debugging-and-error-recovery",
+    "frontend-ui-engineering",
+    "code-quality"
+   ],
+   "conditional_skills": [],
+   "invariants": [
+    "terminal davranisi korunur",
+    "test suite korunur (335+, Phase-0 dogrulandi)"
+   ],
+   "verify": [
+    "suite calistir"
+   ]
+  },
+  {
+   "id": "indicator",
+   "display": "TradingView Indicator RE",
+   "path": "./indicator",
+   "location": "workspace",
+   "aliases": [
+    "indicator",
+    "indikator",
+    "tradingview",
+    "pine"
+   ],
+   "domains": [
+    "pinescript",
+    "tradingview",
+    "indicator",
+    "reverse-engineering"
+   ],
+   "preferred_skills": [
+    "Pine Script v6",
+    "price-action-uzmani"
+   ],
+   "conditional_skills": [],
+   "invariants": [
+    "REVERSE_ENGINEER.md format: guven puani + kanit satiri",
+    ".agents/.claude eski kopyalar dokunulmaz"
+   ],
+   "verify": []
+  },
+  {
+   "id": "ups",
+   "display": "UPS (analiz goruntuleri)",
+   "path": "./UPS",
+   "location": "workspace",
+   "aliases": [
+    "ups"
+   ],
+   "domains": [
+    "excel",
+    "xlsx",
+    "veri",
+    "analiz",
+    "screenshot"
+   ],
+   "preferred_skills": [
+    "xlsx",
+    "webapp-testing"
+   ],
+   "conditional_skills": [],
+   "invariants": [
+    "UPS goruntuleri icin goruntu destekleyen model gerekir â€” capability discovery"
+   ],
+   "verify": []
+  },
+  {
+   "id": "vpniran",
+   "display": "VPN Iran",
+   "path": "./vpniran",
+   "location": "workspace",
+   "aliases": [
+    "vpn",
+    "iran",
+    "vpniran"
+   ],
+   "domains": [
+    "vpn",
+    "network",
+    "proxy",
+    "security"
+   ],
+   "preferred_skills": [],
+   "conditional_skills": [],
+   "invariants": [
+    "oturumda once kendi AGENTS.md/CLAUDE.md yuklenir",
+    "credential sizdirmaz"
+   ],
+   "verify": []
+  },
+  {
+   "id": "alpha",
+   "display": "Alpha EA Incubator (MQL5 Port + TargetBands %100 Klon)",
+   "path": "./alpha",
+   "location": "workspace",
+   "aliases": [
+    "alpha",
+    "alpha bandsbridge",
+    "targetbands",
+    "royal ea"
+   ],
+   "domains": [
+    "trading",
+    "mql5",
+    "mt5",
+    "ea",
+    "indicator",
+    "backtest",
+    "forex",
+    "gold",
+    "xauusd"
+   ],
+   "preferred_skills": [
+    "mql-developer",
+    "mt5-trading",
+    "backtesting",
+    "risk-management",
+    "backtesting-frameworks"
+   ],
+   "conditional_skills": [
+    "fable-5-1"
+   ],
+   "invariants": [
+    "TEK INDI: TargetBands_fitted.mq5 kanonik — SMA_StDev/Royalindi legacy extracted/legacy'de",
+    "TEK EA: Alpha.mq5 v3.00 kanonik — Process+BandsBridge birlesimi; legacy EA'lar extracted/legacy'de",
+    "GOLD kanonik set: GOLD_M30_fitted*.set (55,0.1,5) — Inp* set'ler legacy",
+    "ALPHA_STRATEGY.md kanonik, README.md ozet, ALPHA_CODEMAP.md harita",
+    "final_verify.py PASSx3 gate --from 2025.07.01 artefakt filtresi zorunlu"
+   ],
+   "verify": [
+    "python alpha/final_verify.py alpha/export_eurusd_m30.csv alpha/export_gbpusd_m30.csv alpha/export_gold_long_m30_long2.csv --from 2025.07.01",
+    "powershell -File alpha/validate_alpha.ps1"
+   ]
+  },
+  {
+   "id": "liquid-demo",
+   "display": "liquid-demo",
+   "path": "./liquid-demo",
+   "location": "workspace",
+   "aliases": [
+    "liquid",
+    "liquid demo"
+   ],
+   "domains": [],
+   "preferred_skills": [],
+   "conditional_skills": [],
+   "invariants": [],
+   "verify": []
+  },
+  {
+   "id": "mycv",
+   "display": "MY CV",
+   "path": "./MY CV",
+   "location": "workspace",
+   "aliases": [
+    "cv",
+    "my cv",
+    "portfolyo",
+    "portfolio"
+   ],
+   "domains": [
+    "cv",
+    "kariyer",
+    "portfolio"
+   ],
+   "preferred_skills": [
+    "docx",
+    "xlsx"
+   ],
+   "conditional_skills": [],
+   "invariants": [],
+   "verify": []
+  },
+  {
+   "id": "tools",
+   "display": "tools (non-project)",
+   "path": "./tools",
+   "location": "workspace",
+   "aliases": [
+    "tools"
+   ],
+   "domains": [
+    "arac"
+   ],
+   "preferred_skills": [],
+   "conditional_skills": [],
+   "invariants": [
+    "fable originalleri â€” DOKUNULMAZ"
+   ],
+   "verify": []
+  },
+  {
+   "id": "test-backup",
+   "display": "test backup (panel QA)",
+   "path": "../test backup",
+   "location": "desktop_sibling",
+   "aliases": [
+    "test backup",
+    "panel qa",
+    "panel"
+   ],
+   "domains": [
+    "panel",
+    "qa",
+    "tradingview"
+   ],
+   "preferred_skills": [
+    "webapp-testing"
+   ],
+   "conditional_skills": [],
+   "invariants": [],
+   "verify": []
+  },
+  {
+   "id": "fanmon",
+   "display": "Fan Mon Pro",
+   "path": "./fanmon",
+   "location": "workspace",
+   "aliases": [
+    "fanmon",
+    "fan mon pro",
+    "fan mon"
+   ],
+   "domains": [
+    "winforms",
+    "csharp",
+    "desktop",
+    "hardware-monitor"
+   ],
+   "preferred_skills": [
+    "frontend-ui-engineering",
+    "ux",
+    "visual-design"
+   ],
+   "conditional_skills": [],
+   "invariants": [
+    "SMC okuma mantigi korunur (anahtarlar/decode degismez)",
+    "Turbo powercfg GUID'leri degismez",
+    "Temp'teki orijinal kopya silinmez"
+   ],
+   "verify": [
+    "Add-Type derlemesi hatasiz",
+    "text modu calisiyor",
+    "screenshot karsilastirma"
+   ]
+  },
+  {
+   "id": "zipforge",
+   "display": "zipforge",
+   "path": "./zipforge",
+   "location": "workspace",
+   "aliases": [
+    "zipforge"
+   ],
+   "domains": [
+    "webdev"
+   ],
+   "preferred_skills": [
+    "frontend-ui-engineering",
+    "webapp-testing",
+    "e2e-testing"
+   ],
+   "conditional_skills": [],
+   "invariants": [],
+   "verify": []
+  },
+  {
+   "id": "eos",
+   "display": "Engineering OS (EOS)",
+   "path": "./engineering-os",
+   "location": "workspace_child",
+   "aliases": [
+    "eos",
+    "engineering os",
+    "engineering-os"
+   ],
+   "domains": [
+    "tooling",
+    "rust",
+    "python",
+    "testing",
+    "quality",
+    "security",
+    "agents"
+   ],
+   "preferred_skills": [
+    "tdd",
+    "code-review",
+    "security-and-hardening",
+    "code-quality",
+    "verification-before-completion",
+    "writing-plans"
+   ],
+   "conditional_skills": [
+    "fable-5-1"
+   ],
+   "invariants": [
+    "gate komutlari sadece GATES.json'dan gelir; ajan komut enjekte edemez",
+    "promotion icin gecerli gate artifact zorunlu",
+    "yazan ajan dogrulayici olamaz (writer != verifier)",
+    "sir/DB/log repoya girmez"
+   ],
+   "verify": [
+    "python .agents/tools/agent_dispatch_test.py",
+    "python .agents/router/route_tests.py",
+    "python .agents/tools/publish.py verify"
+   ]
   }
+ ],
+ "workspace_index": {
+  "root_children": [
+   "alpha",
+   "AURA",
+   "indicator",
+   "liquid-demo",
+   "MY CV",
+   "MY CV_backup_2026-08-08",
+   "tools",
+   "UPS",
+   "vpniran"
+  ],
+  "desktop_siblings": [
+   "6.0_final_merge",
+   "AÄ° TRADER",
+   "test backup",
+   "UPS",
+   "vpniran",
+   "indicator",
+   "backup",
+   "CV",
+   "FOREXNEWS",
+   "GitHub_Showcase_Repositories",
+   "goodbyedpi-0.2.2",
+   "mi 9 lite",
+   "POKAUPLOAD V32UPSET"
+  ],
+  "note": "inventory ile disk reconcilesi validate_workspace.py tarafindan yapilir"
+ }
 }

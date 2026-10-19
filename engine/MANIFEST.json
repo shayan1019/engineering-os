@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated_at": "2026-10-19T15:41:20+00:00",
+  "generated_at": "2026-10-19T15:42:50+00:00",
   "file_count": 38,
-  "total_bytes": 244779,
+  "total_bytes": 244122,
   "policy": {
     "published": [
       "engine source",
@@ -121,8 +121,8 @@
     {
       "source": ".agents/registry/PROJECT_PROFILES.json",
       "path": "engine/registry/PROJECT_PROFILES.json",
-      "sha256": "AB49C10B39F4EBC729BB2225B941ED3618DD311E1CB0DF4BA2D8CCCC2A1A749E",
-      "bytes": 9154
+      "sha256": "D1EF4F7B15BB8D668738860B367ACDA0B8B656C61A80FFFD5556FC9897AB0D11",
+      "bytes": 8497
     },
     {
       "source": ".agents/registry/ROUTING_MAP.json",
