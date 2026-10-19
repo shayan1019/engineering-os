@@ -32,6 +32,7 @@ INCLUDE_FILES = [
 INCLUDE_DIRS = [
     (".agents", {"backups", "__pycache__"}),
     (".codex", {"__pycache__"}),
+    (".opencode", {"__pycache__", "skills", "node_modules", "cache"}),
 ]
 # Project roots are recorded by identity only; project contents are never copied.
 PROJECT_MARKERS = ("AGENTS.md", "CLAUDE.md", "opencode.json", "package.json", "pyproject.toml")

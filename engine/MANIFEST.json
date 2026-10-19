@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated_at": "2026-10-19T15:38:24+00:00",
-  "file_count": 37,
-  "total_bytes": 235651,
+  "generated_at": "2026-10-19T15:41:20+00:00",
+  "file_count": 38,
+  "total_bytes": 244779,
   "policy": {
     "published": [
       "engine source",
@@ -22,6 +22,12 @@
     ]
   },
   "files": [
+    {
+      "source": ".agents/eos/ALPHA_STATUS.md",
+      "path": "docs/alpha-status.md",
+      "sha256": "319597966B527E59C1862A4C54745209DB5E29D54D5B43185CCE83732954950F",
+      "bytes": 8963
+    },
     {
       "source": "AGENTS.md",
       "path": "docs/control-plane.md",
@@ -217,8 +223,8 @@
     {
       "source": ".agents/tools/publish.py",
       "path": "engine/tools/publish.py",
-      "sha256": "9700C0C048B1C22F33657FA07B6104694EFCA9B1E67718B466BEFD03DDB39A94",
-      "bytes": 6448
+      "sha256": "7223F72D8F48CE57E56F31AF23800DD92D5BE2BF4CE6A4B4B200084B758918BC",
+      "bytes": 6542
     },
     {
       "source": ".agents/tools/quality_gate.py",
@@ -241,8 +247,8 @@
     {
       "source": ".agents/tools/snapshot.py",
       "path": "engine/tools/snapshot.py",
-      "sha256": "0362AA9CF1B3C8D0F36466A5138CC751E448DEEC03DCFDE978B428FEAD913A8B",
-      "bytes": 10146
+      "sha256": "D99A55D05EB9A6A81D0206FB7CD2DF44C3307C31AB97EC8982D5168E8BE3E22C",
+      "bytes": 10217
     }
   ]
 }
