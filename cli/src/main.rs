@@ -1075,7 +1075,13 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if raw[0] == "version" || raw[0] == "--version" || raw[0] == "-v" {
-        say!("eos {VERSION}");
+        // The build version and the active installed version can differ after
+        // an update or a rollback; reporting only one of them would hide which
+        // product is actually answering.
+        match paths::load_config().active_version {
+            Some(active) if active != VERSION => say!("eos {VERSION} (active: {active})"),
+            _ => say!("eos {VERSION}"),
+        }
         return ExitCode::SUCCESS;
     }
 

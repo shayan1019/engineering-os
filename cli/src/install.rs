@@ -268,11 +268,21 @@ pub fn install(
     paths::write_json(&version_dir.join("install-manifest.json"), &manifest)?;
 
     // 5. activate
+    //
+    // Everything from here on can fail. A failed activation must not leave a
+    // version directory behind: `eos rollback` would happily switch to a
+    // half-installed version, and a broken version that answers to its own
+    // name is worse than no version at all.
+    let activated = (|| -> Result<InstallReport, String> {
     let mut cfg = paths::load_config();
     let previous = cfg.active_version.clone();
-    // Re-installing the same version is not a rollback target; keeping it would
-    // make `eos rollback` point at the version that is already active.
-    let previous = previous.filter(|p| p != version);
+    // Re-installing the version that is already active is not a rollback
+    // target. The recorded previous version is kept, otherwise a repair of the
+    // active version would silently destroy the way back.
+    let previous = match previous {
+        Some(p) if p == version => cfg.previous_version.clone(),
+        other => other,
+    };
     let runtime_used = if runtime_mode == "bundled" {
         "bundled".to_string()
     } else {
@@ -300,8 +310,7 @@ pub fn install(
     paths::save_config(&cfg)?;
 
     let bin = paths::bin_dir().join(if cfg!(windows) { "eos.exe" } else { "eos" });
-    fs::create_dir_all(paths::bin_dir()).map_err(|e| format!("cannot create bin dir: {e}"))?;
-    fs::copy(&dest_exe, &bin).map_err(|e| format!("cannot publish launcher: {e}"))?;
+    publish_launcher(&dest_exe)?;
 
     // A gate refuses to run without a baseline, and the installed engine is the
     // thing that must not drift. Record its manifest as a baseline so
@@ -319,6 +328,16 @@ pub fn install(
         switched_from: previous,
         total_bytes,
     })
+    })();
+    match activated {
+        Ok(report) => Ok(report),
+        Err(e) => {
+            // The version directory is removed so a failed install cannot
+            // become a rollback target later.
+            let _ = fs::remove_dir_all(&version_dir);
+            Err(e)
+        }
+    }
 }
 
 /// Verify every file in the install manifest. Returns (ok, missing, changed).
@@ -524,11 +543,35 @@ pub fn rollback() -> Result<String, String> {
     let record = cfg.versions.iter().find(|v| v.version == target).unwrap().clone();
     let src = PathBuf::from(&record.dir).join(if cfg!(windows) { "eos.exe" } else { "eos" });
     if src.is_file() {
-        fs::create_dir_all(paths::bin_dir()).map_err(|e| e.to_string())?;
-        fs::copy(&src, paths::bin_dir().join(if cfg!(windows) { "eos.exe" } else { "eos" }))
-            .map_err(|e| e.to_string())?;
+        publish_launcher(&src)?;
     }
     Ok(target)
+}
+
+/// Publish the launcher into the bin directory.
+///
+/// The file being replaced is usually the program that is running right now:
+/// Windows refuses to overwrite a running executable, but it does allow one to
+/// be renamed. The old launcher is moved aside, the new one is put in place,
+/// and the old file is deleted as soon as the operating system releases it.
+fn publish_launcher(src: &Path) -> Result<(), String> {
+    let bin = paths::bin_dir().join(if cfg!(windows) { "eos.exe" } else { "eos" });
+    fs::create_dir_all(paths::bin_dir()).map_err(|e| format!("cannot create bin dir: {e}"))?;
+    let name = bin.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let aside = bin.with_file_name(format!("{name}.removing"));
+    let _ = fs::remove_file(&aside);
+    if bin.is_file() {
+        fs::rename(&bin, &aside)
+            .map_err(|e| format!("cannot replace the launcher {}: {e}", bin.display()))?;
+    }
+    if let Err(e) = fs::copy(src, &bin) {
+        let _ = fs::rename(&aside, &bin); // put the previous launcher back
+        return Err(format!("cannot publish launcher: {e}"));
+    }
+    // The old image may still be mapped by a running process. In that case the
+    // file stays and the next uninstall removes it.
+    let _ = fs::remove_file(&aside);
+    Ok(())
 }
 
 // ---------------------------------------------------------------- PATH edits//
