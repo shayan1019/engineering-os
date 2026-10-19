@@ -1,0 +1,48 @@
+{
+  "version": "1",
+  "generated": "2026-08-13",
+  "roles": [
+    {
+      "id": "explorer",
+      "purpose": "arastirma/kesif: dosya tarama, kanit toplama, kod anlama",
+      "sandbox": "read-only",
+      "when": "kod tabanini anlamak, kaynak bulmak, kanit toplamak",
+      "runtime": { "codex": "codex/agents/explorer.toml", "claude": "subagent", "gemini": "inline veya delegation", "opencode": "inline veya task explore" }
+    },
+    {
+      "id": "architect",
+      "purpose": "tasarim/plan: yaklasim karari, plan dokumani",
+      "sandbox": "read-only",
+      "when": "yaklasim secimi, buyuk degisiklik plani, regresyon riski degerlendirmesi",
+      "runtime": { "codex": "codex/agents/architect.toml", "claude": "subagent", "gemini": "inline", "opencode": "inline" }
+    },
+    {
+      "id": "implementer",
+      "purpose": "uygulama: kod yazma, tek writer",
+      "sandbox": "default",
+      "when": "uygulama evresi; ayni anda tek implementer aktif",
+      "runtime": { "codex": "codex/agents/implementer.toml", "claude": "main agent", "gemini": "main agent", "opencode": "main agent" }
+    },
+    {
+      "id": "reviewer",
+      "purpose": "bagimsiz inceleme: diff/plan/kalite kontrolu; yazar ile ayni kisi olamaz",
+      "sandbox": "read-only",
+      "when": "bitis kontrolu, PR/diff review, kontrat uyumu",
+      "runtime": { "codex": "codex/agents/reviewer.toml", "claude": "subagent", "gemini": "inline ikinci gecis", "opencode": "inline ikinci gecis" }
+    },
+    {
+      "id": "verifier",
+      "purpose": "dogrulama: test/evidence calistirir, PASS karari verir",
+      "sandbox": "read-only",
+      "when": "PASS iddiasi oncesi; yazarin kendi PASS'i gecersiz",
+      "runtime": { "codex": "codex/agents/verifier.toml", "claude": "subagent", "gemini": "inline dogrulama adimi", "opencode": "inline dogrulama adimi" }
+    }
+  ],
+  "rules": [
+    "one-writer: tek merge owner; paralel yazar yasak",
+    "verifier != writer",
+    "bounded delegation: fayda yoksa inline",
+    "human gate: irreversible/parali/credential islemlerde onay",
+    "runtime'da roller yoksa tum sorumluluk ana agent'ta kalir (adim adim inline uygula)"
+  ]
+}

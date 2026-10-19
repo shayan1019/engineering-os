@@ -1,0 +1,75 @@
+{
+  "version": "1",
+  "generated": "2026-08-13",
+  "portability": "canonical config'te absolute path YASAK (kontrat #6)",
+  "runtime_matrix": [
+    {
+      "runtime": "opencode",
+      "status": "active",
+      "skills_path": ".agents/skills/<name>/SKILL.md",
+      "reads_agents_md": true,
+      "verified": "live session 2026-08-13: 210 skill + AGENTS.md yuklendi",
+      "notes": "depth-1 zorunlu; duplicate name'de onceki yuklenir"
+    },
+    {
+      "runtime": "claude",
+      "status": "installed",
+      "skills_path": ".claude/skills/<name>/SKILL.md",
+      "reads_agents_md": true,
+      "imports": "@AGENTS.md (5 seviye)",
+      "verified": "docs only — native .agents/skills probe bootstrap.ps1 ile",
+      "source": "https://code.claude.com/docs/en/skills"
+    },
+    {
+      "runtime": "codex",
+      "status": "not_installed",
+      "skills_path": ".agents/skills/<name>/SKILL.md (repo-scoped)",
+      "reads_agents_md": true,
+      "agents": ".codex/agents/*.toml (name, description, developer_instructions zorunlu)",
+      "limit": "AGENTS.md 32KiB",
+      "verified": "docs only — NOT RUNTIME-VERIFIED",
+      "source": "https://developers.openai.com/codex/concepts/customization"
+    },
+    {
+      "runtime": "gemini",
+      "status": "not_installed",
+      "skills_path": ".agents/skills/<name>/SKILL.md (alias, depth-1 ONLY)",
+      "reads_agents_md": true,
+      "verified": "docs only — NOT RUNTIME-VERIFIED",
+      "source": "https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/using-agent-skills.md"
+    }
+  ],
+  "openai_yaml_schema": {
+    "status": "51 dosya, 11 eski sema migrate edildi (2026-08-13)",
+    "canonical": "interface: {display_name, short_description 25-64, default_prompt, icon_small, icon_large, brand_color} + policy.allow_implicit_invocation (default true) + dependencies.tools",
+    "note": "agents/openai.yaml = UI agent karti, custom Codex agent DEGIL",
+    "source": "https://github.com/openai/skills/blob/main/skills/.system/skill-creator/references/openai_yaml.md"
+  },
+  "literal_translation": [
+    { "pattern": "Skill(\"<name>\")", "rule": "runtime'in native skill mekanizmasini kullan; yoksa skill icerigini inline talimat olarak uygula" },
+    { "pattern": "Task(<...>) / subagent cagrilari", "rule": "runtime'da subagent yoksa: ana akista sirali uygula, bagimsiz adimlari gecici paralele al" },
+    { "pattern": "Read/Write/Edit gibi harness tool adlari", "rule": "kendi harness tool'larini kullan; skill icindeki tool adlari intent olarak okunur" },
+    { "pattern": "/agents list, --agents, claude -p gibi CLI literal'lari", "rule": "calisan runtime'in kendi CLI'sini kullan; literal'i tasima" }
+  ],
+  "stale_references_ledger": [
+    {
+      "file": ".agents/skills/fable5-thinking/SKILL.md",
+      "ref": "fable5sistsemprompt.txt",
+      "class": "stale-path-but-content-exists",
+      "evidence": "tools/fable5sistsemprompt.txt ve references/fable5-full-system-prompt.txt mevcut (236185 B, ayni head)",
+      "action": "none — byte-preserve (kontrat #2)"
+    },
+    {
+      "file": ".agents/skills/fable5-thinking/SKILL.md",
+      "ref": "references/memory-examples.md",
+      "class": "stale-non-functional",
+      "evidence": "dosya hicbir yerde yok; upstream'de yok; runtime etkisi sifir",
+      "action": "none — ledger only"
+    }
+  ],
+  "known_limits": [
+    "gemini: depth-1 only -> broker-api flatten 2026-08-13 ile depth-1'e tasindi",
+    "codex: duplicate name merge edilmez -> flat duplicate'lar kaldirildi",
+    "fable5-full-system-prompt.txt (236KB) Claude-specific: diger runtime'lara ham enjekte EDILMEZ; FABLE_CORE kullanilir"
+  ]
+}

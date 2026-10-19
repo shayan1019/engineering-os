@@ -1,0 +1,4 @@
+# Byte-exact storage. The publish manifest records SHA-256 of the bytes that
+# were copied; any end-of-line normalisation would make a fresh clone fail
+# verification for a reason that has nothing to do with the code.
+* -text

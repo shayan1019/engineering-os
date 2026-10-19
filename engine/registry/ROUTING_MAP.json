@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "generated": "2026-08-24",
+  "purpose": "Çakışan tetikleme kümelerinde TEK birincil skill seçimi. route_task.py bu haritayı uygular; runtime otomatik tetiklemesi için insan rehberi olarak da kullanılır.",
+  "policy": {
+    "resolution": "Küme tetiklendiğinde (görev metni anahtar kelime eşleşmesi VEYA kümenin 2+ üyesi aynı anda aday havuzundaysa) primary listesinde katalogda MEVCUT olan ilk skill kazanır; o da yoksa fallback sırasıyla aynı mantık.",
+    "precedence": [
+      "Proje profilinin preferred_skills listesi her zaman korunur (ROUTING_MAP sadece ÇAKIŞANLARI tekilleştirir, silmez)",
+      "Kullanıcı görevde skill'i AÇIKÇA isimlendirdiyse o kazanır (explicit > map)",
+      "KG/graph tetikleyicileri GRAPH_CORE kurallarına tabidir (bu harita KG kararını VERMEZ)"
+    ],
+    "override_note": "Birincil yerine fallback gerekiyorsa görevde fallback adını geç ('akademik backtest', 'caveman review' gibi)."
+  },
+  "clusters": [
+    {
+      "id": "tdd",
+      "triggers": ["tdd", "test driven", "red green", "red-green", "test yaz", "write tests"],
+      "primary": ["tdd"],
+      "fallback": ["test-driven-development"],
+      "note": "tdd (RED-GREEN-REFACTOR + code-quality entegrasyonu) birincil."
+    },
+    {
+      "id": "debugging",
+      "triggers": ["bug", "hata", "debug", "ayikla", "ayıkla", "çalismiyor", "çalışmıyor", "kirildi", "kırıldı", "exception", "traceback", "duzelt", "düzelt"],
+      "primary": ["debugging-and-error-recovery"],
+      "fallback": ["systematic-debugging", "diagnosing-bugs", "debugging"],
+      "note": "debugging-and-error-recovery proje profilleriyle uyumlu birincil. ML/CUDA/NaN semptomlarinda safe-debug ayri degerlendirilir (bu kumede degil)."
+    },
+    {
+      "id": "code-review",
+      "triggers": ["review", "incele", "gozden gecir", "gözden geçir", "code review", "diff bak", "kontrol et kodu"],
+      "primary": ["review-changes"],
+      "fallback": ["code-review", "code-review-and-quality", "caveman-review"],
+      "note": "review-changes PR/branch baglamini review-loop'a yönlendirir; PR yoksa code-review-and-quality kullanilacak sekilde gorev metninde belirt."
+    },
+    {
+      "id": "planning",
+      "triggers": ["plan hazirla", "plan çıkar", "plan cikar", "implementation plan", "yazılı plan", "yazili plan", "multi-step plan"],
+      "primary": ["writing-plans"],
+      "fallback": ["planning-and-task-breakdown"],
+      "note": "Sadece yazılı implementation plani icin; tek dosyalik islerde plan kumesi tetiklenmez."
+    },
+    {
+      "id": "spec",
+      "triggers": ["spec yaz", "spesifikasyon", "requirements dokumani", "gereksinim dokumani"],
+      "primary": ["spec-driven-development"],
+      "fallback": ["to-spec"],
+      "note": "spec-driven-development sifirdan spec uretir; to-spec mevcut konusmayi sintezler."
+    },
+    {
+      "id": "memory",
+      "triggers": ["hatirla", "hatırla", "hafiza", "hafıza", "memory kaydet", "remember this", "kalici kayit"],
+      "primary": ["persistent-memory"],
+      "fallback": ["memory-management"],
+      "note": "Kalici markdown hafiza icin persistent-memory; memory-management CLAUDE.md calisma hafizasi duzenidir."
+    },
+    {
+      "id": "backtesting",
+      "triggers": ["backtest", "geriye donuk test", "geriye dönük test", "strateji testi"],
+      "primary": ["backtest"],
+      "fallback": ["backtesting", "backtesting-frameworks"],
+      "note": "Hizli sembol/strateji denemesi -> backtest (tek script). Akademik derin arastirma istenirse gorevde 'academic' veya 'backtesting-frameworks' gec. Sistem insasi -> backtesting-frameworks."
+    },
+    {
+      "id": "e2e-web-test",
+      "triggers": ["e2e", "uctan uca", "uçtan uca", "playwright test", "end-to-end test"],
+      "primary": ["e2e-testing"],
+      "fallback": ["web-testing", "webapp-testing"],
+      "note": "Yerel uygulama etkilesim/hata ayiklama -> webapp-testing; yuk/genel web testi -> web-testing."
+    },
+    {
+      "id": "ui-build",
+      "triggers": ["ui yap", "arayuz yap", "arayüz yap", "component olustur", "bilesen olustur", "sayfa yap", "ui tasarim", "ui tasarım"],
+      "primary": ["frontend-ui-engineering"],
+      "fallback": ["ui-ux-pro-max", "ui-styling", "visual-design", "ux", "aesthetic", "frontend-design"],
+      "note": "Insa -> frontend-ui-engineering. Audit/review -> ux. Marka/gorsel yon -> visual-design. Veritabani aramali tasarim karari -> ui-ux-pro-max. Gorev metni audit/brand iceriyorsa fallback acikca secilmeli."
+    },
+    {
+      "id": "skill-authoring",
+      "triggers": ["skill olustur", "skill oluştur", "skill yaz", "yeni skill", "create skill", "skill duzelt"],
+      "primary": ["skill-creator"],
+      "fallback": ["create-skill", "writing-skills", "writing-great-skills"],
+      "note": "skill-creator eval/benchmark ile; hizli scaffold icin create-skill."
+    },
+    {
+      "id": "documentation",
+      "triggers": ["dokumantasyon", "dokümantasyon", "readme yaz", "belge hazirla", "docs yaz"],
+      "primary": ["docs"],
+      "fallback": ["doc-coauthoring", "documentation-and-adrs"],
+      "note": "Karar kaydi/ADR ise documentation-and-adrs acikca gec."
+    },
+    {
+      "id": "invention",
+      "triggers": ["icat", "icat et", "mucit", "invent", "invention", "yeni konsept", "yaratici fikir", "yaratıcı fikir", "yaratıcı çözüm", "original concept"],
+      "primary": ["ai-inventor"],
+      "fallback": ["idea-refine", "ideate"],
+      "note": "Yapilandirilmis icat sureci -> ai-inventor. Ham fikri sikilastirma -> idea-refine; genis beyin firtinasi -> ideate."
+    }
+  ]
+}

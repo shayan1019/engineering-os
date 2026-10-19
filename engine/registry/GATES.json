@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "note": "Executable command authority for the EOS quality gate. An agent can choose a project and suite, never a command. Paths are relative to the workspace root. Suites marked status=NOT_CONFIGURED deliberately have no commands so the gate returns BLOCKED instead of a fake green.",
+  "defaults": {
+    "timeout_seconds": 300
+  },
+  "projects": {
+    "eos": {
+      "path": ".agents/eos/selftest",
+      "suites": {
+        "pass": {
+          "description": "Self-test fixture that must pass. Proves the gate can return PASS.",
+          "commands": [
+            { "name": "pass_case", "cmd": ["python", "pass_case.py"], "required": true }
+          ]
+        },
+        "fail": {
+          "description": "Self-test fixture that must fail. Proves the gate does not rubber-stamp.",
+          "commands": [
+            { "name": "fail_case", "cmd": ["python", "fail_case.py"], "required": true }
+          ]
+        },
+        "mixed": {
+          "description": "One passing and one failing required command. Proves a single failure fails the suite.",
+          "commands": [
+            { "name": "pass_case", "cmd": ["python", "pass_case.py"], "required": true },
+            { "name": "fail_case", "cmd": ["python", "fail_case.py"], "required": true }
+          ]
+        },
+        "optional_failure": {
+          "description": "Passing required command plus a failing optional one. Proves optional steps are recorded without blocking.",
+          "commands": [
+            { "name": "pass_case", "cmd": ["python", "pass_case.py"], "required": true },
+            { "name": "fail_optional", "cmd": ["python", "fail_case.py"], "required": false }
+          ]
+        },
+        "timeout": {
+          "description": "Proves a hung command is killed and reported, not waited on forever.",
+          "timeout_seconds": 2,
+          "commands": [
+            { "name": "slow_case", "cmd": ["python", "slow_case.py"], "required": true }
+          ]
+        },
+        "missing_binary": {
+          "description": "Proves a missing executable is a recorded failure, not an exception.",
+          "commands": [
+            { "name": "missing", "cmd": ["eos-binary-that-does-not-exist", "--version"], "required": true }
+          ]
+        }
+      }
+    },
+    "bighero": {
+      "suites": {
+        "unit": {
+          "status": "NOT_CONFIGURED",
+          "description": "Entry point not yet verified against 6.0_final_merge. Gate must report BLOCKED, not invent a command.",
+          "commands": []
+        }
+      }
+    },
+    "zipforge": {
+      "suites": {
+        "unit": {
+          "status": "NOT_CONFIGURED",
+          "description": "Entry point not yet verified. Gate must report BLOCKED.",
+          "commands": []
+        }
+      }
+    }
+  }
+}

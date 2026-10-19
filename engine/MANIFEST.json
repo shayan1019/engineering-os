@@ -1,0 +1,248 @@
+{
+  "version": 1,
+  "generated_at": "2026-10-19T15:29:48+00:00",
+  "file_count": 37,
+  "total_bytes": 226577,
+  "policy": {
+    "published": [
+      "engine source",
+      "agent definitions",
+      "registry contracts",
+      "control-plane contract"
+    ],
+    "never_published": [
+      "skill bodies",
+      "backups",
+      "evidence",
+      "logs",
+      "databases",
+      ".env",
+      "credentials",
+      "compiled MQL artifacts"
+    ]
+  },
+  "files": [
+    {
+      "source": "AGENTS.md",
+      "path": "docs/control-plane.md",
+      "sha256": "B4FBA93A2B3D1F562D747A1138859FA7C15922E091C1FD0BC3EE1321D6C5BAFA",
+      "bytes": 7734
+    },
+    {
+      "source": ".agents/eos/agents/architect.md",
+      "path": "engine/agents/architect.md",
+      "sha256": "110BEA96668561D1B520B73C93789D5B6C55CD1C7685F802CB18E24E0D47F031",
+      "bytes": 965
+    },
+    {
+      "source": ".agents/eos/agents/chief-architect.md",
+      "path": "engine/agents/chief-architect.md",
+      "sha256": "775BC380EE3C434100DF66B6F484E30A2BE255447969E06FD22B8FD53B28195C",
+      "bytes": 1802
+    },
+    {
+      "source": ".agents/eos/agents/evidence-analyst.md",
+      "path": "engine/agents/evidence-analyst.md",
+      "sha256": "16FD6DFD5513D0CC528BD4B15FCC4571ADE46EDF55D7ABD7C9753ED8CF1258E7",
+      "bytes": 683
+    },
+    {
+      "source": ".agents/eos/agents/implementer.md",
+      "path": "engine/agents/implementer.md",
+      "sha256": "49B511FCB28A8CA656C9CE7D0BC721994970D75AEEFFEEBEF23DDDF50366D5CF",
+      "bytes": 1016
+    },
+    {
+      "source": ".agents/eos/agents/performance-engineer.md",
+      "path": "engine/agents/performance-engineer.md",
+      "sha256": "F62827D5A89534352F29185CA9FDB3DE6BB932E3373D439B9E18DECB6C3E513A",
+      "bytes": 519
+    },
+    {
+      "source": ".agents/eos/agents/reviewer.md",
+      "path": "engine/agents/reviewer.md",
+      "sha256": "1C3D04BEB0E4B5E0D0FA4F66D197195D8C887AECF5F06ADACFC52A75E29B555D",
+      "bytes": 942
+    },
+    {
+      "source": ".agents/eos/agents/security-auditor.md",
+      "path": "engine/agents/security-auditor.md",
+      "sha256": "DF1C7955D7F7EA6872F60B8757798406322B0510316C73C101D0F4FA93EFC3E3",
+      "bytes": 723
+    },
+    {
+      "source": ".agents/eos/agents/test-engineer.md",
+      "path": "engine/agents/test-engineer.md",
+      "sha256": "A754363CC35C1D027531BA246F2791763ABC36D3714E9B8A74B91FE171DE5B98",
+      "bytes": 714
+    },
+    {
+      "source": ".agents/eos/agents/verifier.md",
+      "path": "engine/agents/verifier.md",
+      "sha256": "BFE71F887DA66B6A52ED637E82761D4E7CCF3BB53F6D9A1FA5BD39E3A8FEEBAD",
+      "bytes": 953
+    },
+    {
+      "source": ".agents/core/FABLE_CORE.md",
+      "path": "engine/core/FABLE_CORE.md",
+      "sha256": "DA161E4A8610A2E7DD707F93270BAA7195BF96704A064BABDB774443560F7E58",
+      "bytes": 3726
+    },
+    {
+      "source": ".agents/core/GRAPH_CORE.md",
+      "path": "engine/core/GRAPH_CORE.md",
+      "sha256": "2107F1D2CD097A5DD4454E283483F1F6FE8B1F03FCA78574B2877FE3B3915835",
+      "bytes": 2785
+    },
+    {
+      "source": ".agents/registry/AGENT_REGISTRY.json",
+      "path": "engine/registry/AGENT_REGISTRY.json",
+      "sha256": "2D1CF18ACBBE03552ACDC2E73ECBC88FD38028EDA2FD71EDB109FEBAA734EE8D",
+      "bytes": 2145
+    },
+    {
+      "source": ".agents/registry/COMPATIBILITY.json",
+      "path": "engine/registry/COMPATIBILITY.json",
+      "sha256": "B7E9BF50254028B21D82167E494E86739EF3E0DCD2C394B68DA574CC6B4A511A",
+      "bytes": 3633
+    },
+    {
+      "source": ".agents/registry/GATES.json",
+      "path": "engine/registry/GATES.json",
+      "sha256": "12ECBAD69208D32CA65BC55203872BF500599E5B4E80AA55A0C1A7C1C7D7E6F2",
+      "bytes": 2780
+    },
+    {
+      "source": ".agents/registry/PROJECT_PROFILES.json",
+      "path": "engine/registry/PROJECT_PROFILES.json",
+      "sha256": "AB49C10B39F4EBC729BB2225B941ED3618DD311E1CB0DF4BA2D8CCCC2A1A749E",
+      "bytes": 9154
+    },
+    {
+      "source": ".agents/registry/ROUTING_MAP.json",
+      "path": "engine/registry/ROUTING_MAP.json",
+      "sha256": "F9FFFD5614DD0FEAE1A91EEBB1123FDFB2420D6B3A77B590571B2238B8CE7549",
+      "bytes": 5614
+    },
+    {
+      "source": ".agents/router/new_project.py",
+      "path": "engine/router/new_project.py",
+      "sha256": "8F0FAF981F09DA116E856092988261A82D07E5E686E2E29C66ECAE7E7E505889",
+      "bytes": 4146
+    },
+    {
+      "source": ".agents/router/route_task.py",
+      "path": "engine/router/route_task.py",
+      "sha256": "D79E525843BAE3175E6385999F8A60CC5A47FD55F0079351845DB2BAB44672C9",
+      "bytes": 16514
+    },
+    {
+      "source": ".agents/router/route_tests.py",
+      "path": "engine/router/route_tests.py",
+      "sha256": "78551C4C66A4DFD549BDD8A19DEC786169F7D8B1D5403686F17B2F930119EF87",
+      "bytes": 10747
+    },
+    {
+      "source": ".agents/router/validate_skills.py",
+      "path": "engine/router/validate_skills.py",
+      "sha256": "CB89349B5242848B5A7C7785F60656495223B6CB807ECD3E33AA1AA7B971E20E",
+      "bytes": 19820
+    },
+    {
+      "source": ".agents/router/validate_workspace.py",
+      "path": "engine/router/validate_workspace.py",
+      "sha256": "CD07C2A27ECDCF1681019E5690160CF859836D8B15968D0DA253B9ABC0AB5FCC",
+      "bytes": 6450
+    },
+    {
+      "source": ".agents/eos/selftest/fail_case.py",
+      "path": "engine/selftest/fail_case.py",
+      "sha256": "52224DFCA19004377680FF0B2317065C5110D6E0B4FBBE7BA689FEDEFBB0E82B",
+      "bytes": 429
+    },
+    {
+      "source": ".agents/eos/selftest/pass_case.py",
+      "path": "engine/selftest/pass_case.py",
+      "sha256": "1982394050AE7E6A32C1B096DC03FE9EFA9A802336457A65439AF6298615F373",
+      "bytes": 289
+    },
+    {
+      "source": ".agents/eos/selftest/slow_case.py",
+      "path": "engine/selftest/slow_case.py",
+      "sha256": "924A17A24305A536CE32AE2625EB120EBA2B26B443DFFE64A720FFE73C46512F",
+      "bytes": 287
+    },
+    {
+      "source": ".agents/tools/agent_dispatch_test.py",
+      "path": "engine/tools/agent_dispatch_test.py",
+      "sha256": "05279D65D0B340F2A1D4AADB09942BB80ED4EC6813819A6D4071B9EA2614FEA3",
+      "bytes": 6306
+    },
+    {
+      "source": ".agents/tools/agent_install.py",
+      "path": "engine/tools/agent_install.py",
+      "sha256": "2E10B87CD920DA2A5D75B2726471D6A8FA068128A7BC4F9213CBBF97F1717D57",
+      "bytes": 14594
+    },
+    {
+      "source": ".agents/tools/claude_route_hook.py",
+      "path": "engine/tools/claude_route_hook.py",
+      "sha256": "73886F88E17EC112FCA87692D68DD3098D4F7FFB79384BD75825D200CD425D19",
+      "bytes": 6255
+    },
+    {
+      "source": ".agents/tools/graph_freshness.py",
+      "path": "engine/tools/graph_freshness.py",
+      "sha256": "647EC9F3854831F9EC788A65AC80032B3C66787E40F0C9120FD22528639B19B1",
+      "bytes": 11880
+    },
+    {
+      "source": ".agents/tools/graphify_soak.py",
+      "path": "engine/tools/graphify_soak.py",
+      "sha256": "D26A15DF2EAA428DC234975312D9ECC3CA4447241DFC1A05BFB9B7DB459F1EA5",
+      "bytes": 8544
+    },
+    {
+      "source": ".agents/tools/project_bootstrap.py",
+      "path": "engine/tools/project_bootstrap.py",
+      "sha256": "C0EBB2769987287711596587BA30688974F92A131ED0B6AECA4B127426F7519C",
+      "bytes": 10820
+    },
+    {
+      "source": ".agents/tools/promote.py",
+      "path": "engine/tools/promote.py",
+      "sha256": "9E3DDC9FFAA9A83EDFF049955436ABED936E7B07FCDC9BC32F38D8176304C94F",
+      "bytes": 5878
+    },
+    {
+      "source": ".agents/tools/publish.py",
+      "path": "engine/tools/publish.py",
+      "sha256": "9700C0C048B1C22F33657FA07B6104694EFCA9B1E67718B466BEFD03DDB39A94",
+      "bytes": 6448
+    },
+    {
+      "source": ".agents/tools/quality_gate.py",
+      "path": "engine/tools/quality_gate.py",
+      "sha256": "4BD2DB8D8466DCAE3B6D2377F97832F206D753B5CE35463B458C6C4C2DFE4CB3",
+      "bytes": 14140
+    },
+    {
+      "source": ".agents/tools/secret_scan.py",
+      "path": "engine/tools/secret_scan.py",
+      "sha256": "D6CE95CB4C138E4F8150911489600E9A327E42EA09ED79775704AA6AC82E14C5",
+      "bytes": 7203
+    },
+    {
+      "source": ".agents/tools/skill_index.py",
+      "path": "engine/tools/skill_index.py",
+      "sha256": "5E4C6396D30B89724EFEC71E235CED610AF56D5BF81B482299E37447D6A4447A",
+      "bytes": 19793
+    },
+    {
+      "source": ".agents/tools/snapshot.py",
+      "path": "engine/tools/snapshot.py",
+      "sha256": "0362AA9CF1B3C8D0F36466A5138CC751E448DEEC03DCFDE978B428FEAD913A8B",
+      "bytes": 10146
+    }
+  ]
+}
