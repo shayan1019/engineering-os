@@ -22,10 +22,14 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import quality_gate as qg  # noqa: E402
+import _eos_paths as ep  # noqa: E402
 
 ROOT = qg.ROOT
 WORKSPACE = qg.WORKSPACE
-PROMOTIONS = qg.PROMOTION_EVIDENCE
+# The promotion ledger lives with the evidence, resolved by the same rules as
+# every other artifact. Reading it from quality_gate would break as soon as
+# that module changes its own constant names.
+PROMOTIONS = ep.PROMOTION_EVIDENCE
 SCHEMA = 1
 
 
