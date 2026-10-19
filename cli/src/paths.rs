@@ -291,9 +291,15 @@ pub fn which(name: &str) -> Option<PathBuf> {
         .map(|s| s.to_string())
         .collect();
     for dir in env::split_paths(&path_var) {
-        let direct = dir.join(name);
-        if direct.is_file() {
-            return Some(direct);
+        // On Windows a file without an extension is not executable: npm-style
+        // launchers ship an extensionless POSIX script next to `name.cmd` and
+        // `name.ps1`, and picking the script produced
+        // "not a valid Win32 application" at launch time.
+        if !cfg!(windows) {
+            let direct = dir.join(name);
+            if direct.is_file() {
+                return Some(direct);
+            }
         }
         for ext in &exts {
             let candidate = dir.join(format!("{name}{}", ext.to_lowercase()));

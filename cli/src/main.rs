@@ -682,17 +682,10 @@ fn cmd_open(args: &Args, engine: &Engine) -> i32 {
                 return 0;
             }
             say!("  launching  : {}", bin.display());
-            match Command::new(&bin)
-                .args(&argv)
-                .current_dir(&cwd)
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .status()
-            {
+            match hosts::spawn_host(&bin, &argv, &cwd) {
                 Ok(status) => status.code().unwrap_or(0),
                 Err(e) => {
-                    warn!("BLOCKED: cannot start {}: {e}", bin.display());
+                    warn!("BLOCKED: {e}");
                     1
                 }
             }

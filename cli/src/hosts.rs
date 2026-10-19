@@ -381,6 +381,36 @@ pub fn integrate(
     }
 }
 
+/// Start a host binary and wait for it.
+///
+/// A Windows `.cmd`/`.bat` launcher is a script, not an executable: Windows
+/// refuses to start it directly ("not a valid Win32 application"), so the
+/// command interpreter has to run it. Everything else is started directly.
+pub fn spawn_host(bin: &Path, args: &[String], cwd: &Path) -> Result<std::process::ExitStatus, String> {
+    use std::process::{Command, Stdio};
+    let ext = bin
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mut cmd = if cfg!(windows) && (ext == "cmd" || ext == "bat") {
+        let mut c = Command::new("cmd.exe");
+        c.arg("/C").arg(bin);
+        c
+    } else {
+        Command::new(bin)
+    };
+    for a in args {
+        cmd.arg(a);
+    }
+    cmd.current_dir(cwd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| format!("cannot start {}: {e}", bin.display()))
+}
+
 /// Build the launch command for a host in a project directory.
 pub fn launch_command(
     host: &HostSpec,
