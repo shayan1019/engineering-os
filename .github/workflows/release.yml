@@ -174,18 +174,29 @@ jobs:
       - name: Publish to the private release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
           VERSION: ${{ inputs.version || github.ref_name }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           mkdir -p dist
           find artifacts -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.dmg' -o -name '*.tar.gz' -o -name 'SHA256SUMS.txt' \) -exec cp {} dist/ \;
-          cd dist && sha256sum * > SHA256SUMS.all.txt
+          cd dist && sha256sum * > SHA256SUMS.all.txt && cd ..
           NOTES=$(ls -1 release/RELEASE_NOTES-*.md | sort | tail -1)
           if [ "$DRY_RUN" = "true" ]; then
             echo "dry run: artifacts staged, nothing published"
             ls -l dist
             exit 0
           fi
-          gh release create "$TAG" dist/* --title "EngineeringOS $VERSION" --notes-file "$NOTES" --verify-tag
+          # A tag push publishes to its own tag; a manual dispatch publishes to
+          # the release of the version it was given.
+          if [ -n "${{ github.ref_type }}" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${{ inputs.version }}"
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            echo "assets refreshed on $TAG"
+          else
+            gh release create "$TAG" dist/* --title "EngineeringOS $VERSION" --notes-file "$NOTES" --prerelease
+          fi
