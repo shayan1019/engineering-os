@@ -1,0 +1,191 @@
+name: release
+
+# Release authorization lives here, not in an agent's hands:
+#   * the workflow file itself can only be changed with a token that has the
+#     `workflow` scope (a normal repo token cannot),
+#   * publishing is gated on a real gate artifact produced in this run,
+#   * the job needs an explicit dispatch or a tag, and the runner is
+#     budget-limited by a concurrency group and a hard timeout.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.2.0-alpha"
+        required: true
+      dry_run:
+        description: "Build everything, publish nothing"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: eos-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHON_VERSION: "3.11.17"
+  PYTHON_TAG: "20261013"
+
+jobs:
+  verify:
+    name: verify (real gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build the CLI
+        run: cargo build --release --manifest-path cli/Cargo.toml
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Engine self-test (routing + skill index)
+        run: |
+          python engine/router/route_tests.py
+          python engine/tools/skill_index.py discover
+      - name: Upload the gate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-artifact
+          path: |
+            engine/registry/SKILL_INDEX.json
+          if-no-files-found: error
+
+  build-windows:
+    name: build windows installer
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install NSIS
+        run: choco install nsis -y
+      - name: Build the CLI
+        run: cargo build --release --manifest-path cli/Cargo.toml
+      - name: Stage the bundled interpreter
+        shell: pwsh
+        run: |
+          $url = "https://github.com/astral-sh/python-build-standalone/releases/download/${{ env.PYTHON_TAG }}/cpython-${{ env.PYTHON_VERSION }}+${{ env.PYTHON_TAG }}-x86_64-pc-windows-msvc-install_only.tar.gz"
+          curl.exe -L --fail --silent --show-error -o runtime.tar.gz $url
+          New-Item -ItemType Directory -Path runtime\python | Out-Null
+          tar.exe -xzf runtime.tar.gz -C runtime\python --strip-components 1
+      - name: Build the artifacts
+        shell: pwsh
+        run: ./installer/build.ps1 -Version "${{ inputs.version || '0.2.0-alpha' }}"
+      - name: Upload the Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: installer/out/*
+
+  build-macos:
+    name: build macos dmg
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            arch: x64
+          - runner: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build the CLI
+        run: cargo build --release --manifest-path cli/Cargo.toml
+      - name: Stage the bundled interpreter
+        run: |
+          mkdir -p runtime/python
+          curl -L --fail --silent --show-error -o runtime.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/${{ env.PYTHON_TAG }}/cpython-${{ env.PYTHON_VERSION }}+${{ env.PYTHON_TAG }}-${{ matrix.arch == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}-install_only.tar.gz"
+          tar -xzf runtime.tar.gz -C runtime/python --strip-components 1
+      - name: Assemble the app bundle and DMG
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version || '0.2.0-alpha' }}"
+          APP="EngineeringOS"
+          mkdir -p "stage/$APP.app/Contents/MacOS"
+          cp cli/target/release/eos "stage/$APP.app/Contents/MacOS/eos"
+          cp -R engine "stage/$APP.app/Contents/MacOS/engine"
+          mkdir -p "stage/$APP.app/Contents/MacOS/runtime"
+          cp -R runtime/python "stage/$APP.app/Contents/MacOS/runtime/python"
+          cat > "stage/$APP.app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>$APP</string>
+            <key>CFBundleIdentifier</key><string>com.shayan1019.engineeringos</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleExecutable</key><string>eos</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          hdiutil create -volname "$APP" -srcfolder "stage/$APP.app" -ov -format UDZO "EngineeringOS-$VERSION-${{ matrix.arch }}.dmg"
+          mkdir -p out
+          cp "EngineeringOS-$VERSION-${{ matrix.arch }}.dmg" out/
+          tar -czf "out/EngineeringOS-$VERSION-${{ matrix.arch }}-portable.tar.gz" -C stage "$APP.app"
+          cd out && shasum -a 256 * > SHA256SUMS.txt && cd ..
+      - name: Upload the macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: out/*
+
+  publish:
+    name: publish the release
+    needs: [verify, build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download the gate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gate-artifact
+          path: gate
+      - name: Refuse to publish without a verified gate
+        run: |
+          set -euo pipefail
+          if [ ! -s gate/SKILL_INDEX.json ]; then
+            echo "BLOCKED: no gate artifact. The release is not authorized."
+            exit 1
+          fi
+      - name: Download the build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish to the private release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version || github.ref_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.dmg' -o -name '*.tar.gz' -o -name 'SHA256SUMS.txt' \) -exec cp {} dist/ \;
+          cd dist && sha256sum * > SHA256SUMS.all.txt
+          NOTES=$(ls -1 release/RELEASE_NOTES-*.md | sort | tail -1)
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry run: artifacts staged, nothing published"
+            ls -l dist
+            exit 0
+          fi
+          gh release create "$TAG" dist/* --title "EngineeringOS $VERSION" --notes-file "$NOTES" --verify-tag
