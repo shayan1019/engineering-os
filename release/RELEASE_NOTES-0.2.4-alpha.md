@@ -30,8 +30,8 @@ This release answers the two complaints that came out of real use:
 
 | File | Size | SHA-256 |
 | --- | --- | --- |
-| `EngineeringOS-Setup-0.2.4-alpha.exe` | 28.8 MB | `8bde53e2677e8169bb1216d9deafebc751863df149e612f501c2a8ee9b0ecf84` |
-| `EngineeringOS-0.2.4-alpha-portable.zip` | 50.0 MB | `ee7990872a21f2d1db515bbf07248b0244bb26802080d532fb5fa525e6c434b2` |
+| `EngineeringOS-Setup-0.2.4-alpha.exe` | 28.8 MB | `4d3465a75168b512be68cc3f64e59b23b9879f87e2833b0cfde2b90bcaffc91c` |
+| `EngineeringOS-0.2.4-alpha-portable.zip` | 50.0 MB | `52a3dec2aa45855ba5ff76dfbd6ef3c52629b866bae2c03b569ab9811e4139ce` |
 | `eos-0.2.4-alpha.exe` | 486 KB | `7e6eb66f6d2822ee1cc49682edb22919022153cd7a285d21c1d6f78375b8ce5f` |
 
 `SHA256SUMS.txt` ships with the release; verify with `sha256sum -c SHA256SUMS.txt`.

@@ -81,7 +81,10 @@ Section "EngineeringOS" SecMain
   ; No shell and no redirection: NSIS has no output capture, so the CLI writes
   ; its own log to %USERPROFILE%\.eos\state\install-<version>.log. That file is
   ; the evidence, on the machine, after the installer has exited.
-  ExecWait '"$TEMP\eos-setup.exe" install --source "$INSTDIR\payload" --version ${VERSION} --add-to-path' $0
+  ; --force: an installer must be able to replace the version it is installing.
+  ; Without it a machine that already has the same version refuses the install
+  ; and the user is left with a half-finished setup.
+  ExecWait '"$TEMP\eos-setup.exe" install --source "$INSTDIR\payload" --version ${VERSION} --add-to-path --force' $0
   Delete "$TEMP\eos-setup.exe"
   ${If} $0 != 0
     ; A message box in a silent install blocks forever: there is nobody to
