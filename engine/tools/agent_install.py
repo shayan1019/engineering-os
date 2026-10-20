@@ -45,12 +45,23 @@ DENY_EDIT = [("edit", "*", "deny")]
 DENY_EXTERNAL = [("external_directory", "*", "deny")]
 DENY_WEB = [("webfetch", "*", "deny"), ("websearch", "*", "deny")]
 NO_DELEGATION = [("subagent", "*", "deny")]
-SHELL_ASK = [("shell", "*", "ask")]
+# The `shell: *` rule is the last resort for a command that matches no narrower
+# pattern. `ask` there meant the user was prompted for permission on every
+# ordinary command (`cat`, `ls`, `npm test`, `cargo test`), which is what made
+# Build mode unusable. The read-only roles now refuse the unmatched command
+# outright - deterministic, and no human in the loop - and the single writer
+# may run project commands, with the destructive ones still denied.
 SHELL_DENY = [("shell", "*", "deny")]
+SHELL_ALLOW = [("shell", "*", "allow")]
 
 SAFE_READ = [("shell", "git status*", "allow"), ("shell", "git diff*", "allow"),
-             ("shell", "git log*", "allow"), ("shell", "rg *", "allow"),
-             ("shell", "grep *", "allow"),
+             ("shell", "git log*", "allow"), ("shell", "git show*", "allow"),
+             ("shell", "rg *", "allow"), ("shell", "grep *", "allow"),
+             ("shell", "cat *", "allow"), ("shell", "ls *", "allow"),
+             ("shell", "dir *", "allow"), ("shell", "type *", "allow"),
+             ("shell", "head *", "allow"), ("shell", "tail *", "allow"),
+             ("shell", "wc *", "allow"), ("shell", "find *", "allow"),
+             ("shell", "tree *", "allow"), ("shell", "pwd", "allow"),
              ("shell", "python .agents/tools/skill_index.py *", "allow"),
              ("shell", "python .agents/tools/graph_freshness.py *", "allow")]
 
@@ -69,7 +80,7 @@ AGENTS = {
         "description": "EOS chief architect. Owns task intake, project resolution, specialist selection and the final decision. Coordinates, never writes code and never bypasses the quality gate.",
         "temperature": "0.1",
         "permissions": (DENY_EDIT + DENY_EXTERNAL + [("webfetch", "*", "deny")]
-                        + SHELL_ASK
+                        + SHELL_DENY
                         + [("shell", "git status*", "allow"), ("shell", "git diff*", "allow"),
                            ("shell", "python .agents/tools/skill_index.py *", "allow"),
                            ("shell", "python .agents/tools/route_task.py *", "allow"),
@@ -99,7 +110,7 @@ missing, report BLOCKED with the exact missing piece.
         "steps": 20,
         "description": "Designs approaches, compares alternatives and maps blast radius. Read-only: proposes, never edits.",
         "temperature": "0.2",
-        "permissions": DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_ASK + SAFE_READ + NO_DELEGATION,
+        "permissions": DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_DENY + SAFE_READ + NO_DELEGATION,
         "prompt": """You are the EOS Architect. You are read-only.
 
 Produce: (1) the constraint set that actually applies, (2) at least two viable
@@ -119,7 +130,7 @@ never FULL. Run `graph_freshness.py report` before trusting any graph answer.
         "description": "The single authorised writer. Implements the approved change inside the assigned workspace only.",
         "temperature": "0.1",
         "permissions": ([("edit", "*", "allow")] + DENY_EXTERNAL + DENY_WEB
-                        + SHELL_ASK
+                        + SHELL_ALLOW
                         + [("shell", "python *", "allow"), ("shell", "pytest *", "allow"),
                            ("shell", "git status*", "allow"), ("shell", "git diff*", "allow"),
                            ("shell", "git add *", "deny"), ("shell", "git commit *", "deny"),
@@ -143,7 +154,7 @@ Rules:
         "steps": 20,
         "description": "Adversarial independent reviewer. Tries to break the change; finds missing tests, wrong assumptions and contract drift.",
         "temperature": "0.1",
-        "permissions": DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_ASK + SAFE_READ + NO_DELEGATION,
+        "permissions": DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_DENY + SAFE_READ + NO_DELEGATION,
         "prompt": """You are the EOS Reviewer. You are read-only and adversarial.
 
 Your job is to refute the change, not to approve it. Check:
@@ -184,7 +195,7 @@ Report exactly: verdict, artifact path, commands executed, failures, rollback pa
         "steps": 20,
         "description": "Security, secrets, dependencies and permission-boundary audit.",
         "temperature": "0.1",
-        "permissions": (DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_ASK + SAFE_READ
+        "permissions": (DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_DENY + SAFE_READ
                         + [("shell", "python .agents/tools/secret_scan.py *", "allow")]
                         + NO_DELEGATION),
         "prompt": """You are the EOS Security Auditor. You are read-only.
@@ -204,7 +215,7 @@ report the capability as MISSING rather than assuming the area is clean.
         "temperature": "0.1",
         "permissions": ([("edit", "*", "deny"), ("edit", "tests/**", "allow"),
                          ("edit", "test/**", "allow"), ("edit", "**/tests/**", "allow")]
-                        + DENY_EXTERNAL + DENY_WEB + SHELL_ASK
+                        + DENY_EXTERNAL + DENY_WEB + SHELL_DENY
                         + [("shell", "pytest *", "allow"), ("shell", "python -m pytest *", "allow")]
                         + NO_DELEGATION),
         "prompt": """You are the EOS Test Engineer. You may write only inside test directories.
@@ -222,7 +233,7 @@ test fail first, say so: the test may be proving nothing.
         "steps": 20,
         "description": "Profiling and benchmark comparison. Measured numbers only.",
         "temperature": "0.1",
-        "permissions": (DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_ASK
+        "permissions": (DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_DENY
                         + [("shell", "pytest *", "allow")] + NO_DELEGATION),
         "prompt": """You are the EOS Performance Engineer. You are read-only.
 
@@ -236,7 +247,7 @@ different workload. If a benchmark cannot be reproduced, report INCONCLUSIVE.
         "steps": 20,
         "description": "Data provenance and claim verification. Decides whether evidence supports the claim.",
         "temperature": "0.0",
-        "permissions": DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_ASK + SAFE_READ + NO_DELEGATION,
+        "permissions": DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_DENY + SAFE_READ + NO_DELEGATION,
         "prompt": """You are the EOS Evidence Analyst. You are read-only.
 
 For every claim produce: source of truth, query or method, row counts, exclusions, and the
@@ -298,7 +309,12 @@ def install(target: str, force: bool) -> int:
     dest = GLOBAL_TARGET if target == "global" else PROJECT_TARGET
     os.makedirs(dest, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_dir = os.path.join(dest, f"_eos-backup-{stamp}") if target == "global" else None
+    # The backup must NOT live inside the agents directory: the host scans that
+    # directory recursively and would register the backup copies as live agents,
+    # which is how the old permission contracts kept coming back.
+    backup_dir = None
+    if target == "global":
+        backup_dir = os.path.join(os.path.dirname(GLOBAL_TARGET), f"_eos-backup-{stamp}")
     written, conflicts, backed_up = [], [], []
 
     for name, spec in AGENTS.items():

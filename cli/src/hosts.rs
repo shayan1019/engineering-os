@@ -332,6 +332,11 @@ pub fn integrate(
             "PLANNED",
             "9 agent files via engine/tools/agent_install.py".into(),
         );
+        push(
+            project.join(".opencode").join("plugin"),
+            "PLANNED",
+            "activation plugin via engine/tools/plugin_install.py (adds context, no permissions)".into(),
+        );
         return Integration {
             host: host.id.to_string(),
             status: "DONE".into(),
@@ -365,6 +370,45 @@ pub fn integrate(
                 if ok { "WRITTEN" } else { "FAILED" },
                 if ok { last } else { err.trim().to_string() },
             );
+            // The activation plugin is what makes EOS intelligence automatic:
+            // the host asks EOS for the context on every session, so the user
+            // never has to pick an orchestrator by hand. It is additive - it
+            // adds no tool and no permission.
+            let plugin = engine.join("tools").join("plugin_install.py");
+            if plugin.is_file() {
+                let out = Command::new(python)
+                    .arg(&plugin)
+                    .arg("install")
+                    .arg("--project")
+                    .arg(project)
+                    .arg("--host")
+                    .arg(host.id)
+                    .current_dir(engine)
+                    .output();
+                match out {
+                    Ok(o) => {
+                        let ptext = String::from_utf8_lossy(&o.stdout).to_string();
+                        let perr = String::from_utf8_lossy(&o.stderr).to_string();
+                        let plast = ptext
+                            .lines()
+                            .rev()
+                            .find(|l| !l.trim().is_empty())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        push(
+                            project.join(".opencode").join("plugin"),
+                            if o.status.success() { "WRITTEN" } else { "FAILED" },
+                            if o.status.success() { plast } else { perr.trim().to_string() },
+                        );
+                    }
+                    Err(e) => push(
+                        project.join(".opencode").join("plugin"),
+                        "FAILED",
+                        format!("cannot run plugin installer: {e}"),
+                    ),
+                }
+            }
             Integration {
                 host: host.id.to_string(),
                 status: if ok { "DONE".into() } else { "FAILED".into() },

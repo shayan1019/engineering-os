@@ -510,7 +510,62 @@ fn doctor_product(engine: &Engine, ws: &Path, as_json: bool) -> i32 {
         failures += 1;
     }
 
-    // 7. install location is independent of user data
+    // 7. the host integration is complete: the agent contracts and the
+    //    activation plugin that makes EOS automatic in a native session.
+    let dispatch = engine.root.join("tools").join("agent_dispatch_test.py");
+    let plugin = engine.root.join("tools").join("plugin_install.py");
+    let plugin_file = ws.join(".opencode").join("plugin").join("eos-activation.js");
+    if dispatch.is_file() {
+        let out = Command::new(&engine.python)
+            .arg(&dispatch)
+            .current_dir(ws)
+            .env("EOS_WORKSPACE", ws)
+            .env("EOS_HOME", paths::eos_home())
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                let last = String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                checks.push(("PASS".into(), "agent contracts".into(), last));
+            }
+            Ok(o) => {
+                let last = String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("the host did not accept the EOS agent contracts")
+                    .trim()
+                    .to_string();
+                checks.push(("FAIL".into(), "agent contracts".into(), last));
+                failures += 1;
+            }
+            Err(e) => {
+                checks.push(("WARN".into(), "agent contracts".into(), format!("cannot verify: {e}")));
+            }
+        }
+    }
+    if plugin.is_file() {
+        let current = plugin_file.is_file()
+            && fs::read_to_string(&plugin_file)
+                .map(|a| fs::read_to_string(engine.root.join("host-plugins").join("opencode").join("eos-activation.js")).map(|b| a == b).unwrap_or(false))
+                .unwrap_or(false);
+        checks.push((
+            if current { "PASS" } else { "WARN" }.into(),
+            "activation plugin".into(),
+            if current {
+                format!("automatic EOS activation is installed in {}", ws.display())
+            } else {
+                format!("not installed or out of date in {}; run: eos open {}", ws.display(), ws.display())
+            },
+        ));
+    }
+
+    // 8. install location is independent of user data
     let install_dir = cfg
         .versions
         .iter()
@@ -1119,6 +1174,19 @@ fn main() -> ExitCode {
                     }
                 }
                 "open" => cmd_open(&args, &engine),
+                "activate" => {
+                    // The activation context for a host session: project, rules,
+                    // relevant skills, the smallest competent specialist set and
+                    // the gate that will judge the result. This is what a host
+                    // plugin injects, so the user never has to pick a mode or an
+                    // orchestrator by hand.
+                    if forwarded.iter().any(|a| a == "--task" || a.starts_with("--task=")) {
+                        run_script(&engine, "eos_activate.py", false, &forwarded, &ws)
+                    } else {
+                        warn!("usage: eos activate --task \"<task>\" [--project <id>] [--json]");
+                        2
+                    }
+                }
                 "skills" => match forwarded.first().map(String::as_str) {
                     Some(cmd @ ("discover" | "doctor" | "resolve" | "explain")) => {
                         let _ = cmd;

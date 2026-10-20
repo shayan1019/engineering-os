@@ -58,7 +58,8 @@
           "timeout_seconds": 300,
           "commands": [
             { "name": "skill_index_discover", "cmd": ["python", "tools/skill_index.py", "discover"], "required": true },
-            { "name": "router_tests", "cmd": ["python", "router/route_tests.py"], "required": true }
+            { "name": "router_tests", "cmd": ["python", "router/route_tests.py"], "required": true },
+            { "name": "plugin_test", "cmd": ["node", "%ENGINE%/host-plugins/opencode/eos-activation.test.mjs"], "required": true }
           ]
         },
         "security": {

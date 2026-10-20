@@ -20,7 +20,7 @@ permissions:
     effect: deny
   - action: shell
     resource: "*"
-    effect: ask
+    effect: deny
   - action: shell
     resource: "git status*"
     effect: allow
@@ -31,10 +31,43 @@ permissions:
     resource: "git log*"
     effect: allow
   - action: shell
+    resource: "git show*"
+    effect: allow
+  - action: shell
     resource: "rg *"
     effect: allow
   - action: shell
     resource: "grep *"
+    effect: allow
+  - action: shell
+    resource: "cat *"
+    effect: allow
+  - action: shell
+    resource: "ls *"
+    effect: allow
+  - action: shell
+    resource: "dir *"
+    effect: allow
+  - action: shell
+    resource: "type *"
+    effect: allow
+  - action: shell
+    resource: "head *"
+    effect: allow
+  - action: shell
+    resource: "tail *"
+    effect: allow
+  - action: shell
+    resource: "wc *"
+    effect: allow
+  - action: shell
+    resource: "find *"
+    effect: allow
+  - action: shell
+    resource: "tree *"
+    effect: allow
+  - action: shell
+    resource: "pwd"
     effect: allow
   - action: shell
     resource: "python .agents/tools/skill_index.py *"

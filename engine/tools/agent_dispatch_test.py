@@ -26,16 +26,21 @@ import _eos_paths as ep  # noqa: E402
 ROOT = ep.resolve_workspace()
 
 EXPECTED = {
-    "chief-architect": {"mode": "primary", "edit": "deny"},
-    "architect": {"mode": "subagent", "edit": "deny"},
-    "implementer": {"mode": "subagent", "edit": "allow"},
-    "reviewer": {"mode": "subagent", "edit": "deny"},
-    "verifier": {"mode": "subagent", "edit": "deny"},
-    "security-auditor": {"mode": "subagent", "edit": "deny"},
-    "test-engineer": {"mode": "subagent", "edit": "glob"},
-    "performance-engineer": {"mode": "subagent", "edit": "deny"},
-    "evidence-analyst": {"mode": "subagent", "edit": "deny"},
+    "chief-architect": {"mode": "primary", "edit": "deny", "shell": "deny"},
+    "architect": {"mode": "subagent", "edit": "deny", "shell": "deny"},
+    "implementer": {"mode": "subagent", "edit": "allow", "shell": "allow"},
+    "reviewer": {"mode": "subagent", "edit": "deny", "shell": "deny"},
+    "verifier": {"mode": "subagent", "edit": "deny", "shell": "deny"},
+    "security-auditor": {"mode": "subagent", "edit": "deny", "shell": "deny"},
+    "test-engineer": {"mode": "subagent", "edit": "glob", "shell": "deny"},
+    "performance-engineer": {"mode": "subagent", "edit": "deny", "shell": "deny"},
+    "evidence-analyst": {"mode": "subagent", "edit": "deny", "shell": "deny"},
 }
+
+# The implementer is the only role that may run project commands, and the
+# commands that would change the repository's history or destroy work stay
+# denied even there.
+WRITER_DENIES = ("git add *", "git commit *", "git push *", "rm *")
 
 
 def effective(agent: dict, action: str):
@@ -65,6 +70,21 @@ def edit_mode(agent: dict) -> str:
     if "allow" in returns:
         return "allow"
     return "unset"
+
+
+def shell_fallback(agent: dict):
+    """The effect of the `shell: *` rule.
+
+    This is the rule a command lands on when it matches no narrower pattern.
+    `ask` there means the user is prompted for every ordinary command, which
+    is what made Build mode unusable; the contract is deny for the read-only
+    roles and allow for the single writer.
+    """
+    effect = None
+    for rule in agent.get("permissions", []):
+        if rule.get("action") == "shell" and rule.get("resource") == "*":
+            effect = rule.get("effect")
+    return effect
 
 
 def task_allowlist(agent: dict):
@@ -114,6 +134,22 @@ def main() -> int:
         if got_edit != want["edit"]:
             findings.append({"severity": "ERROR", "agent": name,
                              "detail": f"edit boundary {got_edit!r} != expected {want['edit']!r}"})
+        got_shell = shell_fallback(agent)
+        if got_shell != want["shell"]:
+            findings.append({"severity": "ERROR", "agent": name,
+                             "detail": f"shell fallback {got_shell!r} != expected {want['shell']!r}"})
+        if got_shell == "ask":
+            findings.append({"severity": "ERROR", "agent": name,
+                             "detail": "shell '*' is 'ask': every unmatched command prompts the user"})
+
+    implementer = by_id.get("implementer")
+    if implementer:
+        denied = {r.get("resource") for r in implementer.get("permissions", [])
+                  if r.get("action") == "shell" and r.get("effect") == "deny"}
+        for needed in WRITER_DENIES:
+            if needed not in denied:
+                findings.append({"severity": "ERROR", "agent": "implementer",
+                                 "detail": f"the writer may run '{needed}'; it must stay denied"})
 
     chief = by_id.get("chief-architect")
     if chief:

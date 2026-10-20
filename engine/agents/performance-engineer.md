@@ -20,7 +20,7 @@ permissions:
     effect: deny
   - action: shell
     resource: "*"
-    effect: ask
+    effect: deny
   - action: shell
     resource: "pytest *"
     effect: allow

@@ -28,6 +28,8 @@ jobs:
         run: python engine/tools/skill_index.py discover
       - name: Skill doctor
         run: python engine/tools/skill_index.py doctor || true
+      - name: Activation plugin test (automatic EOS activation)
+        run: node engine/host-plugins/opencode/eos-activation.test.mjs
       - name: Secret scan over the engine
         run: python engine/tools/secret_scan.py engine --include-tests
 
