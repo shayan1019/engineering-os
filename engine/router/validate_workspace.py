@@ -144,7 +144,10 @@ def main():
     rep = skills_scan(root, generate=False)
     if not rep["pass"]:
         errors.append(f"skills audit FAIL: {len(rep['errors'])} errors (run validate_skills.py)")
-    warnings.extend([f"skills: {w}" for w in rep["warnings"][:20]])
+    # Show every warning. The previous [:20] cap hid the tail of the list, so a
+    # run that reported "20 warnings" could never show whether the 21st was a
+    # different, unfixed problem.
+    warnings.extend([f"skills: {w}" for w in rep["warnings"]])
 
     out = {"root": root, "errors": errors, "warnings": warnings, "pass": len(errors) == 0}
     if "--json" in sys.argv:

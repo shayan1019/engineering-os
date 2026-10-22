@@ -1188,13 +1188,13 @@ fn main() -> ExitCode {
                     }
                 }
                 "skills" => match forwarded.first().map(String::as_str) {
-                    Some(cmd @ ("discover" | "doctor" | "resolve" | "explain")) => {
+                    Some(cmd @ ("discover" | "doctor" | "resolve" | "explain" | "verify")) => {
                         let _ = cmd;
                         let argv = skills_argv(&forwarded);
                         run_script(&engine, "skill_index.py", false, &argv, &ws)
                     }
                     _ => {
-                        warn!("usage: eos skills discover|resolve|explain|doctor");
+                        warn!("usage: eos skills discover|resolve|explain|doctor|verify");
                         2
                     }
                 },

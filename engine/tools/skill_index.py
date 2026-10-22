@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 
@@ -73,20 +74,60 @@ def display_path(path: str) -> str:
         return "~/" + os.path.relpath(absolute, HOME).replace(os.sep, "/")
     return "<external>/" + os.path.basename(absolute)
 
+
+def entry_abs(stored: str) -> str:
+    """Invert display_path() for the forms this process can resolve.
+
+    The index deliberately stores portable paths, so anything that needs the
+    real file has to invert that form. Joining the engine root to a
+    workspace-relative path (the previous behaviour in doctor) silently read
+    the wrong file whenever the two roots differed.
+    """
+    if stored.startswith("<engine>/"):
+        return os.path.join(ep.ENGINE_ROOT, stored[len("<engine>/"):])
+    if stored.startswith("~/"):
+        return os.path.join(HOME, stored[2:])
+    if stored.startswith("<external>/"):
+        return ""
+    return os.path.join(WORKSPACE, stored)
+
 # (source_id, path, scope)
 # Project roots belong to the project being operated on, never to the engine: an
 # installed EOS must discover the skills of whatever workspace it is pointed at.
 # `<engine>/skills` carries the skills EOS itself ships.
-SOURCES = [
+def _dedupe_sources(candidates):
+    """Drop a source whose directory an earlier source already covers.
+
+    `.claude/skills` is a junction onto `.agents/skills`, and in the workspace
+    layout ENGINE_ROOT *is* `.agents`, so the same 210 skills were indexed
+    three times (633 entries). Every skill then collided with itself, which
+    applied the name-collision penalty to the whole library and made the trust
+    label meaningless. `project-agents` is listed first because it is the
+    canonical source (AGENTS.md section 2); an adapter mirror must not win a
+    tie by discovery order.
+    """
+    out, seen = [], set()
+    for entry in candidates:
+        _source_id, path, _scope = entry
+        if os.path.isdir(path):
+            real = os.path.normcase(os.path.realpath(path))
+            if real in seen:
+                continue
+            seen.add(real)
+        out.append(entry)
+    return out
+
+
+SOURCES = _dedupe_sources([
+    ("project-agents", os.path.join(WORKSPACE, ".agents", "skills"), "project"),
     ("project-opencode", os.path.join(WORKSPACE, ".opencode", "skills"), "project"),
     ("project-claude", os.path.join(WORKSPACE, ".claude", "skills"), "project"),
-    ("project-agents", os.path.join(WORKSPACE, ".agents", "skills"), "project"),
+    ("global-agents", os.path.join(HOME, ".agents", "skills"), "global"),
     ("global-opencode", os.path.join(HOME, ".config", "opencode", "skills"), "global"),
     ("global-claude", os.path.join(HOME, ".claude", "skills"), "global"),
-    ("global-agents", os.path.join(HOME, ".agents", "skills"), "global"),
-]
+])
 if os.path.isdir(os.path.join(ep.ENGINE_ROOT, "skills")):
-    SOURCES.append(("engine", os.path.join(ep.ENGINE_ROOT, "skills"), "engine"))
+    SOURCES = _dedupe_sources(SOURCES + [("engine", os.path.join(ep.ENGINE_ROOT, "skills"), "engine")])
 
 # Canonical source is .agents/skills (single authority per AGENTS.md section 2).
 # .claude/skills is a generated mirror; .opencode/skills is a project-local override.
@@ -160,6 +201,11 @@ def catalog_domains():
 def collect_entries():
     entries = []
     known = catalog_domains()
+    # One file, one entry. A directory-level check is not enough: ~/.claude/skills
+    # can hold a per-skill link onto ~/.agents/skills, so two distinct source
+    # roots still resolve to the same SKILL.md. Left alone, that file collided
+    # with itself and the same 210-skill library was reported as 423 collisions.
+    seen_files = set()
     for source_id, base, scope in SOURCES:
         if not os.path.isdir(base):
             continue
@@ -168,6 +214,10 @@ def collect_entries():
             skill_md = os.path.join(skill_dir, "SKILL.md")
             if not os.path.isfile(skill_md):
                 continue
+            real_file = os.path.normcase(os.path.realpath(skill_md))
+            if real_file in seen_files:
+                continue
+            seen_files.add(real_file)
             try:
                 text = open(skill_md, encoding="utf-8", errors="replace").read()
             except OSError:
@@ -203,9 +253,43 @@ def collect_entries():
     return entries
 
 
+def verified_record(skill_dir: str):
+    """(ok, reason) for a skill's `.eos-verified` badge.
+
+    The badge used to be checked with `isfile` alone, so an empty file earned
+    the +2.0 routing bonus that LOCAL_VERIFIED carries. It must now be a JSON
+    record whose sha256 matches the SKILL.md on disk: editing the skill
+    invalidates the badge instead of inheriting it, and a badge that records no
+    check is a claim without evidence.
+    """
+    marker = os.path.join(skill_dir, ".eos-verified")
+    if not os.path.isfile(marker):
+        return False, "no .eos-verified marker"
+    try:
+        with open(marker, encoding="utf-8-sig") as fh:
+            record = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return False, f"unreadable .eos-verified marker: {exc}"
+    if not isinstance(record, dict):
+        return False, ".eos-verified is not a JSON object"
+    checks = record.get("checks")
+    if not isinstance(checks, list) or not checks:
+        return False, ".eos-verified records no check"
+    skill_md = os.path.join(skill_dir, "SKILL.md")
+    if not os.path.isfile(skill_md):
+        return False, "no SKILL.md to verify"
+    if str(record.get("sha256", "")).upper() != sha256_file(skill_md):
+        return False, ".eos-verified sha256 does not match SKILL.md"
+    named = str(record.get("skill") or "")
+    if named and named != os.path.basename(os.path.normpath(skill_dir)):
+        return False, f".eos-verified names '{named}', not this directory"
+    return True, "verified: " + ", ".join(str(c) for c in checks)
+
+
 def trust_of(source_id: str, skill_dir: str) -> str:
     if source_id == "project-agents":
-        return "LOCAL_VERIFIED" if os.path.isfile(os.path.join(skill_dir, ".eos-verified")) else "LOCAL_UNREVIEWED"
+        ok, _ = verified_record(skill_dir)
+        return "LOCAL_VERIFIED" if ok else "LOCAL_UNREVIEWED"
     if source_id.startswith("project"):
         return "LOCAL_UNREVIEWED"
     return "GLOBAL_UNREVIEWED"
@@ -429,12 +513,30 @@ def diagnose():
                              "detail": f"{len(e['description'])} chars (must be 1-1024)"})
         if not e["description"]:
             findings.append({"severity": "ERROR", "kind": "MISSING_DESCRIPTION", "skill": e["name"], "detail": ""})
-        skill_md = os.path.join(ROOT, e["path"])
-        if os.path.isfile(skill_md):
+        skill_md = entry_abs(e["path"])
+        if e["source"] == "project-agents" and skill_md:
+            # A badge that no longer matches its file is worse than no badge:
+            # it would keep earning verified trust after the skill changed.
+            marker = os.path.join(os.path.dirname(skill_md), ".eos-verified")
+            if os.path.isfile(marker):
+                ok, reason = verified_record(os.path.dirname(skill_md))
+                if not ok:
+                    findings.append({"severity": "WARN", "kind": "TRUST_MARKER_STALE",
+                                     "skill": e["name"], "detail": reason})
+        if skill_md and os.path.isfile(skill_md):
             text = open(skill_md, encoding="utf-8", errors="replace").read()
+            # A snippet that *documents* link syntax is not a link, and a
+            # template placeholder such as `./src/<pkg>/README.md` is never
+            # meant to resolve. Scanning raw text reported three such
+            # non-links as broken, which is how a warning becomes noise.
+            text = re.sub(r"```.*?```", "", text, flags=re.S)
+            text = re.sub(r"~~~.*?~~~", "", text, flags=re.S)
+            text = re.sub(r"`[^`\n]*`", "", text)
             for m in re.finditer(r"\[[^\]]*\]\(([^)#]+)\)", text):
                 target = m.group(1).strip()
-                if target.startswith(("http://", "https://", "mailto:", "#")):
+                if target.startswith(("http://", "https://", "mailto:", "#", "<")):
+                    continue
+                if any(ch in target for ch in "<>{}"):
                     continue
                 resolved = os.path.normpath(os.path.join(os.path.dirname(skill_md), target))
                 if not os.path.exists(resolved):
@@ -444,6 +546,56 @@ def diagnose():
             findings.append({"severity": "WARN", "kind": "ACCIDENTAL_COLLISION", "skill": c["name"],
                              "detail": f"{c['winner']} vs {c['shadowed']}"})
     return index, findings
+
+
+def verify_skill(name: str, extra_checks) -> int:
+    """Pin a skill's current bytes as verified, with the evidence it rests on.
+
+    Trust is worth +2.0 in routing, so the badge cannot be a filename. The
+    skill's own contract check runs first when it ships one; a failing check
+    writes nothing. `--check` records any verification EOS cannot run itself.
+    """
+    entry = None
+    for e in collect_entries():
+        if e["name"] == name and e["source"] == "project-agents":
+            entry = e
+            break
+    if entry is None:
+        print(f"BLOCKED: '{name}' is not a project skill under .agents/skills")
+        return 2
+    skill_md = entry_abs(entry["path"])
+    skill_dir = os.path.dirname(skill_md)
+    checks = []
+    contract = os.path.join(skill_dir, "skill.contract.yaml")
+    if os.path.isfile(contract):
+        cmd = [sys.executable, os.path.join(ROOT, "router", "validate_skills.py"),
+               f"--check-contract={os.path.relpath(contract, WORKSPACE)}",
+               f"--root={WORKSPACE}"]
+        proc = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", cwd=WORKSPACE)
+        if proc.returncode != 0:
+            print("BLOCKED: the skill's own contract check failed; nothing was written")
+            print((proc.stdout or "").strip())
+            return 1
+        checks.append("skill.contract.yaml")
+    checks.extend(extra_checks or [])
+    if not checks:
+        print("BLOCKED: nothing was checked; a badge with an empty check list is a claim without evidence")
+        print("         pass --check <name> to record what this badge attests")
+        return 2
+    digest = sha256_file(skill_md)
+    record = {
+        "schema": 1,
+        "skill": name,
+        "sha256": digest,
+        "verified_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "checks": checks,
+    }
+    with open(os.path.join(skill_dir, ".eos-verified"), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(record, fh, indent=1)
+        fh.write("\n")
+    build_index()
+    print(f"verified {name}: {digest} checks={', '.join(checks)}")
+    return 0
 
 
 def main() -> int:
@@ -456,8 +608,13 @@ def main() -> int:
     x = sub.add_parser("explain"); x.add_argument("--task", required=True); x.add_argument("--project", default="")
     x.add_argument("-k", type=int, default=3)
     q = sub.add_parser("doctor"); q.add_argument("--json", action="store_true")
+    v = sub.add_parser("verify"); v.add_argument("name")
+    v.add_argument("--check", action="append", default=[],
+                   help="name of a check this badge attests (repeatable)")
 
     args = ap.parse_args()
+    if args.cmd == "verify":
+        return verify_skill(args.name, args.check)
     if args.cmd == "discover":
         idx = build_index()
         if args.json:

@@ -15,6 +15,7 @@ Standalone contract check (no full scan): `--check-contract=<path-to-skill.contr
 validates that one file in isolation and exits 1 on any error — used by route_tests.py's
 malformed-contract regression case.
 """
+import hashlib
 import json
 import os
 import re
@@ -249,14 +250,52 @@ def extract_domains(text, name):
     return out
 
 
+# Sources that are deliberate internal mirrors of the canonical library. They
+# are validated for their own integrity, but a name they share with the
+# canonical source is expected rather than a duplicate finding.
+MIRROR_SOURCES = {"engine-agents"}
+
+
+def same_bytes(a, b):
+    """True when two files hold identical bytes.
+
+    A byte-identical copy sitting elsewhere on the discovery path is the same
+    skill found twice, not a second definition of it. Any real drift changes
+    the hash and the shadowing warning still fires.
+    """
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            return hashlib.sha256(fa.read()).digest() == hashlib.sha256(fb.read()).digest()
+    except OSError:
+        return False
+
+
 def discover_sources(root):
-    """Skill kaynakları öncelik sırasıyla. (source_id, skills_root, canonical)"""
-    return [
+    """Skill kaynakları öncelik sırasıyla. (source_id, skills_root, canonical)
+
+    A source that resolves to the same physical directory as an earlier source
+    is an adapter, not an independent copy -- `.claude/skills` is a junction
+    onto `.agents/skills`. Scanning it again reported all 210 skills as
+    duplicates and buried the findings that mattered.
+    """
+    declared = [
         ("workspace-agents", os.path.join(root, ".agents", "skills"), True),
         ("workspace-claude", os.path.join(root, ".claude", "skills"), False),
         ("global-agents", os.path.join(os.path.expanduser("~"), ".agents", "skills"), False),
-    ] + ([("engine-agents", os.path.join(_ENGINE_ROOT, "skills"), False)]
-         if os.path.isdir(os.path.join(_ENGINE_ROOT, "skills")) else [])
+    ]
+    if os.path.isdir(os.path.join(_ENGINE_ROOT, "skills")):
+        declared.append(("engine-agents", os.path.join(_ENGINE_ROOT, "skills"), False))
+
+    sources = []
+    seen_real = set()
+    for source_id, skills_root, canonical in declared:
+        if os.path.isdir(skills_root):
+            real = os.path.normcase(os.path.realpath(skills_root))
+            if real in seen_real:
+                continue
+            seen_real.add(real)
+        sources.append((source_id, skills_root, canonical))
+    return sources
 
 
 def _scan_source(source_id, skills_root, root, canonical, seen_names, errors, warnings):
@@ -319,11 +358,18 @@ def _scan_source(source_id, skills_root, root, canonical, seen_names, errors, wa
             entry["notes"].append("depth!=1")
         # duplicate name (kaynak ici hata; kaynaklar arasi shadow -> uyarı)
         if skill_name in seen_names:
-            first_src, first_rel = seen_names[skill_name]
+            first_src, first_rel, first_abs = seen_names[skill_name]
             msg = f"duplicate name '{skill_name}' shadowed by [{first_src}] {first_rel}"
             if canonical:
                 errors.append(f"[{source_id}] {rel}: {msg}")
                 entry["notes"].append("duplicate-shadowed-error")
+            elif source_id in MIRROR_SOURCES:
+                # A deliberate internal mirror (the engine ships its own copy).
+                # It is still validated for its own integrity, but sharing a
+                # name with the canonical source is by design, not a finding.
+                entry["notes"].append("mirror-shadowed")
+            elif same_bytes(p, first_abs):
+                entry["notes"].append("identical-shadow")
             else:
                 warnings.append(f"[{source_id}] {rel}: {msg}")
                 entry["notes"].append("shadowed")
@@ -331,12 +377,21 @@ def _scan_source(source_id, skills_root, root, canonical, seen_names, errors, wa
                              "shadowed_by": {"source": first_src, "path": first_rel}})
             local_names.setdefault(skill_name, []).append(rel)
             continue
-        seen_names[skill_name] = (source_id, port_path)
+        seen_names[skill_name] = (source_id, port_path, p)
         local_names.setdefault(skill_name, []).append(rel)
-        # broken local links (relative paths only)
-        for m in re.finditer(r"\]\(([^)#]+)(?:#[^)]*)?\)", text):
+        # broken local links (relative paths only).
+        # Fenced blocks and inline code are stripped first: a snippet that
+        # *documents* link syntax is not a link, and a template placeholder
+        # such as `./rules/<name>.md` is never meant to resolve. Without this
+        # the check produced mostly false positives and drowned the real ones.
+        link_text = re.sub(r"```.*?```", "", text, flags=re.S)
+        link_text = re.sub(r"~~~.*?~~~", "", link_text, flags=re.S)
+        link_text = re.sub(r"`[^`\n]*`", "", link_text)
+        for m in re.finditer(r"\]\(([^)#]+)(?:#[^)]*)?\)", link_text):
             target = m.group(1).strip()
-            if target.startswith(("http", "#", "mailto:", "file:")):
+            if target.startswith(("http", "#", "mailto:", "file:", "<")):
+                continue
+            if any(ch in target for ch in "<>{}"):
                 continue
             target_p = os.path.normpath(os.path.join(os.path.dirname(p), target))
             if not os.path.exists(target_p):

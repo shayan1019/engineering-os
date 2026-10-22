@@ -24,17 +24,23 @@ except Exception:  # pragma: no cover - routing must still work without it
 
 
 def registry_dir(root: str) -> str:
-    """Program files (profiles, routing map, catalog) live with the engine.
+    """Registry for the scope being routed for.
 
-    An installed product has no `<workspace>/.agents` directory, so deriving the
-    registry from the workspace silently produced an empty route map. Deriving it
-    from the engine works for both layouts, with the old location as fallback.
+    A workspace that carries its own `.agents/registry` *is* that scope: it holds
+    the curated catalog for the library the router is choosing from, so it wins.
+    Only when the workspace has no control plane -- an installed product run
+    against an ordinary project -- does the engine's bundled registry take over.
+    That reverse order was the original fix for a real empty-route-map bug and it
+    still holds; but engine-first also meant an installed engine routed over its
+    own handful of names instead of the workspace library (deployed 0.2.4-alpha
+    shipped a 7-name index against a 210-skill catalog), which silently emptied
+    skills.primary.
     """
-    for candidate in (os.path.join(_ENGINE_ROOT, "registry"),
-                      os.path.join(root, ".agents", "registry")):
+    for candidate in (os.path.join(root, ".agents", "registry"),
+                      os.path.join(_ENGINE_ROOT, "registry")):
         if os.path.isdir(candidate):
             return candidate
-    return os.path.join(root, ".agents", "registry")
+    return os.path.join(_ENGINE_ROOT, "registry")
 
 KG_ON = [
     "ontoloji", "ontology", "knowledge graph", "graphrag", "graph rag",
@@ -108,12 +114,32 @@ def kg_required(task):
     return False, "no KG trigger keywords"
 
 
+def _keyword_hit(text: str, keyword: str) -> bool:
+    """True when ``keyword`` begins a word in ``text``.
+
+    RISK_HIGH used plain substring containment, so the ASCII Turkish question
+    "nasil" (nasıl, "how") contained "sil" ("delete") and was classified
+    irreversible: an innocuous turn demanded human approval and forced the
+    methodology owner. A keyword must now start a word, which keeps the
+    inflected forms Turkish actually writes ("silme", "silmek") while ending
+    the mid-word class.
+
+    The word is deliberately not ended: a regex that guessed Turkish
+    morphology would trade this false positive for silent false negatives.
+    The cost is a rare conservative miss ("silikon" reads as "sil"), and
+    over-classification only asks for approval -- it never skips one.
+    """
+    return re.search(r"(?<!\w)" + re.escape(keyword), text) is not None
+
+
 def risk_level(task):
     t = task.lower()
-    if any(w in t for w in RISK_HIGH):
-        return "high", [w for w in RISK_HIGH if w in t]
-    if any(w in t for w in RISK_LOW):
-        return "low", [w for w in RISK_LOW if w in t]
+    high = [w for w in RISK_HIGH if _keyword_hit(t, w)]
+    if high:
+        return "high", high
+    low = [w for w in RISK_LOW if _keyword_hit(t, w)]
+    if low:
+        return "low", low
     return "medium", []
 
 
@@ -283,7 +309,10 @@ def _select_agents(task, domains, risk, kg):
     add("verifier", "PASS requires a mechanical gate artifact")
     if risk == "high" or re.search(r"g[u\u00fc]venlik|security|secret|credential|permission|auth|token|s[i\u0131]z", t):
         add("security-auditor", "security-sensitive surface or high risk")
-    if re.search(r"\btest\b|tdd|coverage|regresyon|regression", t):
+    # Turkish inflects the noun, so "testi yaz" and "testlerini yaz" never match a
+    # bare \btest\b. Without the stem-prefix alternatives a test-authoring task was
+    # handed no test-engineer at all.
+    if re.search(r"\btests?\b|\btesti|\btestler|tdd|coverage|kapsam|regresyon|regression", t):
         add("test-engineer", "test authoring or regression proof requested")
     if re.search(r"performans|performance|benchmark|profil|latency|h[i\u0131]z|bellek", t):
         add("performance-engineer", "performance work requested")

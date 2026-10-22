@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-08-24",
+  "generated": "2026-10-21",
   "purpose": "Çakışan tetikleme kümelerinde TEK birincil skill seçimi. route_task.py bu haritayı uygular; runtime otomatik tetiklemesi için insan rehberi olarak da kullanılır.",
   "policy": {
     "resolution": "Küme tetiklendiğinde (görev metni anahtar kelime eşleşmesi VEYA kümenin 2+ üyesi aynı anda aday havuzundaysa) primary listesinde katalogda MEVCUT olan ilk skill kazanır; o da yoksa fallback sırasıyla aynı mantık.",
@@ -14,7 +14,8 @@
   "clusters": [
     {
       "id": "tdd",
-      "triggers": ["tdd", "test driven", "red green", "red-green", "test yaz", "write tests"],
+      "triggers": ["tdd", "test driven", "red green", "red-green", "test yaz", "write tests",
+                   "testi yaz", "testler", "unit test", "pytest", "test coverage"],
       "primary": ["tdd"],
       "fallback": ["test-driven-development"],
       "note": "tdd (RED-GREEN-REFACTOR + code-quality entegrasyonu) birincil."

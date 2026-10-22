@@ -54,7 +54,7 @@
           ]
         },
         "engine": {
-          "description": "Real behavioural suite of the product itself: a full skill-index rebuild followed by the router's 14 routing scenarios. Discovery runs first because routing resolves skill names against the index it produces; a stale or missing index would make the routing cases fail for the wrong reason.",
+          "description": "Real behavioural suite of the product itself: a full skill-index rebuild followed by the router's 14 routing scenarios plus the registry-scope, one-entry-per-file and verified-badge checks. Discovery runs first because routing resolves skill names against the index it produces; a stale or missing index would make the routing cases fail for the wrong reason.",
           "timeout_seconds": 300,
           "commands": [
             { "name": "skill_index_discover", "cmd": ["python", "tools/skill_index.py", "discover"], "required": true },

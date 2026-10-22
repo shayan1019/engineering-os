@@ -18,6 +18,119 @@ _ENGINE = os.path.dirname(_SCRIPT_DIR)                           # .agents, or e
 # resolve by alias, which must be identical from any location.
 _ROOT = os.environ.get("EOS_WORKSPACE") or os.getcwd()
 
+_ROUTER_MODULE = None
+
+
+def router_module():
+    """The router under test, imported once.
+
+    A test may import the unit it tests; re-implementing the router's registry
+    resolution here would let the two drift and hide exactly the regression the
+    registry_precedence check exists to catch.
+    """
+    global _ROUTER_MODULE
+    if _ROUTER_MODULE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "route_task_under_test", os.path.join(_ENGINE, "router", "route_task.py"))
+        _ROUTER_MODULE = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_ROUTER_MODULE)
+    return _ROUTER_MODULE
+
+
+def library_names():
+    """Skill names the router could actually choose from in this scope."""
+    try:
+        return {e.get("name", "") for e in router_module().catalog_skills(_ROOT)}
+    except Exception:
+        return set()
+
+
+def duplicate_source_check():
+    """One skill file must be indexed once.
+
+    `.claude/skills` is a junction onto `.agents/skills`, and in the workspace
+    layout ENGINE_ROOT is `.agents`, so the same 210 skills were indexed three
+    times. Every entry collided with itself: the name-collision penalty hit
+    the whole library and the trust label became noise.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "skill_index_under_test", os.path.join(_ENGINE, "tools", "skill_index.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    seen, problems = {}, []
+    for entry in mod.collect_entries():
+        absolute = mod.entry_abs(entry["path"])
+        if not absolute:
+            continue
+        key = os.path.normcase(os.path.realpath(absolute))
+        if key in seen:
+            problems.append(f"{entry['path']} also indexed as [{seen[key]}]")
+        else:
+            seen[key] = entry["source"]
+    return problems
+
+
+def trust_marker_check():
+    """A verified badge must be evidence, not a filename.
+
+    LOCAL_VERIFIED is worth +2.0 in routing. The badge used to be accepted on
+    existence alone, so any empty file bought it. Each case below is a badge
+    that must be refused.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "skill_index_under_test", os.path.join(_ENGINE, "tools", "skill_index.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    tmp = tempfile.mkdtemp(prefix="eos_trust_")
+    problems = []
+    try:
+        skill_dir = os.path.join(tmp, "demo")
+        os.makedirs(skill_dir)
+        skill_md = os.path.join(skill_dir, "SKILL.md")
+        marker = os.path.join(skill_dir, ".eos-verified")
+        with open(skill_md, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("# demo\n")
+        digest = mod.sha256_file(skill_md)
+
+        def write_marker(payload):
+            with open(marker, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(payload if isinstance(payload, str) else json.dumps(payload))
+
+        good = {"schema": 1, "skill": "demo", "sha256": digest, "checks": ["unit"]}
+        write_marker(good)
+        if not mod.verified_record(skill_dir)[0]:
+            problems.append("a matching badge was refused")
+
+        with open(skill_md, "a", encoding="utf-8") as fh:
+            fh.write("edited\n")
+        if mod.verified_record(skill_dir)[0]:
+            problems.append("a badge survived an edit to the skill")
+
+        with open(skill_md, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("# demo\n")
+        write_marker({"schema": 1, "skill": "demo", "sha256": digest, "checks": []})
+        if mod.verified_record(skill_dir)[0]:
+            problems.append("a badge that records no check was accepted")
+
+        write_marker({"schema": 1, "skill": "other", "sha256": digest, "checks": ["unit"]})
+        if mod.verified_record(skill_dir)[0]:
+            problems.append("a badge naming another skill was accepted")
+
+        write_marker("{not json")
+        if mod.verified_record(skill_dir)[0]:
+            problems.append("an unparseable badge was accepted")
+
+        write_marker("")
+        if mod.verified_record(skill_dir)[0]:
+            problems.append("an empty badge file was accepted")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return problems
+
 CASES = [
     {"id": "case1_bighero_entry_bug", "task": "BigHero'da entry bug var, sinyal gelmiyor",
      "expect": {"project": "bighero", "kg": False, "risk": "high", "policy": "approval_required"}},
@@ -52,6 +165,26 @@ CASES = [
      # without an actual signal — the router must not route by domain match alone.
      "expect": {"project": "aura", "kg": False, "fable_signal": False,
                 "skills_not_preferred": ["fable-5-1"]}},
+    {"id": "case12_unresolved_project_still_routes", "task": "FastAPI backend icin tenant isolation testi yaz",
+     # The project is unknown here, but the task itself states its intent ("testi
+     # yaz"). Before this case skills.primary came back EMPTY -- the router's main
+     # output was useless whenever no profile matched, even for a task this
+     # specific. The fix is a trigger, not a domain guess: case11's rule still
+     # holds, domain overlap alone never promotes a skill.
+     # `tdd` only exists in the workspace library, so on a clean install the
+     # name cannot be asserted; the specialist selection still can.
+     "expect": {"project": None, "kg": False, "fable_signal": False,
+                "primary_if_available": ["tdd"], "agents": ["test-engineer"]}},
+    {"id": "case13_how_is_not_delete", "task": "hangi skill yuklendi, oturumda nasil yonetiliyor",
+     # ASCII "nasil" (nasıl) contains the letters of "sil" (delete). Substring
+     # matching made a question about skills an irreversible operation:
+     # risk=high, policy=approval_required, fable-5-1 force-routed.
+     "expect": {"project": None, "kg": False, "risk": "medium",
+                "policy": "verify_required", "fable_signal": False}},
+    {"id": "case14_inflected_delete_is_high", "task": "eski log dosyalarini silmek istiyorum",
+     # The fix must not lose the true positive: Turkish inflects the verb.
+     "expect": {"project": None, "kg": False, "risk": "high",
+                "policy": "approval_required"}},
 ]
 
 ABSOLUTE_PATTERNS = [r"(?<!\w)[a-zA-Z]:[\\/]", r"[\\/]Users[\\/]", r"\bOneDrive\b"]
@@ -121,6 +254,7 @@ def _glob(root, pattern):
 
 def main():
     root = _ROOT
+    library = library_names()
     fails = []
     results = []
     for case in CASES:
@@ -141,8 +275,8 @@ def main():
             if "policy" in exp and out["risk"]["policy"]["gate"] != exp["policy"]:
                 ok = False
                 details.append(f"policy={out['risk']['policy']['gate']} != {exp['policy']}")
+            have = set(out["skills"]["preferred"]) | set(out["skills"]["catalog"])
             if "skills" in exp:
-                have = set(out["skills"]["preferred"]) | set(out["skills"]["catalog"])
                 for s in exp["skills"]:
                     if s not in have:
                         ok = False
@@ -150,6 +284,18 @@ def main():
             if "primary" in exp:
                 for s in exp["primary"]:
                     if s not in out["skills"]["primary"]:
+                        ok = False
+                        details.append(f"skill '{s}' not in skills.primary")
+            if "primary_if_available" in exp:
+                # A clean install ships the engine's own handful of skills, not
+                # the user's library: asserting a name there would fail on a
+                # machine that simply has no such skill. The agent selection is
+                # always provable; the skill name is only provable when the
+                # library that contains it exists.
+                for s in exp["primary_if_available"]:
+                    if s not in library:
+                        details.append(f"skipped '{s}': not in this library")
+                    elif s not in out["skills"]["primary"]:
                         ok = False
                         details.append(f"skill '{s}' not in skills.primary")
             if "skills_not_preferred" in exp:
@@ -160,6 +306,11 @@ def main():
             if "fable_signal" in exp and out["fable_5_1_signal"]["active"] != exp["fable_signal"]:
                 ok = False
                 details.append(f"fable_5_1_signal.active={out['fable_5_1_signal']['active']} != {exp['fable_signal']}")
+            if "agents" in exp:
+                for a in exp["agents"]:
+                    if a not in out["agents"]["specialists"]:
+                        ok = False
+                        details.append(f"agent '{a}' not in agents.specialists")
         results.append({"case": case["id"], "pass": ok, "details": details})
         if not ok:
             fails.append(case["id"])
@@ -196,6 +347,65 @@ def main():
             fails.append("relocation_simulation")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+    # registry precedence: a workspace that carries its own .agents/registry is
+    # the scope being routed for, so it must win over the engine's copy. When the
+    # engine's thin registry wins, an installed engine silently routes over its
+    # own handful of skills instead of the workspace library -- the deployed
+    # 0.2.4-alpha index held 7 names against a 210-skill catalog, so every cluster
+    # member looked uninstalled and skills.primary came back empty.
+    prec_ok = True
+    prec_detail = []
+    try:
+        mod = router_module()
+        tmp_ws = tempfile.mkdtemp(prefix="eos_reg_")
+        try:
+            want = os.path.join(tmp_ws, ".agents", "registry")
+            os.makedirs(want)
+            got = mod.registry_dir(tmp_ws)
+            prec_ok = os.path.normcase(got) == os.path.normcase(want)
+            if not prec_ok:
+                prec_detail.append(f"workspace registry ignored: got {got}, want {want}")
+                print(f"FAIL registry_precedence: {prec_detail[-1]}")
+        finally:
+            shutil.rmtree(tmp_ws, ignore_errors=True)
+    except Exception as exc:  # pragma: no cover - defensive
+        prec_ok = False
+        prec_detail.append(f"registry precedence check raised: {exc}")
+        print(f"FAIL registry_precedence: {exc}")
+    results.append({"case": "registry_precedence", "pass": prec_ok, "details": prec_detail})
+    print(f"{'PASS' if prec_ok else 'FAIL'} registry_precedence")
+    if not prec_ok:
+        fails.append("registry_precedence")
+
+    # one skill file, one index entry
+    dup_problems = []
+    dup_ok = True
+    try:
+        dup_problems = duplicate_source_check()
+        dup_ok = not dup_problems
+    except Exception as exc:  # pragma: no cover - defensive
+        dup_ok = False
+        dup_problems.append(f"duplicate source check raised: {exc}")
+    results.append({"case": "one_entry_per_skill_file", "pass": dup_ok, "details": dup_problems[:5]})
+    print(f"{'PASS' if dup_ok else 'FAIL'} one_entry_per_skill_file {dup_problems[:5]}")
+    if not dup_ok:
+        fails.append("one_entry_per_skill_file")
+
+    # verified badge: existence is not evidence
+    trust_problems = []
+    trust_ok = True
+    try:
+        trust_problems = trust_marker_check()
+        trust_ok = not trust_problems
+    except Exception as exc:  # pragma: no cover - defensive
+        trust_ok = False
+        trust_problems.append(f"trust marker check raised: {exc}")
+    results.append({"case": "trust_marker_requires_matching_bytes", "pass": trust_ok,
+                    "details": trust_problems})
+    print(f"{'PASS' if trust_ok else 'FAIL'} trust_marker_requires_matching_bytes {trust_problems}")
+    if not trust_ok:
+        fails.append("trust_marker_requires_matching_bytes")
 
     # fable-5-1 skill.contract.yaml — deterministic acceptance test (Stage 1 of the
     # fable-5-1 consolidation plan): a deliberately malformed contract must fail,
