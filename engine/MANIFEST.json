@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated_at": "2026-10-22T20:47:21+00:00",
+  "generated_at": "2026-10-22T21:00:07+00:00",
   "file_count": 47,
-  "total_bytes": 432539,
+  "total_bytes": 434211,
   "policy": {
     "published": [
       "engine source",
@@ -283,8 +283,8 @@
     {
       "source": ".agents/tools/runtime_permissions.py",
       "path": "engine/tools/runtime_permissions.py",
-      "sha256": "1755BCEF8477420BF349437F8C4E5A223213F10252BAB0204A8CCE4B4AD19F62",
-      "bytes": 23954
+      "sha256": "F6A57A81E91F0EB41811AE0F70D331DECEB044BC17F7D087F6051FF0B7B3C383",
+      "bytes": 25626
     },
     {
       "source": ".agents/tools/secret_scan.py",
