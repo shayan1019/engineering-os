@@ -45,11 +45,17 @@ pub struct InstallManifest {
     pub manifest_sha256: String,
 }
 
-fn skip(name: &str) -> bool {
-    matches!(
-        name,
-        "__pycache__" | ".git" | "target" | "node_modules" | ".DS_Store" | "evidence" | "backups"
-    ) || name.ends_with(".pyc")
+/// `at_root` distinguishes EOS's own user data from a skill's own documents.
+///
+/// `<engine>/evidence` is gate output and must never ship. A skill package's
+/// `skills/<name>/evidence/` is part of the skill: fable-5-1 links three files
+/// there, and a name-only rule silently installed a skill with broken links.
+fn skip(name: &str, at_root: bool) -> bool {
+    (at_root && matches!(name, "evidence" | "backups"))
+        || matches!(
+            name,
+            "__pycache__" | ".git" | "target" | "node_modules" | ".DS_Store"
+        ) || name.ends_with(".pyc")
         || name.ends_with(".db")
         || name.ends_with(".log")
         || name.ends_with(".tmp")
@@ -59,16 +65,16 @@ fn skip(name: &str) -> bool {
         || name == "SKILL_CATALOG.json"
 }
 
-fn collect(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect(dir: &Path, base: &Path, out: &mut Vec<PathBuf>, at_root: bool) -> Result<(), String> {
     let rd = fs::read_dir(dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
     for entry in rd.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if skip(&name) {
+        if skip(&name, at_root) {
             continue;
         }
         if path.is_dir() {
-            collect(&path, base, out)?;
+            collect(&path, base, out, false)?;
         } else if path.is_file() {
             let rel = path
                 .strip_prefix(base)
@@ -83,7 +89,7 @@ fn collect(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) -> Result<(), String
 
 pub fn hash_relative(base: &Path) -> Result<(Vec<ManifestEntry>, String), String> {
     let mut rels = Vec::new();
-    collect(base, base, &mut rels)?;
+    collect(base, base, &mut rels, true)?;
     rels.sort();
     let mut entries = Vec::new();
     let mut feed = String::new();
@@ -102,7 +108,7 @@ pub fn hash_relative(base: &Path) -> Result<(Vec<ManifestEntry>, String), String
     Ok((entries, paths::sha256_bytes(feed.as_bytes())))
 }
 
-fn copy_tree(src: &Path, dst: &Path) -> Result<usize, String> {
+fn copy_tree(src: &Path, dst: &Path, at_root: bool) -> Result<usize, String> {
     fs::create_dir_all(dst).map_err(|e| format!("cannot create {}: {e}", dst.display()))?;
     let mut n = 0usize;
     for entry in fs::read_dir(src)
@@ -111,12 +117,12 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<usize, String> {
     {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if skip(&name) {
+        if skip(&name, at_root) {
             continue;
         }
         let target = dst.join(entry.file_name());
         if path.is_dir() {
-            n += copy_tree(&path, &target)?;
+            n += copy_tree(&path, &target, false)?;
         } else {
             fs::copy(&path, &target)
                 .map_err(|e| format!("cannot copy {} -> {}: {e}", path.display(), target.display()))?;
@@ -234,12 +240,12 @@ pub fn install(
         ));
     }
     let engine_dst = version_dir.join("engine");
-    copy_tree(&engine_src, &engine_dst)?;
+    copy_tree(&engine_src, &engine_dst, true)?;
 
     // 3. optional bundled runtime
     let runtime_src = source.join("runtime");
     let runtime_mode = if runtime_src.join("python").is_dir() {
-        copy_tree(&runtime_src, &version_dir.join("runtime"))?;
+        copy_tree(&runtime_src, &version_dir.join("runtime"), true)?;
         "bundled".to_string()
     } else {
         "system".to_string()
@@ -773,7 +779,7 @@ pub fn install_local(
             continue;
         }
         let mut rels = Vec::new();
-        collect(&src_root, &src_root, &mut rels)?;
+        collect(&src_root, &src_root, &mut rels, true)?;
         for rel in rels {
             let rel_s = rel.to_string_lossy().replace('\\', "/");
             let from = src_root.join(&rel);

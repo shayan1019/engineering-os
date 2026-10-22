@@ -7,6 +7,13 @@ and desktop UI are BETA/STABLE work and are explicitly not claimed here.
 Every row below was produced by executing a command in this workspace. Rows that
 could not be verified say so.
 
+> **0.2.5-alpha update (2026-10-22).** The activation plugin now loads on
+> OpenCode 2, routing uses the workspace registry, the skill index no longer
+> counts the same library three times, the verified badge is pinned to the
+> skill's sha256, installing a skill keeps its own `evidence/` documents, and
+> `eos agents` / `eos orchestrators` exist. See `PRODUCT_STATUS_0.2.5.md` and
+> `ACCEPTANCE_2026-10-22.md`. Rows 1–32 below describe 0.2.4 and are unchanged.
+
 ## 1. Verified
 
 | # | Capability | Evidence |

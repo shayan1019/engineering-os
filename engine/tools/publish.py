@@ -35,6 +35,7 @@ FILES = [
     ".agents/registry/ROUTING_MAP.json",
     ".agents/registry/COMPATIBILITY.json",
     ".agents/registry/GATES.json",
+    ".agents/registry/ORCHESTRATORS.json",
     ".agents/eos/ALPHA_STATUS.md",
 ]
 DIRS = [
@@ -53,6 +54,7 @@ DEST_MAP = {
     ".agents/registry/ROUTING_MAP.json": "engine/registry/ROUTING_MAP.json",
     ".agents/registry/COMPATIBILITY.json": "engine/registry/COMPATIBILITY.json",
     ".agents/registry/GATES.json": "engine/registry/GATES.json",
+    ".agents/registry/ORCHESTRATORS.json": "engine/registry/ORCHESTRATORS.json",
     ".agents/eos/ALPHA_STATUS.md": "docs/alpha-status.md",
 }
 FORBIDDEN_DEST = (".db", ".log", ".env", ".ex5", ".hcc", ".pem", ".key", ".pyc")
