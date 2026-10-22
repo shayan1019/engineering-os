@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Routing regression (14 scenarios + relocation)
+      - name: Routing regression (14 scenarios + registry scope, index dedupe, badge tamper)
         run: python engine/router/route_tests.py
       - name: Skill index rebuild
         run: python engine/tools/skill_index.py discover
