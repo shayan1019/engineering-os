@@ -2,9 +2,10 @@
 """Install the EOS host plugin into a project (and remove it again).
 
 The plugin is what makes EOS intelligence automatic: the host calls it on its
-own `chat.params` lifecycle event, and EOS answers with the project, the rules,
-the relevant skills, the specialist set and the gate. The user keeps using the
-host's own Plan or Build mode.
+own session lifecycle (`prompt` at admission, `context` before a model request),
+and EOS answers with the project, the rules, the relevant skills, the
+specialist set and the gate. The user keeps using the host's own Plan or Build
+mode. A V1 host that only offers `chat.params` is still served by `server()`.
 
 Rules this installer follows
 ----------------------------
