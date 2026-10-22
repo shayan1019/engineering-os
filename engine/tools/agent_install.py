@@ -52,7 +52,6 @@ NO_DELEGATION = [("subagent", "*", "deny")]
 # outright - deterministic, and no human in the loop - and the single writer
 # may run project commands, with the destructive ones still denied.
 SHELL_DENY = [("shell", "*", "deny")]
-SHELL_ALLOW = [("shell", "*", "allow")]
 
 SAFE_READ = [("shell", "git status*", "allow"), ("shell", "git diff*", "allow"),
              ("shell", "git log*", "allow"), ("shell", "git show*", "allow"),
@@ -79,7 +78,7 @@ AGENTS = {
         "steps": 30,
         "description": "EOS chief architect. Owns task intake, project resolution, specialist selection and the final decision. Coordinates, never writes code and never bypasses the quality gate.",
         "temperature": "0.1",
-        "permissions": (DENY_EDIT + DENY_EXTERNAL + [("webfetch", "*", "deny")]
+        "permissions": (DENY_EDIT + DENY_EXTERNAL + DENY_WEB
                         + SHELL_DENY
                         + [("shell", "git status*", "allow"), ("shell", "git diff*", "allow"),
                            ("shell", "python .agents/tools/skill_index.py *", "allow"),
@@ -130,8 +129,10 @@ never FULL. Run `graph_freshness.py report` before trusting any graph answer.
         "description": "The single authorised writer. Implements the approved change inside the assigned workspace only.",
         "temperature": "0.1",
         "permissions": ([("edit", "*", "allow")] + DENY_EXTERNAL + DENY_WEB
-                        + SHELL_ALLOW
+                        + SHELL_DENY
                         + [("shell", "python *", "allow"), ("shell", "pytest *", "allow"),
+                           ("shell", "cargo test*", "allow"), ("shell", "cargo build*", "allow"),
+                           ("shell", "npm test*", "allow"), ("shell", "npm run build*", "allow"),
                            ("shell", "git status*", "allow"), ("shell", "git diff*", "allow"),
                            ("shell", "git add *", "deny"), ("shell", "git commit *", "deny"),
                            ("shell", "git push *", "deny"), ("shell", "rm *", "deny")]

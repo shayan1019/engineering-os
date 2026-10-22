@@ -237,8 +237,8 @@ Engineering (forwarded to the Python engine)
   graph report | fallback | invalidate
   scan [paths...] [--json]
   publish sync | verify | status
-  agents install | status | uninstall | list [--json] | explain <name> [--prompt] | test
-  orchestrators discover | doctor | test [--self-test] [--provider <id>]
+  agents install | status | uninstall | list [--json] | explain <name> [--prompt] | test | permissions [--json]
+  orchestrators discover | doctor | test [--self-test] [--provider <id>] | run --provider <id> --plan <file> [--workspace DIR]
   route --task T
   snapshot create | verify | restore-test
 
@@ -1251,8 +1251,13 @@ fn main() -> ExitCode {
                     Some("test") | Some("verify") => {
                         run_script(&engine, "agent_dispatch_test.py", false, &forwarded[1..], &ws)
                     }
+                    Some("permissions") => {
+                        let mut argv = vec!["check-contracts".to_string()];
+                        argv.extend(forwarded.iter().skip(1).cloned());
+                        run_script(&engine, "runtime_permissions.py", false, &argv, &ws)
+                    }
                     _ => {
-                        warn!("usage: eos agents install|status|uninstall|list|explain|test|verify");
+                        warn!("usage: eos agents install|status|uninstall|list|explain|test|verify|permissions");
                         2
                     }
                 },
@@ -1261,8 +1266,11 @@ fn main() -> ExitCode {
                         let _ = cmd;
                         run_script(&engine, "orchestrator_registry.py", false, &forwarded, &ws)
                     }
+                    Some("run") => {
+                        run_script(&engine, "orchestrator_runtime.py", false, &forwarded, &ws)
+                    }
                     _ => {
-                        warn!("usage: eos orchestrators discover|doctor|test [--self-test] [--provider <id>]");
+                        warn!("usage: eos orchestrators discover|doctor|test [--self-test] [--provider <id>] | run --provider <id> --plan <file> [--workspace DIR]");
                         2
                     }
                 },

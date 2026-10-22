@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated_at": "2026-10-22T19:29:52+00:00",
-  "file_count": 44,
-  "total_bytes": 334626,
+  "generated_at": "2026-10-22T20:11:27+00:00",
+  "file_count": 47,
+  "total_bytes": 428549,
   "policy": {
     "published": [
       "engine source",
@@ -115,14 +115,14 @@
     {
       "source": ".agents/registry/GATES.json",
       "path": "engine/registry/GATES.json",
-      "sha256": "450B9C2236A0CBEFC2F884B6C48584C0B3480F32F65A747554C2AB290E77E44C",
-      "bytes": 6539
+      "sha256": "E4537F90432F5E79A0872B844991EA6E12A0015791046A580D82F531F72C0EAA",
+      "bytes": 7636
     },
     {
       "source": ".agents/registry/ORCHESTRATORS.json",
       "path": "engine/registry/ORCHESTRATORS.json",
-      "sha256": "61496F5832A878C92A829BFD65BD28680988F1BE304140C3ECC77D7B71557A05",
-      "bytes": 2654
+      "sha256": "C9758CB67436B0A3A8DA1BEB7B21C5631C54C173F09EFFED49EC8F900908CBF6",
+      "bytes": 3208
     },
     {
       "source": ".agents/registry/PROJECT_PROFILES.json",
@@ -199,8 +199,8 @@
     {
       "source": ".agents/tools/agent_install.py",
       "path": "engine/tools/agent_install.py",
-      "sha256": "143B378ADC6BD665A45285CEB03A361DBF83160C0E091EF6C1FA09928347AC79",
-      "bytes": 25117
+      "sha256": "C842F964FCF56DF2967C45213F053FF3CAE24D791E8725C092EF6393F6CD1CA6",
+      "bytes": 25254
     },
     {
       "source": ".agents/tools/apply_shell_policy.py",
@@ -235,8 +235,14 @@
     {
       "source": ".agents/tools/orchestrator_registry.py",
       "path": "engine/tools/orchestrator_registry.py",
-      "sha256": "E577739C2871362930054075A79031FA6AFC51FB2C8F3801545ADF2439ABA1A6",
-      "bytes": 14553
+      "sha256": "6D7431CCD433BA2AAEAA190177C682D6C76F7121F4E41991C7CE668270207507",
+      "bytes": 16017
+    },
+    {
+      "source": ".agents/tools/orchestrator_runtime.py",
+      "path": "engine/tools/orchestrator_runtime.py",
+      "sha256": "C4EAF1D55172AAABA47311CD2A1D9713CA62A2DEACB216D436169C2018F61762",
+      "bytes": 33756
     },
     {
       "source": ".agents/tools/plugin_install.py",
@@ -267,6 +273,18 @@
       "path": "engine/tools/quality_gate.py",
       "sha256": "3A1DCDAF51D438338AFDDB4960CACDDAE5D4A0C2695B285BE24AD43A3DF0E389",
       "bytes": 16766
+    },
+    {
+      "source": ".agents/tools/release_gate.py",
+      "path": "engine/tools/release_gate.py",
+      "sha256": "1EB13923AB48949E2A79870AADCF538C3AA6FC71FDAD2D63040D295E650F1B96",
+      "bytes": 33994
+    },
+    {
+      "source": ".agents/tools/runtime_permissions.py",
+      "path": "engine/tools/runtime_permissions.py",
+      "sha256": "1B078790949F37D94C597334844ADCA3FB86EE589B95F905FA45BAB13F6C638C",
+      "bytes": 22921
     },
     {
       "source": ".agents/tools/secret_scan.py",

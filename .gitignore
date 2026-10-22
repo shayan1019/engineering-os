@@ -35,6 +35,7 @@ node_modules/
 target/
 dist/
 build/
+release-gate/
 __pycache__/
 *.pyc
 .venv/

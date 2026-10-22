@@ -56,6 +56,7 @@ ORCHESTRATING = {"AGENT_ORCHESTRATOR", "MULTI_AGENT_ORCHESTRATOR", "WORKFLOW_PRO
 REQUIRED = ("id", "class", "skill", "runtime", "delegation", "permissions",
             "side_effects", "cost", "bounds", "evidence")
 MAX_PROBE_SECONDS = 30
+EXECUTION_PROTOCOL = "eos-orchestrator/1"
 
 
 def load_declared():
@@ -161,16 +162,27 @@ def resolve_providers():
     return list(by_id.values()), problems
 
 
+def execution_ready(provider):
+    """Whether the contract can be *invoked*, not merely probed."""
+    execution = provider.get("execution") or {}
+    if execution.get("protocol") != EXECUTION_PROTOCOL:
+        return False, "no execution contract"
+    return True, execution.get("adapter") or "json-stdin"
+
+
 def cmd_discover(as_json: bool) -> int:
     providers, problems = resolve_providers()
     rows = []
     for p in providers:
         status, detail = runtime_state(p)
+        executable, execution_detail = execution_ready(p)
         rows.append({
             "id": p.get("id"),
             "class": p.get("class"),
             "skill": p.get("skill"),
             "status": status,
+            "execution": "EXECUTABLE" if executable else "ADAPTER_ONLY",
+            "execution_detail": execution_detail,
             "runtime": detail,
             "depth": (p.get("bounds") or {}).get("max_depth"),
             "timeout_seconds": (p.get("bounds") or {}).get("timeout_seconds"),
@@ -183,15 +195,16 @@ def cmd_discover(as_json: bool) -> int:
     if not rows:
         print("no orchestrator providers declared")
         return 0
-    print(f"{'id':18} {'class':26} {'status':16} {'depth':6} timeout")
+    print(f"{'id':18} {'class':26} {'runtime':16} {'execution':12} {'depth':6} timeout")
     for r in rows:
         print(f"{r['id']:18} {str(r['class']):26} {r['status']:16} "
-              f"{str(r['depth']):6} {r['timeout_seconds']}s")
+              f"{r['execution']:12} {str(r['depth']):6} {r['timeout_seconds']}s")
     for p in problems:
         print(f"  FINDING {p}")
     print(f"\n{len(rows)} provider(s). Classes: "
           + ", ".join(f"{k}={v}" for k, v in sorted(classes_of(providers).items())))
-    print("ADAPTER_ONLY means the contract is known and nothing was executed.")
+    print("ADAPTER_ONLY means the contract is known and nothing was executed. "
+          "EXECUTABLE means a bounded invocation contract exists; it does not mean a task ran.")
     return 0 if not problems else 1
 
 
@@ -228,7 +241,7 @@ def probe(argv, timeout):
     out = (proc.stdout or "").strip()
     if proc.returncode != 0:
         return "FAIL", f"probe exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}"
-    return "VERIFIED", out[:200]
+    return "PROBE_OK", out[:200]
 
 
 def run_provider(p):
@@ -243,7 +256,16 @@ def run_provider(p):
             return "ADAPTER_ONLY", f"'{runtime.get('binary')}' not on PATH"
         argv = [located] + list(runtime.get("probe") or ["--version"])
     timeout = min(int(runtime.get("timeout_seconds") or MAX_PROBE_SECONDS), MAX_PROBE_SECONDS)
-    return probe(argv, timeout)
+    verdict, detail = probe(argv, timeout)
+    if verdict != "PROBE_OK":
+        return verdict, detail
+    executable, why = execution_ready(p)
+    if not executable:
+        return "ADAPTER_ONLY", (
+            f"runtime answered a version probe, but {why}; nothing was delegated")
+    return "PROBE_OK", (
+        f"runtime answered a version probe and declares {EXECUTION_PROTOCOL}; "
+        f"no task was run by `test` (use `orchestrators run`)")
 
 
 def cmd_test(as_json: bool, provider_id, self_test: bool) -> int:
@@ -266,7 +288,8 @@ def cmd_test(as_json: bool, provider_id, self_test: bool) -> int:
             print(f"{r['verdict']:14} {r['id']}: {r['detail']}")
         for p in problems:
             print(f"FINDING {p}")
-        print("\nADAPTER_ONLY = contract known, nothing executed. VERIFIED = the runtime answered a version probe.")
+        print("\nADAPTER_ONLY = contract known, nothing executed. PROBE_OK = the runtime "
+              "answered a version probe; a task still needs `orchestrators run`.")
     failed = [r for r in rows if r["verdict"] in ("FAIL", "TIMEOUT", "INVALID", "UNKNOWN")]
     return 0 if not failed and not problems else 1
 
@@ -283,6 +306,7 @@ def self_test_run(as_json: bool) -> int:
         "class": "AGENT_ORCHESTRATOR",
         "skill": "fixture",
         "runtime": {},
+        "execution": {"protocol": EXECUTION_PROTOCOL, "adapter": "json-stdin"},
         "delegation": {"method": "fixture", "entry_point": "fixture", "specialists": ["a", "b"]},
         "permissions": {"write": False, "network": False, "execute": True,
                         "outside_workspace": False},
@@ -299,7 +323,7 @@ def self_test_run(as_json: bool) -> int:
         return item
 
     cases = [
-        ("verified", "VERIFIED", with_runtime(
+        ("probe_ok", "PROBE_OK", with_runtime(
             "fixture-ok", [sys.executable, "-c", "print('fixture 1.0')"])),
         ("adapter_only", "ADAPTER_ONLY", with_runtime(
             "fixture-missing", [os.path.join(tmp, "no-such-binary")])),
@@ -308,6 +332,10 @@ def self_test_run(as_json: bool) -> int:
         ("invalid", "INVALID", {k: v for k, v in with_runtime(
             "fixture-invalid", [sys.executable, "-c", "pass"]).items() if k != "bounds"}),
     ]
+    no_contract = with_runtime("fixture-probe-only",
+                               [sys.executable, "-c", "print('fixture 1.0')"])
+    no_contract.pop("execution")
+    cases.append(("probe_is_not_execution", "ADAPTER_ONLY", no_contract))
     results, failures = [], []
     for name, expected, provider in cases:
         verdict, detail = run_provider(provider)

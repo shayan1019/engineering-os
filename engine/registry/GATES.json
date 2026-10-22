@@ -69,6 +69,16 @@
           "commands": [
             { "name": "secret_scan_engine", "cmd": ["python", "tools/secret_scan.py", "%ENGINE%", "--include-tests"], "required": true }
           ]
+        },
+        "regression": {
+          "description": "Release and permission regressions. The release-gate self-test must reject forged PASS records, mismatched commits, changed gate registries, missing suites and tampered packages. The orchestrator runtime self-test must run real nested processes and prove depth, agent, step, timeout, cancellation and workspace bounds. The permission checks must prove no read-only role can write, delegate or bypass an external-directory denial.",
+          "timeout_seconds": 300,
+          "commands": [
+            { "name": "release_gate_selftest", "cmd": ["python", "tools/release_gate.py", "selftest"], "required": true },
+            { "name": "orchestrator_runtime_selftest", "cmd": ["python", "tools/orchestrator_runtime.py", "selftest"], "required": true },
+            { "name": "permission_contract_selftest", "cmd": ["python", "tools/runtime_permissions.py", "selftest"], "required": true },
+            { "name": "permission_contracts", "cmd": ["python", "tools/runtime_permissions.py", "check-contracts"], "required": true }
+          ]
         }
       }
     },
