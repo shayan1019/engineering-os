@@ -206,7 +206,16 @@ jobs:
           mkdir -p out
           cp "EngineeringOS-$VERSION-${{ matrix.arch }}.dmg" out/
           tar -czf "out/EngineeringOS-$VERSION-${{ matrix.arch }}-portable.tar.gz" -C stage "$APP.app"
-          cd out && shasum -a 256 * > SHA256SUMS.txt
+          python3 - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+          root = Path("out")
+          lines = [f"{sha256(p.read_bytes()).hexdigest()}  {p.name}\n"
+                   for p in sorted(root.iterdir())
+                   if p.is_file() and p.name != "SHA256SUMS.txt"]
+          (root / "SHA256SUMS.txt").write_text("".join(lines), encoding="utf-8", newline="\n")
+          PY
+          (cd out && shasum -a 256 -c SHA256SUMS.txt)
       - name: Upload the macOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -236,7 +245,16 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           find artifacts -type f -exec cp {} dist/ \;
-          (cd dist && sha256sum * > SHA256SUMS.txt)
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+          root = Path("dist")
+          lines = [f"{sha256(p.read_bytes()).hexdigest()}  {p.name}\n"
+                   for p in sorted(root.iterdir())
+                   if p.is_file() and p.name != "SHA256SUMS.txt"]
+          (root / "SHA256SUMS.txt").write_text("".join(lines), encoding="utf-8", newline="\n")
+          PY
+          (cd dist && sha256sum -c SHA256SUMS.txt)
           python engine/tools/release_gate.py seal \
             --gate gate/release-gate.json \
             --dist dist \
@@ -351,7 +369,16 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           find artifacts -type f -exec cp {} dist/ \;
-          (cd dist && sha256sum * > SHA256SUMS.txt)
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+          root = Path("dist")
+          lines = [f"{sha256(p.read_bytes()).hexdigest()}  {p.name}\n"
+                   for p in sorted(root.iterdir())
+                   if p.is_file() and p.name != "SHA256SUMS.txt"]
+          (root / "SHA256SUMS.txt").write_text("".join(lines), encoding="utf-8", newline="\n")
+          PY
+          (cd dist && sha256sum -c SHA256SUMS.txt)
           python engine/tools/release_gate.py seal \
             --gate gate/release-gate.json \
             --dist dist \
