@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated_at": "2026-10-22T20:38:20+00:00",
+  "generated_at": "2026-10-22T20:47:21+00:00",
   "file_count": 47,
-  "total_bytes": 432462,
+  "total_bytes": 432539,
   "policy": {
     "published": [
       "engine source",
@@ -193,8 +193,8 @@
     {
       "source": ".agents/tools/agent_dispatch_test.py",
       "path": "engine/tools/agent_dispatch_test.py",
-      "sha256": "4CAB35E7079BBCD9384903AA11444C6BE792502A42E4C7AA816590C836009CDA",
-      "bytes": 8316
+      "sha256": "69938E788F49D275A099236541BAE8C0205A79B4B93C04A5280061E571E7CB2B",
+      "bytes": 8393
     },
     {
       "source": ".agents/tools/agent_install.py",

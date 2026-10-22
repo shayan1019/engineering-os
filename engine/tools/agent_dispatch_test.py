@@ -28,7 +28,7 @@ ROOT = ep.resolve_workspace()
 EXPECTED = {
     "chief-architect": {"mode": "primary", "edit": "deny", "shell": "deny"},
     "architect": {"mode": "subagent", "edit": "deny", "shell": "deny"},
-    "implementer": {"mode": "subagent", "edit": "allow", "shell": "allow"},
+    "implementer": {"mode": "subagent", "edit": "allow", "shell": "deny"},
     "reviewer": {"mode": "subagent", "edit": "deny", "shell": "deny"},
     "verifier": {"mode": "subagent", "edit": "deny", "shell": "deny"},
     "security-auditor": {"mode": "subagent", "edit": "deny", "shell": "deny"},
@@ -77,8 +77,9 @@ def shell_fallback(agent: dict):
 
     This is the rule a command lands on when it matches no narrower pattern.
     `ask` there means the user is prompted for every ordinary command, which
-    is what made Build mode unusable; the contract is deny for the read-only
-    roles and allow for the single writer.
+    is what made Build mode unusable. The contract is deny for every role; the
+    single writer reaches project commands through an explicit narrow allowlist,
+    never through a `shell: *` allow.
     """
     effect = None
     for rule in agent.get("permissions", []):

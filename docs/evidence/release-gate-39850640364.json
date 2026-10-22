@@ -1,0 +1,325 @@
+{
+  "schema": 1,
+  "kind": "release_gate",
+  "created_at": "2026-10-22T20:39:26+00:00",
+  "version": "0.2.5-alpha",
+  "commit": "48d8d809b093ace89c1cfa63678712d6eb52bbec",
+  "ref": "refs/heads/main",
+  "repository": "shayan1019/engineering-os",
+  "workflow_run": {
+    "run_id": "39850640364",
+    "run_attempt": "1",
+    "workflow": "release",
+    "job": "gate"
+  },
+  "gates_sha256": "E4537F90432F5E79A0872B844991EA6E12A0015791046A580D82F531F72C0EAA",
+  "baseline": {
+    "label": "baseline_ci_48d8d809b093",
+    "kind": "git_commit_tree",
+    "sha256": "85B358F7A9B6E9A2A335208344332C28F2948BBED3F668A17E169335FB3C2083",
+    "entries": 109
+  },
+  "workspace_clean_before": true,
+  "workspace_clean_after": true,
+  "required_suites": [
+    "engine",
+    "security",
+    "regression"
+  ],
+  "suites": [
+    {
+      "id": "engine",
+      "verdict": "PASS",
+      "artifact_sha256": "C4F48B7C9DABD76A7DC90FAEF6D41AB75D793CD6F294994314AFA2A0EC8D90B7",
+      "detail": "",
+      "artifact": {
+        "schema": 1,
+        "kind": "quality_gate",
+        "created_at": "2026-10-22T20:39:23+00:00",
+        "project": "eos",
+        "suite": "engine",
+        "verdict": "PASS",
+        "baseline": {
+          "label": "baseline_ci_48d8d809b093",
+          "path": "/home/runner/work/engineering-os/engineering-os/release-gate/baselines/baseline_ci_48d8d809b093/HASHES.txt",
+          "sha256": "85B358F7A9B6E9A2A335208344332C28F2948BBED3F668A17E169335FB3C2083",
+          "entries": 109
+        },
+        "project_path": ".",
+        "commands": [
+          {
+            "name": "skill_index_discover",
+            "argv": [
+              "/opt/hostedtoolcache/Python/3.11.17/x64/bin/python",
+              "tools/skill_index.py",
+              "discover"
+            ],
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_seconds": 0.072,
+            "output_sha256": "9F39BA04D6A401405E49C6588BE4D7284AA69A0E26EF20287A9F9AABAEAD077B",
+            "output_bytes": 120,
+            "required": true
+          },
+          {
+            "name": "router_tests",
+            "argv": [
+              "/opt/hostedtoolcache/Python/3.11.17/x64/bin/python",
+              "router/route_tests.py"
+            ],
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_seconds": 2.276,
+            "output_sha256": "1228DEDEB910D20FB181003D3F8949B30C57C4366EF57B010E66408D4E02510E",
+            "output_bytes": 797,
+            "required": true
+          },
+          {
+            "name": "plugin_test",
+            "argv": [
+              "node",
+              "/home/runner/work/engineering-os/engineering-os/engine/host-plugins/opencode/eos-activation.test.mjs"
+            ],
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_seconds": 0.396,
+            "output_sha256": "309B42C6E223E59BDEF142B0920C5D7BEDEAE6A803D4AB1981D79FD585CA2F03",
+            "output_bytes": 780,
+            "required": true
+          },
+          {
+            "name": "orchestrator_selftest",
+            "argv": [
+              "/opt/hostedtoolcache/Python/3.11.17/x64/bin/python",
+              "tools/orchestrator_registry.py",
+              "test",
+              "--self-test"
+            ],
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_seconds": 3.362,
+            "output_sha256": "E8862F3C437067A8E5FADBED0241FB3A16A1C8B9632403F6627FE1BB52573421",
+            "output_bytes": 225,
+            "required": true
+          }
+        ],
+        "failures": [],
+        "optional_failures": [],
+        "log": {
+          "path": "/home/runner/work/engineering-os/engineering-os/release-gate/evidence/gates/eos/gate-engine-20261022T203923Z.log",
+          "sha256": "DAED6E6FA9517B15FC037854496A8B4EA6A97FED131985E917F0F48D1C3D7551",
+          "bytes": 2559
+        },
+        "runtime": {
+          "python": "3.11.17",
+          "platform": "Linux",
+          "machine": "x86_64"
+        },
+        "limits": {
+          "timeout_seconds": 300,
+          "env_allowlist": [
+            "PATH",
+            "SYSTEMROOT",
+            "SYSTEMDRIVE",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "HOME",
+            "USERPROFILE",
+            "PATHEXT",
+            "COMSPEC",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+            "LANG",
+            "LC_ALL"
+          ],
+          "note": "commands are fixed in GATES.json; agents cannot inject a command"
+        }
+      }
+    },
+    {
+      "id": "security",
+      "verdict": "PASS",
+      "artifact_sha256": "E82D095C0D70407C834ECDD36A0E6DC6284A992AB37B5FF77D7410BE222635ED",
+      "detail": "",
+      "artifact": {
+        "schema": 1,
+        "kind": "quality_gate",
+        "created_at": "2026-10-22T20:39:23+00:00",
+        "project": "eos",
+        "suite": "security",
+        "verdict": "PASS",
+        "baseline": {
+          "label": "baseline_ci_48d8d809b093",
+          "path": "/home/runner/work/engineering-os/engineering-os/release-gate/baselines/baseline_ci_48d8d809b093/HASHES.txt",
+          "sha256": "85B358F7A9B6E9A2A335208344332C28F2948BBED3F668A17E169335FB3C2083",
+          "entries": 109
+        },
+        "project_path": ".",
+        "commands": [
+          {
+            "name": "secret_scan_engine",
+            "argv": [
+              "/opt/hostedtoolcache/Python/3.11.17/x64/bin/python",
+              "tools/secret_scan.py",
+              "/home/runner/work/engineering-os/engineering-os/engine",
+              "--include-tests"
+            ],
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_seconds": 0.258,
+            "output_sha256": "9A75C92D42D9FCC6192123EA2F8D0144997D37F8251E11D7B88F92A82A6B3317",
+            "output_bytes": 66,
+            "required": true
+          }
+        ],
+        "failures": [],
+        "optional_failures": [],
+        "log": {
+          "path": "/home/runner/work/engineering-os/engineering-os/release-gate/evidence/gates/eos/gate-security-20261022T203923Z.log",
+          "sha256": "B5683B51A58D6077FCA22D1DDEE3EECC34E94D4E3844D0D636FA64377CCCC4C7",
+          "bytes": 387
+        },
+        "runtime": {
+          "python": "3.11.17",
+          "platform": "Linux",
+          "machine": "x86_64"
+        },
+        "limits": {
+          "timeout_seconds": 300,
+          "env_allowlist": [
+            "PATH",
+            "SYSTEMROOT",
+            "SYSTEMDRIVE",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "HOME",
+            "USERPROFILE",
+            "PATHEXT",
+            "COMSPEC",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+            "LANG",
+            "LC_ALL"
+          ],
+          "note": "commands are fixed in GATES.json; agents cannot inject a command"
+        }
+      }
+    },
+    {
+      "id": "regression",
+      "verdict": "PASS",
+      "artifact_sha256": "5B7CF7A6E6C8C817180E585A941E738A2D91BF3A8A97A6EF913A6167E9802C6B",
+      "detail": "",
+      "artifact": {
+        "schema": 1,
+        "kind": "quality_gate",
+        "created_at": "2026-10-22T20:39:26+00:00",
+        "project": "eos",
+        "suite": "regression",
+        "verdict": "PASS",
+        "baseline": {
+          "label": "baseline_ci_48d8d809b093",
+          "path": "/home/runner/work/engineering-os/engineering-os/release-gate/baselines/baseline_ci_48d8d809b093/HASHES.txt",
+          "sha256": "85B358F7A9B6E9A2A335208344332C28F2948BBED3F668A17E169335FB3C2083",
+          "entries": 109
+        },
+        "project_path": ".",
+        "commands": [
+          {
+            "name": "release_gate_selftest",
+            "argv": [
+              "/opt/hostedtoolcache/Python/3.11.17/x64/bin/python",
+              "tools/release_gate.py",
+              "selftest"
+            ],
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_seconds": 0.058,
+            "output_sha256": "8931DF5F004C0771B1BB462245495968A57F020515A65B898A82F1D019D29CBB",
+            "output_bytes": 99,
+            "required": true
+          },
+          {
+            "name": "orchestrator_runtime_selftest",
+            "argv": [
+              "/opt/hostedtoolcache/Python/3.11.17/x64/bin/python",
+              "tools/orchestrator_runtime.py",
+              "selftest"
+            ],
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_seconds": 2.306,
+            "output_sha256": "8EA2963A3B7C5B638395CD5525E4386CDD2CAB29799050ADFDE744E0BE537C74",
+            "output_bytes": 755,
+            "required": true
+          },
+          {
+            "name": "permission_contract_selftest",
+            "argv": [
+              "/opt/hostedtoolcache/Python/3.11.17/x64/bin/python",
+              "tools/runtime_permissions.py",
+              "selftest"
+            ],
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_seconds": 0.049,
+            "output_sha256": "4F73F9139829E024D1A1E14B52A666485DBDB947655CAA5D3A1F67BF3A95D5F8",
+            "output_bytes": 82,
+            "required": true
+          },
+          {
+            "name": "permission_contracts",
+            "argv": [
+              "/opt/hostedtoolcache/Python/3.11.17/x64/bin/python",
+              "tools/runtime_permissions.py",
+              "check-contracts"
+            ],
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_seconds": 0.048,
+            "output_sha256": "58694E0271139ABD923CF0147553E6E731F82EC636C0CF4F5693BB2297FD34A2",
+            "output_bytes": 43,
+            "required": true
+          }
+        ],
+        "failures": [],
+        "optional_failures": [],
+        "log": {
+          "path": "/home/runner/work/engineering-os/engineering-os/release-gate/evidence/gates/eos/gate-regression-20261022T203926Z.log",
+          "sha256": "84E4729A7DA932177C72F80ABD54875D0FAA933FAC6840967A1A979FF4F1B083",
+          "bytes": 1618
+        },
+        "runtime": {
+          "python": "3.11.17",
+          "platform": "Linux",
+          "machine": "x86_64"
+        },
+        "limits": {
+          "timeout_seconds": 300,
+          "env_allowlist": [
+            "PATH",
+            "SYSTEMROOT",
+            "SYSTEMDRIVE",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "HOME",
+            "USERPROFILE",
+            "PATHEXT",
+            "COMSPEC",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+            "LANG",
+            "LC_ALL"
+          ],
+          "note": "commands are fixed in GATES.json; agents cannot inject a command"
+        }
+      }
+    }
+  ],
+  "failures": [],
+  "tree_problems": [],
+  "verdict": "PASS"
+}

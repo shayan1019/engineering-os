@@ -162,8 +162,36 @@ def check_specs(specs: dict) -> list:
     return problems
 
 
+def check_dispatch_expectations() -> list:
+    """The live dispatch test must agree with the spec it is supposed to test.
+
+    A stale EXPECTED entry is worse than no test: `agent_dispatch_test.py` is
+    the host-facing proof, and it used to demand `shell: allow` for the writer
+    after the writer had been reduced to a bounded allowlist. Compare the
+    expectation table with the canonical specs so the gate catches that drift
+    without needing a live host.
+    """
+    import agent_dispatch_test as dispatch
+
+    problems = []
+    for name, want in dispatch.EXPECTED.items():
+        spec = agent_install.AGENTS.get(name)
+        if not spec:
+            problems.append(f"{name}: dispatch expectation has no agent spec")
+            continue
+        facts = agent_install.agent_facts(name, spec)
+        edit = {"all": "allow", "scoped": "glob", "no": "deny"}.get(
+            facts["writes"], facts["writes"])
+        for field, got in (("mode", facts["mode"]), ("edit", edit),
+                           ("shell", facts["shell_fallback"])):
+            if got != want[field]:
+                problems.append(
+                    f"{name}: dispatch expects {field}={want[field]!r}, spec says {got!r}")
+    return problems
+
+
 def cmd_check(args) -> int:
-    problems = check_specs(agent_install.AGENTS)
+    problems = check_specs(agent_install.AGENTS) + check_dispatch_expectations()
     if args.json:
         print(json.dumps({"agents": len(agent_install.AGENTS), "problems": problems,
                           "pass": not problems}, indent=2))
@@ -503,12 +531,23 @@ def selftest() -> int:
     for name, mutate in cases:
         if not broken(mutate):
             failures.append(f"{name}: violation was not detected")
+
+    import agent_dispatch_test as dispatch
+    original = dispatch.EXPECTED["implementer"]["shell"]
+    dispatch.EXPECTED["implementer"]["shell"] = "allow"
+    try:
+        if not check_dispatch_expectations():
+            failures.append("a stale dispatch expectation was accepted")
+    finally:
+        dispatch.EXPECTED["implementer"]["shell"] = original
+
     if failures:
         print("FAIL runtime-permissions selftest")
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print("PASS runtime-permissions selftest: 8 contract violations detected")
+    print("PASS runtime-permissions selftest: 8 contract violations and "
+          "1 stale dispatch expectation detected")
     return 0
 
 
