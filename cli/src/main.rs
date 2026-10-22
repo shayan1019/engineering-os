@@ -231,13 +231,14 @@ Product
   version
 
 Engineering (forwarded to the Python engine)
-  skills discover | resolve | explain | doctor
+  skills discover | resolve | explain | doctor | verify <name> [--check C]
   gate run --project P --suite S | gate verify --file F | gate list | gate show --file F
   promote ... | promote verify --file F
   graph report | fallback | invalidate
   scan [paths...] [--json]
   publish sync | verify | status
-  agents install | status | verify
+  agents install | status | uninstall | list [--json] | explain <name> [--prompt] | test
+  orchestrators discover | doctor | test [--self-test] [--provider <id>]
   route --task T
   snapshot create | verify | restore-test
 
@@ -1241,9 +1242,27 @@ fn main() -> ExitCode {
                     Some("install") => run_script(&engine, "agent_install.py", false, &forwarded, &ws),
                     Some("status") => run_script(&engine, "agent_install.py", false, &["status".to_string()], &ws),
                     Some("uninstall") => run_script(&engine, "agent_install.py", false, &forwarded, &ws),
-                    Some("verify") => run_script(&engine, "agent_dispatch_test.py", false, &forwarded[1..], &ws),
+                    Some(cmd @ ("list" | "explain")) => {
+                        let _ = cmd;
+                        run_script(&engine, "agent_install.py", false, &forwarded, &ws)
+                    }
+                    // `test` and `verify` are the same proof: the live runtime's
+                    // view of every agent, not the files EOS wrote.
+                    Some("test") | Some("verify") => {
+                        run_script(&engine, "agent_dispatch_test.py", false, &forwarded[1..], &ws)
+                    }
                     _ => {
-                        warn!("usage: eos agents install|status|uninstall|verify");
+                        warn!("usage: eos agents install|status|uninstall|list|explain|test|verify");
+                        2
+                    }
+                },
+                "orchestrators" => match forwarded.first().map(String::as_str) {
+                    Some(cmd @ ("discover" | "doctor" | "test")) => {
+                        let _ = cmd;
+                        run_script(&engine, "orchestrator_registry.py", false, &forwarded, &ws)
+                    }
+                    _ => {
+                        warn!("usage: eos orchestrators discover|doctor|test [--self-test] [--provider <id>]");
                         2
                     }
                 },

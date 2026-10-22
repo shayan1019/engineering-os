@@ -59,7 +59,8 @@
           "commands": [
             { "name": "skill_index_discover", "cmd": ["python", "tools/skill_index.py", "discover"], "required": true },
             { "name": "router_tests", "cmd": ["python", "router/route_tests.py"], "required": true },
-            { "name": "plugin_test", "cmd": ["node", "%ENGINE%/host-plugins/opencode/eos-activation.test.mjs"], "required": true }
+            { "name": "plugin_test", "cmd": ["node", "%ENGINE%/host-plugins/opencode/eos-activation.test.mjs"], "required": true },
+            { "name": "orchestrator_selftest", "cmd": ["python", "tools/orchestrator_registry.py", "test", "--self-test"], "required": true }
           ]
         },
         "security": {

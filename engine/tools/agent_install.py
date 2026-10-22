@@ -403,6 +403,101 @@ def status() -> int:
     return 0
 
 
+def _fallback(spec: dict, action: str):
+    """Effect of the last `<action> *` rule.
+
+    OpenCode applies the most specific (last matching) rule, and `*` is what an
+    unmatched resource falls through to. Reporting the fallback is what tells
+    the user whether Build mode will prompt, refuse or proceed.
+    """
+    effect = None
+    for a, resource, e in spec["permissions"]:
+        if a == action and resource == "*":
+            effect = e
+    return effect
+
+
+def edit_scope(spec: dict) -> str:
+    """`all` when any file may be written, `scoped` when only listed paths may.
+
+    A bare "writes: yes" would read as unrestricted for the test engineer, who
+    may write tests/** and nothing else.
+    """
+    allowed = [(r, e) for a, r, e in spec["permissions"] if a == "edit" and e == "allow"]
+    if not allowed:
+        return "no"
+    return "all" if any(r == "*" for r, _e in allowed) else "scoped"
+
+
+def agent_facts(name: str, spec: dict) -> dict:
+    return {
+        "name": name,
+        "mode": spec["mode"],
+        "steps": spec.get("steps"),
+        "temperature": spec["temperature"],
+        "writes": edit_scope(spec),
+        "shell_fallback": _fallback(spec, "shell"),
+        "web_fallback": _fallback(spec, "webfetch"),
+        "external_directory": _fallback(spec, "external_directory"),
+        "delegates_to": sorted(r for a, r, e in spec["permissions"]
+                               if a == "subagent" and e == "allow"),
+        "description": spec["description"],
+        "installed": {
+            "canonical": os.path.isfile(os.path.join(CANONICAL, f"{name}.md")),
+            "project": os.path.isfile(os.path.join(PROJECT_TARGET, f"{name}.md")),
+            "global": os.path.isfile(os.path.join(GLOBAL_TARGET, f"{name}.md")),
+        },
+    }
+
+
+def cmd_list(as_json: bool) -> int:
+    rows = [agent_facts(n, s) for n, s in AGENTS.items()]
+    if as_json:
+        print(json.dumps({"agents": rows, "count": len(rows)}, indent=2))
+        return 0
+    print(f"{'agent':22} {'mode':8} {'writes':7} {'shell*':7} {'delegates':9} installed")
+    for r in rows:
+        where = "/".join(k for k, v in r["installed"].items() if v) or "-"
+        print(f"{r['name']:22} {r['mode']:8} {r['writes']:7} "
+              f"{str(r['shell_fallback']):7} {len(r['delegates_to']):9} {where}")
+    print(f"\n{len(rows)} roles. `eos agents explain <name>` shows the ordered rule list; "
+          f"`eos agents test` proves the live runtime agrees.")
+    return 0
+
+
+def cmd_explain(name: str, as_json: bool, prompt: bool) -> int:
+    spec = AGENTS.get(name)
+    if spec is None:
+        print(f"unknown agent: {name}")
+        print("known: " + ", ".join(sorted(AGENTS)))
+        return 2
+    facts = agent_facts(name, spec)
+    if as_json:
+        facts["permissions"] = [{"action": a, "resource": r, "effect": e}
+                                for a, r, e in spec["permissions"]]
+        if prompt:
+            facts["prompt"] = spec["prompt"]
+        print(json.dumps(facts, indent=2))
+        return 0
+    print(f"{name}  ({facts['mode']})")
+    print(f"  {facts['description']}")
+    print(f"  steps={facts['steps']} temperature={facts['temperature']} writes={facts['writes']}")
+    print(f"  shell fallback={facts['shell_fallback']} webfetch={facts['web_fallback']} "
+          f"external_directory={facts['external_directory']}")
+    print(f"  delegates to: {', '.join(facts['delegates_to']) or '(none)'}")
+    print("  permissions (ordered; the last matching rule wins):")
+    for a, r, e in spec["permissions"]:
+        print(f"    {a:20} {r:40} {e}")
+    installed = ", ".join(f"{k}={'yes' if v else 'no'}" for k, v in facts["installed"].items())
+    print(f"  installed: {installed}")
+    print("  proven by: eos agents test  (live runtime view, not the files on disk)")
+    if prompt:
+        print("\n" + spec["prompt"].strip())
+    else:
+        print(f"  prompt: eos agents explain {name} --prompt")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="agent_install.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -414,14 +509,27 @@ def main() -> int:
     u = sub.add_parser("uninstall")
     u.add_argument("--target", choices=("project", "global"), default="project")
     u.add_argument("--project")
+    ls = sub.add_parser("list")
+    ls.add_argument("--json", action="store_true")
+    ls.add_argument("--project")
+    ex = sub.add_parser("explain")
+    ex.add_argument("name")
+    ex.add_argument("--json", action="store_true")
+    ex.add_argument("--prompt", action="store_true")
+    ex.add_argument("--project")
     args = ap.parse_args()
     set_project(getattr(args, "project", None))
     if args.cmd == "install":
         return install(args.target, args.force)
     if args.cmd == "uninstall":
         return uninstall(args.target)
+    if args.cmd == "list":
+        return cmd_list(args.json)
+    if args.cmd == "explain":
+        return cmd_explain(args.name, args.json, args.prompt)
     return status()
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
