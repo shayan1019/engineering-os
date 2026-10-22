@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated_at": "2026-10-22T20:11:27+00:00",
+  "generated_at": "2026-10-22T20:28:28+00:00",
   "file_count": 47,
-  "total_bytes": 428549,
+  "total_bytes": 430793,
   "policy": {
     "published": [
       "engine source",
@@ -235,8 +235,8 @@
     {
       "source": ".agents/tools/orchestrator_registry.py",
       "path": "engine/tools/orchestrator_registry.py",
-      "sha256": "6D7431CCD433BA2AAEAA190177C682D6C76F7121F4E41991C7CE668270207507",
-      "bytes": 16017
+      "sha256": "810867AD6D3BCBF724340D318FCF9465F11AA726C0D3ADE074D1DBD0988C0CD9",
+      "bytes": 17228
     },
     {
       "source": ".agents/tools/orchestrator_runtime.py",
@@ -283,8 +283,8 @@
     {
       "source": ".agents/tools/runtime_permissions.py",
       "path": "engine/tools/runtime_permissions.py",
-      "sha256": "1B078790949F37D94C597334844ADCA3FB86EE589B95F905FA45BAB13F6C638C",
-      "bytes": 22921
+      "sha256": "1755BCEF8477420BF349437F8C4E5A223213F10252BAB0204A8CCE4B4AD19F62",
+      "bytes": 23954
     },
     {
       "source": ".agents/tools/secret_scan.py",

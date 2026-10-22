@@ -298,8 +298,9 @@ def self_test_run(as_json: bool) -> int:
     """Prove every verdict against fixtures that need no installed provider.
 
     This is what makes the ADAPTER_ONLY claim trustworthy: the same function
-    that reports it must also be able to report VERIFIED, TIMEOUT and INVALID
-    when the fixture really behaves that way.
+    that reports it must also be able to report PROBE_OK, TIMEOUT and INVALID
+    when the fixture really behaves that way, and the real bounded delegation
+    fixture must run processes rather than only declare a contract.
     """
     tmp = tempfile.mkdtemp(prefix="eos_orch_")
     base = {
@@ -349,6 +350,27 @@ def self_test_run(as_json: bool) -> int:
         failures.append("a contract with no runtime was reported as valid")
     if not any("runtime" in f for f in extra):
         failures.append("the missing-runtime finding was not reported")
+
+    # A contract table is not a delegation proof. Run the real bounded fixture
+    # here too, so this command cannot pass on names, probes or prose.
+    import contextlib
+    import io
+    try:
+        import orchestrator_runtime
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = orchestrator_runtime.selftest()
+        detail = [line for line in buffer.getvalue().splitlines()
+                  if line.startswith(("PASS orchestrator runtime", "FAIL"))]
+        results.append({"case": "delegation_fixture", "expected": "PASS",
+                        "got": "PASS" if rc == 0 else "FAIL", "pass": rc == 0,
+                        "detail": detail[-1] if detail else "no selftest output"})
+        if rc != 0:
+            failures.append("real delegation fixture failed")
+    except Exception as exc:
+        results.append({"case": "delegation_fixture", "expected": "PASS", "got": "ERROR",
+                        "pass": False, "detail": f"{type(exc).__name__}: {exc}"})
+        failures.append(f"real delegation fixture raised: {type(exc).__name__}: {exc}")
 
     if as_json:
         print(json.dumps({"results": results, "failures": failures,
