@@ -435,24 +435,31 @@ def validate_gate(gate, expected_commit=None, gates_path=None,
 
     if check_env:
         run = gate.get("workflow_run") or {}
-        for env_key, field in (("GITHUB_RUN_ID", "run_id"),
-                               ("GITHUB_RUN_ATTEMPT", "run_attempt"),
-                               ("GITHUB_REPOSITORY", "repository")):
+        # run_id and run_attempt live under workflow_run; the repository is a
+        # top-level field. Looking it up in workflow_run would reject every
+        # real CI artifact with `repository=(none)`.
+        for env_key, field, recorded in (
+                ("GITHUB_RUN_ID", "run_id", run.get("run_id")),
+                ("GITHUB_RUN_ATTEMPT", "run_attempt", run.get("run_attempt")),
+                ("GITHUB_REPOSITORY", "repository", gate.get("repository"))):
             actual = os.environ.get(env_key)
-            if actual and str(run.get(field) or "") != actual:
+            if actual and str(recorded or "") != actual:
                 problems.append(
-                    f"workflow binding mismatch: {field}={run.get(field) or '(none)'} env={actual}")
+                    f"workflow binding mismatch: {field}={recorded or '(none)'} env={actual}")
     return problems
 
 
 def classify_artifacts(dist: str, skip=()):
     rows = []
-    skip = {os.path.normcase(s) for s in skip}
+    # Release manifests are named RELEASE-MANIFEST.json on Linux and
+    # release-manifest.json in the default path. Compare case-insensitively on
+    # every platform, or the seal itself becomes an "unsealed artifact".
+    skip = {os.path.normcase(s).lower() for s in skip}
     for dirpath, _dirnames, filenames in os.walk(dist):
         for name in sorted(filenames):
             path = os.path.join(dirpath, name)
             rel = os.path.relpath(path, dist).replace(os.sep, "/")
-            if os.path.normcase(rel) in skip:
+            if os.path.normcase(rel).lower() in skip:
                 continue
             size = os.path.getsize(path)
             if size == 0:
@@ -699,6 +706,14 @@ def selftest() -> int:
     finally:
         os.environ.pop("GITHUB_RUN_ID", None)
 
+    forged = copy.deepcopy(valid); forged["repository"] = "other/repo"
+    os.environ["GITHUB_REPOSITORY"] = "fixture/repo"
+    try:
+        expect_block("repository_binding", forged, "repository", check_env=True)
+        expect_pass("repository_binding_valid", valid, check_env=True)
+    finally:
+        os.environ.pop("GITHUB_REPOSITORY", None)
+
     # A hand-written file that claims PASS but carries no evidence at all.
     expect_block("handwritten_pass", {
         "schema": SCHEMA, "kind": KIND, "created_at": utc_now(),
@@ -754,6 +769,16 @@ def selftest() -> int:
         checks += 1
         if verify_quiet() != 0:
             failures.append("seal: a valid manifest did not verify")
+        # The workflow writes RELEASE-MANIFEST.json; the default path is
+        # lowercase. Neither name may be treated as an unsealed package.
+        upper_manifest = os.path.join(dist, "RELEASE-MANIFEST.json")
+        write_json(upper_manifest, manifest)
+        verifier.manifest = upper_manifest
+        checks += 1
+        if verify_quiet() != 0:
+            failures.append("seal: an uppercase manifest name did not verify")
+        verifier.manifest = manifest_path
+        os.remove(upper_manifest)
         with open(exe, "ab") as fh:
             fh.write(b"tampered")
         checks += 1
@@ -789,7 +814,7 @@ def selftest() -> int:
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print(f"PASS release-gate selftest: 14 gate cases + {checks} seal/binding cases handled correctly")
+    print(f"PASS release-gate selftest: 16 gate cases + {checks} seal/binding cases handled correctly")
     return 0
 
 

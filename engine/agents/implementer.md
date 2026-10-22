@@ -20,12 +20,24 @@ permissions:
     effect: deny
   - action: shell
     resource: "*"
-    effect: allow
+    effect: deny
   - action: shell
     resource: "python *"
     effect: allow
   - action: shell
     resource: "pytest *"
+    effect: allow
+  - action: shell
+    resource: "cargo test*"
+    effect: allow
+  - action: shell
+    resource: "cargo build*"
+    effect: allow
+  - action: shell
+    resource: "npm test*"
+    effect: allow
+  - action: shell
+    resource: "npm run build*"
     effect: allow
   - action: shell
     resource: "git status*"

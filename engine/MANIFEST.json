@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated_at": "2026-10-22T20:28:28+00:00",
+  "generated_at": "2026-10-22T20:38:20+00:00",
   "file_count": 47,
-  "total_bytes": 430793,
+  "total_bytes": 432462,
   "policy": {
     "published": [
       "engine source",
@@ -43,8 +43,8 @@
     {
       "source": ".agents/eos/agents/chief-architect.md",
       "path": "engine/agents/chief-architect.md",
-      "sha256": "EF812A0CED122C2276C26EAF183A6913EF6BDE4888E693C0E8DC51CFB85F25B0",
-      "bytes": 2579
+      "sha256": "F6AF577AF2EC61D81C88DBE17327A68A449F78FFABE3E86939A77E01A6BF2AE6",
+      "bytes": 2636
     },
     {
       "source": ".agents/eos/agents/evidence-analyst.md",
@@ -55,8 +55,8 @@
     {
       "source": ".agents/eos/agents/implementer.md",
       "path": "engine/agents/implementer.md",
-      "sha256": "38B2195377C02EE1B046D5D6A5EE83ED8731E223865D7B65F139EFB647A28ABF",
-      "bytes": 1748
+      "sha256": "295E0C88AB906E2B930D34F085FE133EE4B07C665EAE91524AE1F7F9F5710ADB",
+      "bytes": 2005
     },
     {
       "source": ".agents/eos/agents/performance-engineer.md",
@@ -277,8 +277,8 @@
     {
       "source": ".agents/tools/release_gate.py",
       "path": "engine/tools/release_gate.py",
-      "sha256": "1EB13923AB48949E2A79870AADCF538C3AA6FC71FDAD2D63040D295E650F1B96",
-      "bytes": 33994
+      "sha256": "F1B454258D1D5E7AF1D883412457180A7AB87F7A0E88788DD2CEAAFA75AE65D7",
+      "bytes": 35349
     },
     {
       "source": ".agents/tools/runtime_permissions.py",

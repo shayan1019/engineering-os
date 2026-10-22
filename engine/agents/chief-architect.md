@@ -15,6 +15,9 @@ permissions:
   - action: webfetch
     resource: "*"
     effect: deny
+  - action: websearch
+    resource: "*"
+    effect: deny
   - action: shell
     resource: "*"
     effect: deny

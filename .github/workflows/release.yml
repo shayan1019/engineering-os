@@ -250,6 +250,25 @@ jobs:
             --dist dist \
             --commit "$GITHUB_SHA" \
             --require-ext .exe
+      - name: Prove a tampered package is rejected
+        run: |
+          cp -R dist tampered
+          python - <<'PY'
+          from pathlib import Path
+          target = next(p for p in Path("tampered").glob("*.exe")
+                        if p.name.startswith("EngineeringOS-Setup-"))
+          data = bytearray(target.read_bytes())
+          data[0] ^= 0xFF
+          target.write_bytes(data)
+          PY
+          if python engine/tools/release_gate.py verify \
+               --gate gate/release-gate.json \
+               --manifest tampered/RELEASE-MANIFEST.json \
+               --dist tampered --commit "$GITHUB_SHA" --require-ext .exe; then
+            echo "BLOCKED: a tampered installer was accepted" >&2
+            exit 1
+          fi
+          echo "PASS: the tampered installer was rejected"
       - name: Upload the sealed Windows release
         uses: actions/upload-artifact@v4
         with:
