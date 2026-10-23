@@ -49,14 +49,17 @@ def detect() -> list[dict]:
     for host in HOSTS:
         binary = find_binary(host)
         present = binary is not None
-        results.append({
+        adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host-adapters", host["id"] + ".json")
+    adapter_ready = os.path.isfile(adapter_path)
+    results.append({
             "id": host["id"],
             "present": present,
             "binary": binary,
             "version": get_version(binary) if present else None,
             "config_dir": host["config_dir"],
             "capabilities": host["caps"] if present else {},
-            "status": "VERIFIED" if present else "BLOCKED",
+            "adapter_ready": adapter_ready,
+            "status": ("DETECTED" if present else "BLOCKED"),
         })
     return results
 

@@ -21,13 +21,18 @@ PROTOCOL = rt.PROTOCOL
 
 
 def execute_task(task: dict) -> dict:
-    """Replace this with provider-specific logic."""
+    """Replace this with provider-specific logic.
+
+    The generic worker does NOT claim success. It returns PARTIAL with a
+    message that the adapter must be implemented. A real adapter must
+    override this function and return PASS only when work actually completed.
+    """
     return {
         "protocol": PROTOCOL,
-        "ok": True,
-        "status": "PASS",
+        "ok": False,
+        "status": "PARTIAL",
         "agent": str(task.get("agent", "worker"))[:80],
-        "detail": "generic worker completed",
+        "detail": "generic worker: adapter not implemented; override execute_task()",
         "children": [],
         "refusals": [],
     }

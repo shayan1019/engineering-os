@@ -253,6 +253,9 @@ CASES = [
     {"id": "multi_file_methodology", "task": "multi-file refactor with regression evidence",
      "expect": {"project": None, "kg": False, "fable_signal": True,
                 "skills": ["fable-5-1"]}},
+    {"id": "evidence_heavy", "task": "show the evidence chain and provenance for this decision",
+     "expect": {"project": None, "kg": False, "fable_signal": True,
+                "skills": ["fable-5-1"]}},
     {"id": "explicit_methodology", "task": "use fable-5-1 to plan this work",
      "expect": {"project": None, "kg": False, "primary": ["fable-5-1"]}},
     {"id": "unrelated_domain_no_force", "task": "demo project entry bug",
@@ -260,7 +263,10 @@ CASES = [
                 "skills_not_preferred": ["fable-5-1"]}},
     {"id": "how_is_not_delete", "task": "how are skills loaded in a session",
      "expect": {"project": None, "kg": False, "risk": "medium",
-                "policy": "verify_required", "fable_signal": False}}
+                "policy": "verify_required", "fable_signal": False}},
+    {"id": "inflected_delete_is_high", "task": "delete old log files",
+     "expect": {"project": None, "kg": False, "risk": "high",
+                "policy": "approval_required"}}
 ]
 
 ABSOLUTE_PATTERNS = [r"(?<!\w)[a-zA-Z]:[\\/]", r"[\\/]Users[\\/]", r"\bOneDrive\b"]
