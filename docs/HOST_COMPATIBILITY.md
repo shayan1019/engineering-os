@@ -1,13 +1,22 @@
 # Host compatibility matrix
 
-EOS supports four AI coding hosts. Each host has a versioned adapter contract.
+EOS supports six AI coding hosts. Each host has a versioned adapter contract.
 
 | Host | Binary | Status | Capabilities |
 | --- | --- | --- | --- |
-| OpenCode | `opencode` | VERIFIED (live) | subagents, skills, permissions, MCP |
-| Claude Code | `claude` | ADAPTER (installed) | subagents, skills, permissions, MCP |
-| Cursor | `cursor` | BLOCKED (not installed) | MCP only |
-| BLACKBOX AI | `blackbox` | BLOCKED (not installed) | none |
+| OpenCode | `opencode` | LIVE_VERIFIED | subagents, skills, permissions, MCP, skill_discovery, native_activation |
+| Claude Code | `claude` | ADAPTER_READY | subagents, skills, permissions, MCP, skill_discovery, native_activation |
+| Cursor | `cursor` | BLOCKED (not installed) | subagents, skills, MCP, skill_discovery, native_activation |
+| BLACKBOX AI | `blackbox` | BLOCKED (not installed) | subagents, skills, MCP, skill_discovery, native_activation |
+| Codex | `codex` | BLOCKED (not installed) | skills, MCP, skill_discovery |
+| Gemini CLI | `gemini` | BLOCKED (not installed) | subagents, skills, MCP, skill_discovery, native_activation |
+
+## Capability notes
+
+- **Cursor** now supports Agent Skills (`.agents/skills/`, `.cursor/skills/`) and custom subagents.
+- **BLACKBOX CLI** supports skills, MCP and multi-agent execution (`/multi-agent`).
+- **Codex** supports skills and MCP; subagent support varies by version.
+- **Gemini CLI** supports `activate_skill` and subagent delegation.
 
 ## OpenCode
 - Activation: `engine/host-plugins/opencode/eos-activation.js`
@@ -25,17 +34,29 @@ EOS supports four AI coding hosts. Each host has a versioned adapter contract.
 - Status: adapter installed, live verification pending
 
 ## Cursor
-- Activation: `.cursor/rules/` (rules only)
-- Agents: not supported (no subagent fleet)
-- Skills: not supported
-- Adapter: rules + gate commands only
+- Activation: `.cursor/rules/` (rules + gate commands)
+- Agents: custom subagents supported
+- Skills: `.agents/skills/`, `.cursor/skills/` (auto-discovered)
+- Adapter: rules-based (no subagent fleet)
 - Status: BLOCKED (Cursor not installed)
 
 ## BLACKBOX AI
-- Activation: TBD
-- Agents: not supported
-- Skills: not supported
+- Activation: TBD (skill/MCP support confirmed)
+- Agents: `/multi-agent` support
+- Skills: supported
 - Status: BLOCKED (BLACKBOX not installed)
+
+## Codex
+- Activation: `.codex/agents/*.toml`
+- Agents: TOML definitions
+- Skills: repo-scoped
+- Status: BLOCKED (Codex not installed)
+
+## Gemini CLI
+- Activation: `activate_skill` mechanism
+- Agents: subagent support
+- Skills: depth-1 discovery
+- Status: BLOCKED (Gemini not installed)
 
 ## Detection
 Run `python engine/tools/host_detect.py` to check which hosts are available.

@@ -4,8 +4,9 @@
 Usage:
   python engine/tools/host_detect.py [--json]
 
-Reports: opencode, claude, cursor, blackbox.
-Each host: present (bool), version, config_dir, capabilities.
+Reports: opencode, claude, cursor, blackbox, codex, gemini.
+Each host: present (bool), version, config_dir, capabilities, status.
+Status values: DETECTED, ADAPTER_READY, LIVE_VERIFIED, BLOCKED.
 """
 from __future__ import annotations
 
@@ -17,13 +18,29 @@ import sys
 
 HOSTS = [
     {"id": "opencode", "binary": "opencode", "alt": [], "config_dir": ".opencode",
-     "caps": {"subagents": True, "skills": True, "permissions": True, "mcp": True}},
+     "caps": {"subagents": True, "skills": True, "permissions": True, "mcp": True,
+              "skill_discovery": True, "native_activation": True},
+     "adapter": "engine/host-plugins/opencode/eos-activation.js"},
     {"id": "claude", "binary": "claude", "alt": ["claude-code"], "config_dir": ".claude",
-     "caps": {"subagents": True, "skills": True, "permissions": True, "mcp": True}},
+     "caps": {"subagents": True, "skills": True, "permissions": True, "mcp": True,
+              "skill_discovery": True, "native_activation": True},
+     "adapter": "engine/tools/claude_host.py"},
     {"id": "cursor", "binary": "cursor", "alt": ["cursor-agent"], "config_dir": ".cursor",
-     "caps": {"subagents": False, "skills": False, "permissions": False, "mcp": True}},
+     "caps": {"subagents": True, "skills": True, "permissions": False, "mcp": True,
+              "skill_discovery": True, "native_activation": True},
+     "adapter": None},
     {"id": "blackbox", "binary": "blackbox", "alt": [], "config_dir": ".blackbox",
-     "caps": {"subagents": False, "skills": False, "permissions": False, "mcp": False}},
+     "caps": {"subagents": True, "skills": True, "permissions": False, "mcp": True,
+              "skill_discovery": True, "native_activation": True},
+     "adapter": None},
+    {"id": "codex", "binary": "codex", "alt": [], "config_dir": ".codex",
+     "caps": {"subagents": False, "skills": True, "permissions": False, "mcp": True,
+              "skill_discovery": True, "native_activation": False},
+     "adapter": None},
+    {"id": "gemini", "binary": "gemini", "alt": ["gemini-cli"], "config_dir": ".gemini",
+     "caps": {"subagents": True, "skills": True, "permissions": False, "mcp": True,
+              "skill_discovery": True, "native_activation": True},
+     "adapter": None},
 ]
 
 
@@ -49,9 +66,19 @@ def detect() -> list[dict]:
     for host in HOSTS:
         binary = find_binary(host)
         present = binary is not None
-        adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host-adapters", host["id"] + ".json")
-    adapter_ready = os.path.isfile(adapter_path)
-    results.append({
+        adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", host.get("adapter", "") or "nonexistent")
+        adapter_ready = os.path.isfile(adapter_path) if host.get("adapter") else False
+        # Determine status
+        if not present:
+            status = "BLOCKED"
+        elif host["id"] in ("opencode",):
+            status = "LIVE_VERIFIED"
+        elif host["id"] in ("claude",):
+            status = "ADAPTER_READY"
+        else:
+            status = "DETECTED"
+        results.append({
             "id": host["id"],
             "present": present,
             "binary": binary,
@@ -59,7 +86,7 @@ def detect() -> list[dict]:
             "config_dir": host["config_dir"],
             "capabilities": host["caps"] if present else {},
             "adapter_ready": adapter_ready,
-            "status": ("DETECTED" if present else "BLOCKED"),
+            "status": status,
         })
     return results
 
@@ -72,7 +99,7 @@ def main() -> int:
     else:
         for r in results:
             status = "PRESENT" if r["present"] else "MISSING"
-            print(f"{r['id']:10} {status:8} {r.get('version') or '-'}")
+            print(f"{r['id']:10} {status:8} {r.get('version') or '-':20} {r['status']}")
     return 0
 
 
