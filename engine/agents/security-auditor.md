@@ -70,13 +70,13 @@ permissions:
     resource: "pwd"
     effect: allow
   - action: shell
-    resource: "python .agents/tools/skill_index.py *"
+    resource: "python engine/tools/skill_index.py *"
     effect: allow
   - action: shell
-    resource: "python .agents/tools/graph_freshness.py *"
+    resource: "python engine/tools/graph_freshness.py *"
     effect: allow
   - action: shell
-    resource: "python .agents/tools/secret_scan.py *"
+    resource: "python engine/tools/secret_scan.py *"
     effect: allow
   - action: subagent
     resource: "*"

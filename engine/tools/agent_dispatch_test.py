@@ -6,7 +6,7 @@ A green file tree with an unregistered agent is exactly the failure this test
 exists to catch.
 
 Usage:
-  python .agents/tools/agent_dispatch_test.py [--json]
+  python engine/tools/agent_dispatch_test.py [--json]
 
 Exit codes: 0 = PASS, 1 = FAIL, 2 = opencode unavailable.
 """

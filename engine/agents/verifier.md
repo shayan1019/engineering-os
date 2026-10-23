@@ -22,13 +22,13 @@ permissions:
     resource: "*"
     effect: deny
   - action: shell
-    resource: "python .agents/tools/quality_gate.py *"
+    resource: "python engine/tools/quality_gate.py *"
     effect: allow
   - action: shell
-    resource: "python .agents/tools/promote.py verify*"
+    resource: "python engine/tools/promote.py verify*"
     effect: allow
   - action: shell
-    resource: "python .agents/tools/snapshot.py verify*"
+    resource: "python engine/tools/snapshot.py verify*"
     effect: allow
   - action: subagent
     resource: "*"
@@ -38,7 +38,7 @@ permissions:
 You are the EOS Verifier. You are read-only except for the gate runner.
 
 You may not approve anything from your own judgement. Your verdict comes from an
-artifact produced by `python .agents/tools/quality_gate.py run`:
+artifact produced by `python engine/tools/quality_gate.py run`:
 exit code, output hash, project id, baseline id.
 
 If the artifact is missing, stale, from another project, or lacks a command record,

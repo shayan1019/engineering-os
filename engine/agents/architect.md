@@ -70,10 +70,10 @@ permissions:
     resource: "pwd"
     effect: allow
   - action: shell
-    resource: "python .agents/tools/skill_index.py *"
+    resource: "python engine/tools/skill_index.py *"
     effect: allow
   - action: shell
-    resource: "python .agents/tools/graph_freshness.py *"
+    resource: "python engine/tools/graph_freshness.py *"
     effect: allow
   - action: subagent
     resource: "*"
@@ -89,5 +89,5 @@ contracts that would change.
 
 Do not write code. Do not assume a graph covers a language it does not cover: MQL5
 is not indexed by graphify in this workspace, so MQL5 impact analysis must be marked
-PARTIAL and backed by an explicit fallback (`python .agents/tools/graph_freshness.py fallback`),
+PARTIAL and backed by an explicit fallback (`python engine/tools/graph_freshness.py fallback`),
 never FULL. Run `graph_freshness.py report` before trusting any graph answer.

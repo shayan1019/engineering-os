@@ -13,10 +13,10 @@ overwritten: a conflicting file is reported as CONFLICT and skipped unless
 --force is passed. Global installs are reversible via `uninstall`.
 
 Usage:
-  python .agents/tools/agent_install.py install --target project
-  python .agents/tools/agent_install.py install --target global [--force]
-  python .agents/tools/agent_install.py status
-  python .agents/tools/agent_install.py uninstall --target global
+  python engine/tools/agent_install.py install --target project
+  python engine/tools/agent_install.py install --target global [--force]
+  python engine/tools/agent_install.py status
+  python engine/tools/agent_install.py uninstall --target global
 """
 from __future__ import annotations
 
@@ -61,8 +61,8 @@ SAFE_READ = [("shell", "git status*", "allow"), ("shell", "git diff*", "allow"),
              ("shell", "head *", "allow"), ("shell", "tail *", "allow"),
              ("shell", "wc *", "allow"), ("shell", "find *", "allow"),
              ("shell", "tree *", "allow"), ("shell", "pwd", "allow"),
-             ("shell", "python .agents/tools/skill_index.py *", "allow"),
-             ("shell", "python .agents/tools/graph_freshness.py *", "allow")]
+             ("shell", "python engine/tools/skill_index.py *", "allow"),
+             ("shell", "python engine/tools/graph_freshness.py *", "allow")]
 
 
 def delegations(names):
@@ -81,8 +81,8 @@ AGENTS = {
         "permissions": (DENY_EDIT + DENY_EXTERNAL + DENY_WEB
                         + SHELL_DENY
                         + [("shell", "git status*", "allow"), ("shell", "git diff*", "allow"),
-                           ("shell", "python .agents/tools/skill_index.py *", "allow"),
-                           ("shell", "python .agents/tools/route_task.py *", "allow"),
+                           ("shell", "python engine/tools/skill_index.py *", "allow"),
+                           ("shell", "python engine/tools/route_task.py *", "allow"),
                            ("shell", "opencode debug agents", "allow")]
                         + delegations(SPECIALISTS)),
         "prompt": """You are the EOS Chief Architect.
@@ -90,8 +90,8 @@ AGENTS = {
 You coordinate; you do not implement. You have no edit permission by design.
 
 On every task:
-1. Resolve the project: `python .agents/tools/route_task.py --task "<task>"`.
-2. Resolve skills: `python .agents/tools/skill_index.py resolve --task "<task>" --project <id>`.
+1. Resolve the project: `python engine/tools/route_task.py --task "<task>"`.
+2. Resolve skills: `python engine/tools/skill_index.py resolve --task "<task>" --project <id>`.
 3. Select the smallest competent team. Do not invoke every specialist. Always-on: you.
    architecture change -> architect; code change -> implementer; material change -> reviewer;
    release or claim -> verifier; risk -> security-auditor; test work -> test-engineer;
@@ -119,7 +119,7 @@ contracts that would change.
 
 Do not write code. Do not assume a graph covers a language it does not cover: MQL5
 is not indexed by graphify in this workspace, so MQL5 impact analysis must be marked
-PARTIAL and backed by an explicit fallback (`python .agents/tools/graph_freshness.py fallback`),
+PARTIAL and backed by an explicit fallback (`python engine/tools/graph_freshness.py fallback`),
 never FULL. Run `graph_freshness.py report` before trusting any graph answer.
 """,
     },
@@ -175,14 +175,14 @@ say so explicitly and list what you checked. Never edit files.
         "description": "Independent verification. Runs the constrained quality gate and issues PASS/FAIL/BLOCKED from its artifact only.",
         "temperature": "0.0",
         "permissions": (DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_DENY
-                        + [("shell", "python .agents/tools/quality_gate.py *", "allow"),
-                           ("shell", "python .agents/tools/promote.py verify*", "allow"),
-                           ("shell", "python .agents/tools/snapshot.py verify*", "allow")]
+                        + [("shell", "python engine/tools/quality_gate.py *", "allow"),
+                           ("shell", "python engine/tools/promote.py verify*", "allow"),
+                           ("shell", "python engine/tools/snapshot.py verify*", "allow")]
                         + NO_DELEGATION),
         "prompt": """You are the EOS Verifier. You are read-only except for the gate runner.
 
 You may not approve anything from your own judgement. Your verdict comes from an
-artifact produced by `python .agents/tools/quality_gate.py run`:
+artifact produced by `python engine/tools/quality_gate.py run`:
 exit code, output hash, project id, baseline id.
 
 If the artifact is missing, stale, from another project, or lacks a command record,
@@ -197,7 +197,7 @@ Report exactly: verdict, artifact path, commands executed, failures, rollback pa
         "description": "Security, secrets, dependencies and permission-boundary audit.",
         "temperature": "0.1",
         "permissions": (DENY_EDIT + DENY_EXTERNAL + DENY_WEB + SHELL_DENY + SAFE_READ
-                        + [("shell", "python .agents/tools/secret_scan.py *", "allow")]
+                        + [("shell", "python engine/tools/secret_scan.py *", "allow")]
                         + NO_DELEGATION),
         "prompt": """You are the EOS Security Auditor. You are read-only.
 

@@ -28,10 +28,10 @@ permissions:
     resource: "git diff*"
     effect: allow
   - action: shell
-    resource: "python .agents/tools/skill_index.py *"
+    resource: "python engine/tools/skill_index.py *"
     effect: allow
   - action: shell
-    resource: "python .agents/tools/route_task.py *"
+    resource: "python engine/tools/route_task.py *"
     effect: allow
   - action: shell
     resource: "opencode debug agents"
@@ -73,8 +73,8 @@ You are the EOS Chief Architect.
 You coordinate; you do not implement. You have no edit permission by design.
 
 On every task:
-1. Resolve the project: `python .agents/tools/route_task.py --task "<task>"`.
-2. Resolve skills: `python .agents/tools/skill_index.py resolve --task "<task>" --project <id>`.
+1. Resolve the project: `python engine/tools/route_task.py --task "<task>"`.
+2. Resolve skills: `python engine/tools/skill_index.py resolve --task "<task>" --project <id>`.
 3. Select the smallest competent team. Do not invoke every specialist. Always-on: you.
    architecture change -> architect; code change -> implementer; material change -> reviewer;
    release or claim -> verifier; risk -> security-auditor; test work -> test-engineer;
