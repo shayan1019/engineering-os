@@ -231,7 +231,7 @@ Product
   version
 
 Engineering (forwarded to the Python engine)
-  skills discover | resolve | explain | doctor | verify <name> [--check C]
+  skills discover | resolve | explain | doctor | verify <name> [--check C] | provenance <name>
   gate run --project P --suite S | gate verify --file F | gate list | gate show --file F
   promote ... | promote verify --file F
   graph report | fallback | invalidate
@@ -1189,13 +1189,13 @@ fn main() -> ExitCode {
                     }
                 }
                 "skills" => match forwarded.first().map(String::as_str) {
-                    Some(cmd @ ("discover" | "doctor" | "resolve" | "explain" | "verify")) => {
+                    Some(cmd @ ("discover" | "doctor" | "resolve" | "explain" | "verify" | "provenance")) => {
                         let _ = cmd;
                         let argv = skills_argv(&forwarded);
                         run_script(&engine, "skill_index.py", false, &argv, &ws)
                     }
                     _ => {
-                        warn!("usage: eos skills discover|resolve|explain|doctor|verify");
+                        warn!("usage: eos skills discover|resolve|explain|doctor|verify|provenance");
                         2
                     }
                 },

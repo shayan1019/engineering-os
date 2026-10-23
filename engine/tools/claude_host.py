@@ -222,18 +222,40 @@ def install_skills(force: bool = False) -> int:
                 print(f"BACKUP: {name} -> {os.path.basename(backup_path)}")
                 shutil.rmtree(ddir)
 
-        # Record original SKILL.md hash
-        skill_md_src = os.path.join(sdir, "SKILL.md")
-        skill_md_dst = os.path.join(ddir, "SKILL.md")
-        original_hash = _sha256_file(skill_md_dst) if os.path.isfile(skill_md_dst) else None
+        # Record all files in the skill directory before overwrite
+        original_files = {}
+        if os.path.isdir(ddir):
+            for root, _, files in os.walk(ddir):
+                for f in files:
+                    fp = os.path.join(root, f)
+                    rel = os.path.relpath(fp, ddir)
+                    original_files[rel] = _sha256_file(fp)
+
+        # Backup if force-overwriting
+        backup_path = None
+        if os.path.exists(ddir) and force:
+            os.makedirs(BACKUP_DIR, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_path = os.path.join(BACKUP_DIR, f"{name}.{ts}.bak")
+            shutil.copytree(ddir, backup_path)
+            print(f"BACKUP: {name} -> {os.path.basename(backup_path)}")
+            shutil.rmtree(ddir)
 
         shutil.copytree(sdir, ddir)
-        new_skill_md_hash = _sha256_file(os.path.join(ddir, "SKILL.md")) if os.path.isfile(os.path.join(ddir, "SKILL.md")) else None
+
+        # Record all files after install
+        installed_files = {}
+        for root, _, files in os.walk(ddir):
+            for f in files:
+                fp = os.path.join(root, f)
+                rel = os.path.relpath(fp, ddir)
+                installed_files[rel] = _sha256_file(fp)
 
         manifest.setdefault("skills", {})[ddir] = {
             "source": sdir,
-            "skill_md_hash": new_skill_md_hash,
-            "original_skill_md_hash": original_hash,
+            "files": installed_files,
+            "original_files": original_files,
+            "backup_path": backup_path,
             "installed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         installed += 1
@@ -303,7 +325,7 @@ def uninstall() -> int:
     manifest = _load_manifest()
     removed = 0
     skipped = 0
-    # Remove only EOS-owned agents
+    # Remove only EOS-owned agents (verify hash first)
     for path, info in list(manifest.get("agents", {}).items()):
         if os.path.exists(path):
             current = _sha256_file(path)
@@ -316,27 +338,79 @@ def uninstall() -> int:
                 skipped += 1
         del manifest["agents"][path]
 
-    # Remove only EOS-owned skills
+    # Remove only EOS-owned skill files, preserving foreign files
     for path, info in list(manifest.get("skills", {}).items()):
-        if os.path.isdir(path):
-            skill_md = os.path.join(path, "SKILL.md")
-            if os.path.isfile(skill_md):
-                current = _sha256_file(skill_md)
-                if current == info.get("skill_md_hash"):
-                    shutil.rmtree(path)
-                    removed += 1
-                    print(f"REMOVE: {os.path.basename(path)}/")
+        if not os.path.isdir(path):
+            del manifest["skills"][path]
+            continue
+        eos_files = set(info.get("files", {}).keys())
+        # Check if any EOS-owned file was modified
+        modified = False
+        for rel, expected_hash in info.get("files", {}).items():
+            fp = os.path.join(path, rel)
+            if os.path.exists(fp):
+                if _sha256_file(fp) != expected_hash:
+                    modified = True
+                    break
+        if modified:
+            print(f"SKIP: {os.path.basename(path)}/ (modified externally, not removing)")
+            skipped += 1
+            del manifest["skills"][path]
+            continue
+        # Remove only EOS-owned files, preserve foreign ones
+        removed_files = 0
+        foreign_files = []
+        for root, _, files in os.walk(path):
+            for f in files:
+                fp = os.path.join(root, f)
+                rel = os.path.relpath(fp, path)
+                if rel in eos_files:
+                    os.remove(fp)
+                    removed_files += 1
                 else:
-                    print(f"SKIP: {os.path.basename(path)}/ (modified externally, not removing)")
-                    skipped += 1
-            else:
-                shutil.rmtree(path)
-                removed += 1
-                print(f"REMOVE: {os.path.basename(path)}/ (no SKILL.md)")
+                    foreign_files.append(rel)
+        # Remove empty directories
+        for root, dirs, files in os.walk(path, topdown=False):
+            if not os.listdir(root):
+                os.rmdir(root)
+        if foreign_files:
+            print(f"PARTIAL REMOVE: {os.path.basename(path)}/ ({removed_files} EOS files removed, {len(foreign_files)} foreign files preserved)")
+        else:
+            print(f"REMOVE: {os.path.basename(path)}/ ({removed_files} files)")
+        removed += 1
         del manifest["skills"][path]
 
     _save_manifest(manifest)
     print(f"PASS: removed {removed}, skipped {skipped}")
+    return 0
+
+
+
+def restore(backup_path: str) -> int:
+    """Restore files from a backup directory."""
+    if not os.path.isdir(backup_path):
+        print(f"BLOCKED: backup directory not found: {backup_path}")
+        return 1
+    manifest = _load_manifest()
+    restored = 0
+    for item in os.listdir(backup_path):
+        src = os.path.join(backup_path, item)
+        if os.path.isfile(src):
+            # Agent file
+            dst = os.path.join(AGENTS_DIR, item)
+            os.makedirs(AGENTS_DIR, exist_ok=True)
+            shutil.copy2(src, dst)
+            restored += 1
+            print(f"RESTORE: {item}")
+        elif os.path.isdir(src):
+            # Skill directory
+            dst = os.path.join(SKILLS_DIR, item)
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+            restored += 1
+            print(f"RESTORE: {item}/")
+    print(f"PASS: restored {restored} item(s) from {backup_path}")
     return 0
 
 
@@ -348,6 +422,8 @@ def main() -> int:
     sub.add_parser("status")
     sub.add_parser("verify")
     sub.add_parser("uninstall")
+    r = sub.add_parser("restore")
+    r.add_argument("--backup", required=True, help="backup directory to restore from")
     args = ap.parse_args()
 
     if args.cmd == "install":
@@ -360,6 +436,8 @@ def main() -> int:
         return verify()
     if args.cmd == "uninstall":
         return uninstall()
+    if args.cmd == "restore":
+        return restore(args.backup)
     ap.print_help()
     return 2
 

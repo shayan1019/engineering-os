@@ -598,6 +598,97 @@ def verify_skill(name: str, extra_checks) -> int:
     return 0
 
 
+
+def provenance_skill(name: str, as_json: bool = False) -> int:
+    """Report source, license, hash, trust and collision info for a skill."""
+    idx = load_index(rebuild=True)
+    entries = [e for e in (idx.get("entries") or []) if e.get("name") == name]
+    if not entries:
+        print(f"NOT FOUND: {name}")
+        return 1
+
+    # Deduplicate by real path
+    seen = set()
+    unique = []
+    for e in entries:
+        ab = entry_abs(e.get("path", ""))
+        key = os.path.normcase(os.path.realpath(ab)) if ab else e.get("path", "")
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(e)
+
+    # Frontmatter
+    fm = {}
+    skill_md = None
+    for e in unique:
+        ab = entry_abs(e.get("path", ""))
+        if ab and os.path.isfile(ab):
+            skill_md = ab
+            try:
+                text = open(ab, encoding="utf-8", errors="replace").read()
+                fm = (parse_frontmatter(text) or ({}, ""))[0]
+            except OSError:
+                pass
+            break
+
+    # Verification record
+    verified = False
+    vinfo = None
+    if skill_md:
+        skill_dir = os.path.dirname(skill_md)
+        vrec = verified_record(skill_dir)
+        verified = vrec[0]
+        vinfo = vrec[1]
+
+    # Collision info
+    collisions = classify_collisions(collect_entries())
+    coll = [c for c in collisions if c.get("name") == name]
+
+    # Hash
+    skill_hash = sha256_file(skill_md) if skill_md else None
+
+    result = {
+        "name": name,
+        "instances": len(unique),
+        "path": skill_md,
+        "trust": unique[0].get("trust") if unique else None,
+        "source": unique[0].get("source") if unique else None,
+        "frontmatter": {
+            "name": fm.get("name"),
+            "description": (fm.get("description") or "")[:200],
+        },
+        "hash": skill_hash,
+        "verified": verified,
+        "verification": vinfo,
+        "collisions": coll,
+        "instances_detail": [
+            {"path": e.get("path"), "source": e.get("source"), "trust": e.get("trust")}
+            for e in unique
+        ],
+    }
+
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(f"skill: {name}")
+        print(f"  instances: {len(unique)}")
+        print(f"  path: {skill_md or 'not found'}")
+        print(f"  trust: {result['trust']}")
+        print(f"  source: {result['source']}")
+        print(f"  hash: {skill_hash or 'n/a'}")
+        print(f"  verified: {verified}")
+        if coll:
+            print(f"  collisions: {len(coll)}")
+            for c in coll:
+                print(f"    - {c.get('kind')}: {c.get('detail', '')}")
+        if len(unique) > 1:
+            print("  shadowing:")
+            for e in unique:
+                print(f"    - {e.get('source')}: {e.get('path')}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="skill_index.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -611,6 +702,8 @@ def main() -> int:
     v = sub.add_parser("verify"); v.add_argument("name")
     v.add_argument("--check", action="append", default=[],
                    help="name of a check this badge attests (repeatable)")
+    p = sub.add_parser("provenance"); p.add_argument("name")
+    p.add_argument("--json", action="store_true")
 
     args = ap.parse_args()
     if args.cmd == "verify":
@@ -642,6 +735,8 @@ def main() -> int:
         for c in res["rejected_sample"]:
             print(f"  - {c['name']} score={c['score']}")
         return 0
+    if args.cmd == "provenance":
+        return provenance_skill(args.name, args.json)
     if args.cmd == "doctor":
         idx, findings = diagnose()
         if args.json:

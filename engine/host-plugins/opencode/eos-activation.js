@@ -33,7 +33,7 @@
 // provide.
 
 import { spawn } from "node:child_process"
-import { mkdtempSync, writeFileSync, rmSync, readdirSync } from "node:fs"
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname, resolve } from "node:path"
 
@@ -63,23 +63,33 @@ function activateCommand() {
   const home = process.env.EOS_HOME || (process.env.USERPROFILE || process.env.HOME || "") + "/.eos"
   const versions = join(home, "versions")
   let python = process.env.EOS_PYTHON || ""
+  let activeVersion = ""
   if (!python) {
-    let newest = ""
+    // Read the active version from config.json instead of picking the newest
+    // by name. After a rollback the active version is the older one, and
+    // picking by name would silently use the newer (rolled-back-from) engine.
     try {
-      for (const name of readdirSync(versions)) {
-        if (name > newest) newest = name
-      }
+      const configRaw = readFileSync(join(home, "config.json"), "utf8")
+      const config = JSON.parse(configRaw)
+      activeVersion = config.active_version || config.current || ""
     } catch {
-      // No versions directory: fall back to the interpreter on PATH.
+      // No config or unreadable: fall back to newest by name.
+      try {
+        for (const name of readdirSync(versions)) {
+          if (name > activeVersion) activeVersion = name
+        }
+      } catch {
+        // No versions directory.
+      }
     }
-    if (newest) {
-      python = join(versions, newest, "runtime", "python", process.platform === "win32" ? "python.exe" : "bin/python3")
+    if (activeVersion) {
+      python = join(versions, activeVersion, "runtime", "python", process.platform === "win32" ? "python.exe" : "bin/python3")
     }
   }
   if (!python) python = process.platform === "win32" ? "python" : "python3"
   let engine = process.env.EOS_ENGINE || ""
-  if (!engine && python.includes("versions")) {
-    engine = resolve(dirname(python), "..", "..", "engine")
+  if (!engine && activeVersion) {
+    engine = resolve(versions, activeVersion, "engine")
   }
   if (!engine) engine = join(home, "engine")
   return [python, join(engine, "tools", "eos_activate.py")]
