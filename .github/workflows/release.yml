@@ -66,6 +66,15 @@ jobs:
         env:
           EOS_ENGINE: ${{ github.workspace }}/engine
         run: python engine/tools/agent_install.py install --target project --project engine --force
+      - name: Debug OpenCode agent discovery
+        working-directory: engine
+        run: |
+          echo "=== agents dir ==="
+          ls -la .opencode/agents | head
+          echo "=== opencode version ==="
+          opencode --version
+          echo "=== debug agents ==="
+          opencode debug agents || true
       - name: Run the real EOS gate against this commit
         run: |
           python engine/tools/release_gate.py run \
