@@ -2,9 +2,9 @@
 
 `eos 0.2.5-alpha` is an unsigned alpha engineering control plane for OpenCode
 V2 on Windows. Release commit `056ec89ea935e780268295bf40cb2dfb101d2af8`;
-release workflow run `39854082689`. The `v0.2.5-alpha` tag points to `dddc03b`;
-commits `904f981` and `056ec89` add docs/evidence and the packaging checksum fix,
-with no engine, CLI or skill code change.
+release workflow run `39854082689`. The `v0.2.5-alpha` tag points to the final
+documentation commit on `main`; commits `904f981` and `056ec89` add docs/evidence
+and the packaging checksum fix, with no engine, CLI or skill code change.
 
 ## Readiness
 
@@ -154,7 +154,7 @@ returned exit 0 and the expected `eos version`.
 ## Not in this release
 
 - Signed binaries, Authenticode, Apple Developer ID or notarization (STABLE gate).
-- A macOS Intel 0.2.5 DMG: the `macos-13` job stayed queued with no runner.
+- A macOS Intel 0.2.5 DMG: the `macos-13` job had no runner and was cancelled after 11 hours.
 - A live third-party orchestrator run. Ruflo is `ADAPTER_ONLY` until an
   `eos-orchestrator/1` adapter exists; EOS does not install or upgrade it.
 - `PRODUCTION_READY`. This is an alpha, unsigned development release.

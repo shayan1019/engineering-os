@@ -5,14 +5,14 @@ Host: OpenCode 2.0.32 on Windows 11 Pro 26200
 Workspace: `MY PROCECT` (installation) + `engineering-os` (canonical source)
 Release commit: `056ec89ea935e780268295bf40cb2dfb101d2af8`
 Release workflow: run `39854082689` (workflow_dispatch, version 0.2.5-alpha)
-Windows jobs (gate, build, seal, publish): **success**. Only the macOS Intel
-job was still queued at the time of this record; it does not gate the Windows
-publication.
+Windows jobs (gate, build, seal, publish): **success**. The macOS Intel job
+never received a runner and was cancelled after 11 hours; it does not gate the
+Windows publication.
 
-The `v0.2.5-alpha` tag points to `dddc03b`. Commits `904f981` and `056ec89`
-add documentation, evidence and the packaging checksum fix; no engine, CLI or
-skill code differs from the tag. The manifest on the release names `056ec89`,
-the commit the sealed assets and gate artifact were built and verified against.
+The `v0.2.5-alpha` tag points to the final documentation commit on `main`,
+which adds the final evidence after `056ec89`; no engine, CLI or skill code
+differs. The manifest on the release names `056ec89`, the commit the sealed
+assets and gate artifact were built and verified against.
 
 A row is **DONE** only when a command or artifact produced in this session shows
 it. A row that could not be executed says **PARTIAL** or **BLOCKED** and names
@@ -49,7 +49,7 @@ package; and neither implies a signed production release.
 | P0 | Release gate is the authority | **DONE** | forged gate commit, missing suite, changed registry and tampered installer all rejected |
 | P1 | Orchestrator executes, not just probes | **DONE** | real PIDs, depth/timeout/cancel/step/agent/workspace bounds; Ruflo ADAPTER_ONLY |
 | P2 | Real Plan/Build permission proof | **DONE** | Plan write denied, Build/implementer write allowed, reviewer denied; external/shell/delegation cases |
-| P3 | Packages | **WINDOWS DONE; macOS arm64 BUILT; macOS Intel BLOCKED** | Windows run `39854082689` published; arm64 DMG artifact exists; Intel runner never became available |
+| P3 | Packages | **WINDOWS DONE; macOS arm64 BUILT; macOS Intel BLOCKED** | Windows run `39854082689` published; arm64 DMG artifact exists; Intel job had no runner and was cancelled |
 | P4 | Status split | **DONE** | this table, README and release notes use the four statuses |
 
 ## A. Host / workspace independence - DONE
@@ -263,9 +263,9 @@ directories and install directory.
 
 macOS is reported separately: the `macos-arm64` artifact (59,968,316 bytes) was
 built in the same run. It is not attached to the release because `publish-macos`
-waits for both matrix legs, and the Intel (`macos-13`) job remained queued with
-no runner at the time of this record. No Intel 0.2.5 artifact is claimed, and
-the macOS bundles are unsigned. Windows publishing did not wait for either.
+waits for both matrix legs. The Intel (`macos-13`) job never received a runner
+and was cancelled after 11 hours. No Intel 0.2.5 artifact is claimed, and the
+macOS bundles are unsigned. Windows publishing did not wait for either.
 
 ## G. Real-project safety - DONE
 

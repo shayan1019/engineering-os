@@ -8,12 +8,12 @@ bounded specialists, a mechanical quality gate, and evidence that survives a
 reboot and a directory move.
 
 Release commit: `056ec89ea935e780268295bf40cb2dfb101d2af8`
-Workflow run: `39854082689` (Windows jobs successful; macOS Intel still queued)
+Workflow run: `39854082689` (Windows jobs successful; macOS Intel had no runner and was cancelled)
 
-The `v0.2.5-alpha` tag points to `dddc03b`. Commits `904f981` and `056ec89`
-add documentation, evidence and the packaging checksum fix; no engine, CLI or
-skill code differs from the tag. The sealed manifest names `056ec89`, the
-commit the assets and gate artifact were built and verified against.
+The `v0.2.5-alpha` tag points to the final documentation commit on `main`,
+which adds the final evidence after `056ec89`; no engine, CLI or skill code
+differs. The sealed manifest names `056ec89`, the commit the assets and gate
+artifact were built and verified against.
 
 ## Readiness
 
@@ -118,9 +118,10 @@ The 0.2.4 packages were not renamed or presented as 0.2.5; they remain separate.
 
 macOS is reported separately. The `macos-arm64` artifact (59,968,316 bytes) was
 built in the same run, but it is not attached to this release because
-`publish-macos` waits for both matrix legs and the Intel (`macos-13`) job stayed
-queued with no runner. No Intel 0.2.5 package is claimed, and no macOS package
-is signed or notarized. Windows publication did not wait for macOS.
+`publish-macos` waits for both matrix legs. The Intel (`macos-13`) job never
+received a runner and was cancelled after 11 hours. No Intel 0.2.5 package is
+claimed, and no macOS package is signed or notarized. Windows publication did
+not wait for macOS.
 
 ## Install and upgrade
 
