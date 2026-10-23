@@ -215,7 +215,10 @@ def render(ctx: dict) -> str:
             for s in ctx["skills"][:8]
         )
         lines.append("relevant skills: " + names)
-        lines.append("  read a skill file only when the task actually needs it")
+        for sk in ctx["skills"][:8]:
+            if sk.get("path"):
+                lines.append("  skill path: " + sk["path"])
+        lines.append("  read a skill file only when the task actually needs it; record activation via eos skills activate")
     if ctx.get("specialists"):
         lines.append("orchestrator: " + str(ctx.get("orchestrator")))
         lines.append("specialists to use: " + ", ".join(ctx["specialists"]))
