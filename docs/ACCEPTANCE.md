@@ -9,9 +9,9 @@ the release is published.
 
 | Claim | Verdict | Basis |
 | --- | --- | --- |
-| `CORE_READY` | PENDING | Release gate on the tagged commit |
-| `HOST_READY` | PENDING | Windows 11 + OpenCode live permission harness |
-| `DISTRIBUTION_READY` | PENDING | Windows installer/portable and macOS package build |
+| `CORE_READY` | **YES** | Release gate on commit `a5a7b9b` (run 39956508938) |
+| `HOST_READY` | **YES** | Windows 11 + OpenCode 2.0.32 live permission harness (unchanged from 0.2.5) |
+| `DISTRIBUTION_READY` | **YES** | Windows installer/portable and macOS arm64/Intel packages built in run 39956508938 |
 | `PRODUCTION_READY` | **NO** | Alpha, unsigned, no notarization |
 
 ## Core checks
@@ -56,11 +56,11 @@ is available.
 
 ## Release evidence
 
-- Release run: `TBD`
-- Windows assets: `TBD`
-- macOS assets: `TBD`
-- SHA-256 manifest: `TBD`
-- Gate artifact: `TBD`
+- Release run: https://github.com/shayan1019/engineering-os/actions/runs/39956508938
+- Windows assets: EngineeringOS-Setup-0.2.6-alpha.exe, EngineeringOS-0.2.6-alpha-windows-x64-portable.zip, eos-0.2.6-alpha.exe
+- macOS assets: built in the same run (arm64 and Intel)
+- SHA-256 manifest: SHA256SUMS.txt on the release page
+- Gate artifact: release-gate.json in the run artifacts
 
 ## Known limitations
 
