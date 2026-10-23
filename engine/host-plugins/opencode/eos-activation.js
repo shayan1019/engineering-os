@@ -72,15 +72,16 @@ function activateCommand() {
       const configRaw = readFileSync(join(home, "config.json"), "utf8")
       const config = JSON.parse(configRaw)
       activeVersion = config.active_version || config.current || ""
-    } catch {
-      // No config or unreadable: fall back to newest by name.
-      try {
-        for (const name of readdirSync(versions)) {
-          if (name > activeVersion) activeVersion = name
-        }
-      } catch {
-        // No versions directory.
+      if (!activeVersion) {
+        // Config exists but no active version: degraded
+        console.error("EOS: config.json has no active_version; activation degraded")
+        activeVersion = ""
       }
+    } catch {
+      // No config or unreadable: do NOT fall back to newest by name.
+      // This could mask a rollback failure. Report degraded and skip.
+      console.error("EOS: cannot read config.json; activation degraded (no silent fallback)")
+      activeVersion = ""
     }
     if (activeVersion) {
       python = join(versions, activeVersion, "runtime", "python", process.platform === "win32" ? "python.exe" : "bin/python3")

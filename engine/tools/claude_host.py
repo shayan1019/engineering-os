@@ -203,10 +203,16 @@ def install_skills(force: bool = False) -> int:
             eos_owned = False
             if ddir in manifest.get("skills", {}):
                 entry = manifest["skills"][ddir]
-                # Verify by checking if SKILL.md hash matches
-                skill_md = os.path.join(ddir, "SKILL.md")
-                if os.path.isfile(skill_md) and entry.get("skill_md_hash"):
-                    eos_owned = _sha256_file(skill_md) == entry["skill_md_hash"]
+                # Verify by checking if files match (new format) or SKILL.md (old format)
+                files_map = entry.get("files")
+                if files_map:
+                    skill_md = os.path.join(ddir, "SKILL.md")
+                    if os.path.isfile(skill_md) and "SKILL.md" in files_map:
+                        eos_owned = _sha256_file(skill_md) == files_map["SKILL.md"]
+                elif entry.get("skill_md_hash"):
+                    skill_md = os.path.join(ddir, "SKILL.md")
+                    if os.path.isfile(skill_md):
+                        eos_owned = _sha256_file(skill_md) == entry["skill_md_hash"]
 
             if not eos_owned and not force:
                 print(f"SKIP: {name} (exists, not EOS-owned; use --force)")
@@ -241,7 +247,7 @@ def install_skills(force: bool = False) -> int:
             print(f"BACKUP: {name} -> {os.path.basename(backup_path)}")
             shutil.rmtree(ddir)
 
-        shutil.copytree(sdir, ddir)
+        shutil.copytree(sdir, ddir, dirs_exist_ok=True)
 
         # Record all files after install
         installed_files = {}
@@ -305,14 +311,32 @@ def verify() -> int:
             print(f"MODIFIED (EOS-owned): {path}")
             problems += 1
     for path, info in manifest.get("skills", {}).items():
-        skill_md = os.path.join(path, "SKILL.md")
-        if not os.path.exists(skill_md):
-            print(f"MISSING (EOS-owned): {skill_md}")
-            problems += 1
-            continue
-        current = _sha256_file(skill_md)
-        if current != info.get("skill_md_hash"):
-            print(f"MODIFIED (EOS-owned): {skill_md}")
+        files_map = info.get("files")
+        if files_map:
+            # New format: check all tracked files
+            for rel, expected_hash in files_map.items():
+                fp = os.path.join(path, rel)
+                if not os.path.exists(fp):
+                    print(f"MISSING (EOS-owned): {fp}")
+                    problems += 1
+                    continue
+                current = _sha256_file(fp)
+                if current != expected_hash:
+                    print(f"MODIFIED (EOS-owned): {fp}")
+                    problems += 1
+        elif info.get("skill_md_hash"):
+            # Old format: check SKILL.md only
+            skill_md = os.path.join(path, "SKILL.md")
+            if not os.path.exists(skill_md):
+                print(f"MISSING (EOS-owned): {skill_md}")
+                problems += 1
+                continue
+            current = _sha256_file(skill_md)
+            if current != info.get("skill_md_hash"):
+                print(f"MODIFIED (EOS-owned): {skill_md}")
+                problems += 1
+        else:
+            print(f"NO HASH (EOS-owned): {path}")
             problems += 1
     if problems:
         print(f"FAIL: {problems} integrity issue(s)")
@@ -333,10 +357,14 @@ def uninstall() -> int:
                 os.remove(path)
                 removed += 1
                 print(f"REMOVE: {os.path.basename(path)}")
+                del manifest["agents"][path]
             else:
                 print(f"SKIP: {os.path.basename(path)} (modified externally, not removing)")
                 skipped += 1
-        del manifest["agents"][path]
+                # Keep manifest entry for modified files
+        else:
+            # File already removed; clean up manifest
+            del manifest["agents"][path]
 
     # Remove only EOS-owned skill files, preserving foreign files
     for path, info in list(manifest.get("skills", {}).items()):
@@ -355,7 +383,7 @@ def uninstall() -> int:
         if modified:
             print(f"SKIP: {os.path.basename(path)}/ (modified externally, not removing)")
             skipped += 1
-            del manifest["skills"][path]
+            # Keep manifest entry for modified skills
             continue
         # Remove only EOS-owned files, preserve foreign ones
         removed_files = 0
@@ -387,25 +415,33 @@ def uninstall() -> int:
 
 
 def restore(backup_path: str) -> int:
-    """Restore files from a backup directory."""
+    """Restore files from a backup directory created by --force."""
     if not os.path.isdir(backup_path):
         print(f"BLOCKED: backup directory not found: {backup_path}")
         return 1
     manifest = _load_manifest()
     restored = 0
+    # Determine if this is an agent backup or skill backup based on contents
     for item in os.listdir(backup_path):
         src = os.path.join(backup_path, item)
-        if os.path.isfile(src):
-            # Agent file
+        if os.path.isfile(src) and item.endswith(".md"):
+            # Agent file restore
             dst = os.path.join(AGENTS_DIR, item)
             os.makedirs(AGENTS_DIR, exist_ok=True)
+            # Back up current file before restoring
+            if os.path.exists(dst):
+                _backup_file(dst, manifest)
             shutil.copy2(src, dst)
             restored += 1
             print(f"RESTORE: {item}")
         elif os.path.isdir(src):
-            # Skill directory
+            # Skill directory restore
             dst = os.path.join(SKILLS_DIR, item)
             if os.path.exists(dst):
+                # Back up current before restoring
+                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                cur_backup = os.path.join(BACKUP_DIR, f"{item}.pre-restore.{ts}.bak")
+                shutil.copytree(dst, cur_backup)
                 shutil.rmtree(dst)
             shutil.copytree(src, dst)
             restored += 1
