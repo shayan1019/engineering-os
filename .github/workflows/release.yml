@@ -61,12 +61,12 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install OpenCode (for the agent dispatch proof)
-    run: npm install -g opencode-ai@1.19.4
-  - name: Install EOS agents (global, for the dispatch proof)
-    env:
-      EOS_ENGINE: ${{ github.workspace }}/engine
-    run: python engine/tools/agent_install.py install --target global --force
-  - name: Run the real EOS gate against this commit
+        run: npm install -g opencode-ai@1.19.4
+      - name: Install EOS agents (global, for the dispatch proof)
+        env:
+          EOS_ENGINE: ${{ github.workspace }}/engine
+        run: python engine/tools/agent_install.py install --target global --force
+      - name: Run the real EOS gate against this commit
         run: |
           python engine/tools/release_gate.py run \
             --engine engine \
