@@ -648,12 +648,23 @@ def provenance_skill(name: str, as_json: bool = False) -> int:
     # Hash
     skill_hash = sha256_file(skill_md) if skill_md else None
 
+    # Determine license
+    shipped_skills = {"fable-5-1", "fable5-thinking", "graph-engineering", "ai-inventor"}
+    license_info = "UNKNOWN"
+    if name in shipped_skills:
+        license_info = "Apache-2.0 (EOS shipped)"
+    elif skill_md and ep.ENGINE_ROOT in os.path.abspath(skill_md):
+        license_info = "Apache-2.0 (EOS shipped)"
+    elif fm.get("license"):
+        license_info = fm.get("license")
+
     result = {
         "name": name,
         "instances": len(unique),
         "path": skill_md,
         "trust": unique[0].get("trust") if unique else None,
         "source": unique[0].get("source") if unique else None,
+        "license": license_info,
         "frontmatter": {
             "name": fm.get("name"),
             "description": (fm.get("description") or "")[:200],
@@ -676,6 +687,7 @@ def provenance_skill(name: str, as_json: bool = False) -> int:
         print(f"  path: {skill_md or 'not found'}")
         print(f"  trust: {result['trust']}")
         print(f"  source: {result['source']}")
+        print(f"  license: {result['license']}")
         print(f"  hash: {skill_hash or 'n/a'}")
         print(f"  verified: {verified}")
         if coll:

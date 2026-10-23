@@ -228,7 +228,7 @@ def install_skills(force: bool = False) -> int:
                 print(f"BACKUP: {name} -> {os.path.basename(backup_path)}")
                 shutil.rmtree(ddir)
 
-        # Record all files in the skill directory before overwrite
+        # Record original files (all files currently in ddir) for restore
         original_files = {}
         if os.path.isdir(ddir):
             for root, _, files in os.walk(ddir):
@@ -237,25 +237,33 @@ def install_skills(force: bool = False) -> int:
                     rel = os.path.relpath(fp, ddir)
                     original_files[rel] = _sha256_file(fp)
 
-        # Backup if force-overwriting
+        # Backup if force-overwriting an existing directory
         backup_path = None
         if os.path.exists(ddir) and force:
             os.makedirs(BACKUP_DIR, exist_ok=True)
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             backup_path = os.path.join(BACKUP_DIR, f"{name}.{ts}.bak")
+            # Avoid backup collision
+            counter = 0
+            while os.path.exists(backup_path):
+                counter += 1
+                backup_path = os.path.join(BACKUP_DIR, f"{name}.{ts}.{counter}.bak")
             shutil.copytree(ddir, backup_path)
             print(f"BACKUP: {name} -> {os.path.basename(backup_path)}")
             shutil.rmtree(ddir)
 
         shutil.copytree(sdir, ddir, dirs_exist_ok=True)
 
-        # Record all files after install
+        # Record ONLY files that exist in the source (EOS-owned files)
+        # Do NOT record user-added files that happen to be in ddir
         installed_files = {}
-        for root, _, files in os.walk(ddir):
+        for root, _, files in os.walk(sdir):
             for f in files:
                 fp = os.path.join(root, f)
-                rel = os.path.relpath(fp, ddir)
-                installed_files[rel] = _sha256_file(fp)
+                rel = os.path.relpath(fp, sdir)
+                dst_fp = os.path.join(ddir, rel)
+                if os.path.isfile(dst_fp):
+                    installed_files[rel] = _sha256_file(dst_fp)
 
         manifest.setdefault("skills", {})[ddir] = {
             "source": sdir,
@@ -415,37 +423,82 @@ def uninstall() -> int:
 
 
 def restore(backup_path: str) -> int:
-    """Restore files from a backup directory created by --force."""
+    """Restore files from a backup directory created by --force.
+
+    Uses the manifest to determine the original target path. Never guesses
+    from backup contents.
+    """
     if not os.path.isdir(backup_path):
         print(f"BLOCKED: backup directory not found: {backup_path}")
         return 1
     manifest = _load_manifest()
     restored = 0
-    # Determine if this is an agent backup or skill backup based on contents
-    for item in os.listdir(backup_path):
-        src = os.path.join(backup_path, item)
-        if os.path.isfile(src) and item.endswith(".md"):
-            # Agent file restore
-            dst = os.path.join(AGENTS_DIR, item)
-            os.makedirs(AGENTS_DIR, exist_ok=True)
-            # Back up current file before restoring
-            if os.path.exists(dst):
-                _backup_file(dst, manifest)
-            shutil.copy2(src, dst)
-            restored += 1
-            print(f"RESTORE: {item}")
-        elif os.path.isdir(src):
-            # Skill directory restore
-            dst = os.path.join(SKILLS_DIR, item)
-            if os.path.exists(dst):
-                # Back up current before restoring
-                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                cur_backup = os.path.join(BACKUP_DIR, f"{item}.pre-restore.{ts}.bak")
-                shutil.copytree(dst, cur_backup)
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
-            restored += 1
-            print(f"RESTORE: {item}/")
+
+    # Find which manifest entry references this backup
+    target_path = None
+    is_skill = False
+    for path, info in manifest.get("skills", {}).items():
+        if info.get("backup_path") == backup_path:
+            target_path = path
+            is_skill = True
+            break
+    for path, info in manifest.get("agents", {}).items():
+        # Agent backups are single files; check if backup contains this agent
+        basename = os.path.basename(path)
+        if os.path.isfile(os.path.join(backup_path, basename)):
+            target_path = path
+            is_skill = False
+            break
+
+    if target_path is None:
+        # Fallback: infer from backup contents, but warn
+        print("WARN: no manifest entry references this backup; inferring from contents")
+        items = os.listdir(backup_path)
+        if len(items) == 1 and os.path.isdir(os.path.join(backup_path, items[0])):
+            target_path = os.path.join(SKILLS_DIR, items[0])
+            is_skill = True
+        elif any(f.endswith(".md") for f in items):
+            # Could be agent backup
+            target_path = os.path.join(AGENTS_DIR, [f for f in items if f.endswith(".md")][0])
+            is_skill = False
+        else:
+            print("BLOCKED: cannot determine restore target")
+            return 1
+
+    if is_skill:
+        if os.path.exists(target_path):
+            # Back up current before restoring
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            cur_backup = os.path.join(BACKUP_DIR, f"{os.path.basename(target_path)}.pre-restore.{ts}.bak")
+            shutil.copytree(target_path, cur_backup)
+            # Remove only EOS-owned files, preserve foreign
+            info = manifest.get("skills", {}).get(target_path, {})
+            eos_files = set(info.get("files", {}).keys())
+            for root, _, files in os.walk(target_path):
+                for f in files:
+                    fp = os.path.join(root, f)
+                    rel = os.path.relpath(fp, target_path)
+                    if rel in eos_files:
+                        os.remove(fp)
+            # Remove empty dirs
+            for root, dirs, files in os.walk(target_path, topdown=False):
+                if not os.listdir(root):
+                    os.rmdir(root)
+        shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+        restored = 1
+        print(f"RESTORE: {os.path.basename(target_path)}/ from {os.path.basename(backup_path)}")
+    else:
+        if os.path.exists(target_path):
+            _backup_file(target_path, manifest)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        # Find the agent file in backup
+        for item in os.listdir(backup_path):
+            if item.endswith(".md"):
+                shutil.copy2(os.path.join(backup_path, item), target_path)
+                restored = 1
+                print(f"RESTORE: {item} -> {target_path}")
+                break
+
     print(f"PASS: restored {restored} item(s) from {backup_path}")
     return 0
 

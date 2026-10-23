@@ -146,14 +146,36 @@ def build(task: str, project: str, host: str, max_skills: int) -> dict:
     router_skills = routed.get("skills") or {}
     primary = [s for s in (router_skills.get("primary") or [])][:max_skills]
     ranked = {e.get("name"): e for e in (router_skills.get("ranked") or []) if isinstance(e, dict)}
-    skill_list = [
-        {
+    skill_list = []
+    for name in primary:
+        # Resolve skill path
+        skill_path = None
+        # Check engine skills
+        candidate = os.path.join(ep.ENGINE_ROOT, "skills", name, "SKILL.md")
+        if os.path.isfile(candidate):
+            skill_path = candidate
+        else:
+            # Check workspace and user roots
+            ws = ep.resolve_workspace()
+            for prefix in (".agents", ".claude", ".opencode"):
+                c = os.path.join(ws, prefix, "skills", name, "SKILL.md")
+                if os.path.isfile(c):
+                    skill_path = c
+                    break
+            if not skill_path:
+                home = os.path.expanduser("~")
+                for root_dir in (os.path.join(home, ".agents", "skills"),
+                                 os.path.join(home, ".claude", "skills")):
+                    c = os.path.join(root_dir, name, "SKILL.md")
+                    if os.path.isfile(c):
+                        skill_path = c
+                        break
+        skill_list.append({
             "name": name,
+            "path": skill_path,
             "trust": (ranked.get(name) or {}).get("trust"),
             "reasons": (ranked.get(name) or {}).get("reasons"),
-        }
-        for name in primary
-    ]
+        })
     if not skill_list:
         skill_list = skills_for(task, resolved_project, max_skills)
 
