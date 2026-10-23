@@ -26,7 +26,7 @@ generating configuration files:
 
 | Area | Evidence |
 | --- | --- |
-| Release gate | CI run `39852134381`: engine/security/regression PASS on commit `dddc03b`, 109-file baseline, clean tree before/after; forged gate and tampered installer rejected |
+| Release gate | CI run `39854082689`: engine/security/regression PASS on commit `056ec89`, 109-file baseline, clean tree before/after; forged gate and tampered installer rejected |
 | Skill index | 212 entries, 210 unique names, 2 real collisions, doctor 0/0 |
 | Skill routing | same task resolves differently per project with a decision trace; 20/20 routing cases |
 | Agents | 9 specialist definitions; runtime view 9/9; implementer bounded command allowlist, no `shell: *` |
@@ -70,8 +70,8 @@ docs/control-plane.md
 
 - `docs/ACCEPTANCE_2026-10-22.md` - A-G and P0-P4 rows with the command output behind each done claim.
 - `docs/PRODUCT_STATUS_0.2.5.md` - the four readiness statuses and the defects fixed in this build.
-- `docs/evidence/release-gate-39852134381.json` - CI gate artifact bound to commit `dddc03b`.
-- `docs/evidence/RELEASE-MANIFEST-39852134381.json` - sealed Windows asset hashes.
+- `docs/evidence/release-gate-39854082689.json` - CI gate artifact bound to commit `056ec89`.
+- `docs/evidence/RELEASE-MANIFEST-39854082689.json` - sealed Windows asset hashes.
 - `docs/evidence/permission-evidence-20261022T202737Z.json` - 11/11 live host permission transcript.
 - `release/RELEASE_NOTES-0.2.5-alpha.md` - published release notes.
 

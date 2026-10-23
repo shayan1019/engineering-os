@@ -7,8 +7,13 @@ does not replace the agent runtime; it adds project resolution, skill routing,
 bounded specialists, a mechanical quality gate, and evidence that survives a
 reboot and a directory move.
 
-Release commit: `dddc03bd8b28192404fce1671b140f66d14042fc`
-Workflow run: `39852134381` (Windows jobs successful; macOS Intel still queued)
+Release commit: `056ec89ea935e780268295bf40cb2dfb101d2af8`
+Workflow run: `39854082689` (Windows jobs successful; macOS Intel still queued)
+
+The `v0.2.5-alpha` tag points to `dddc03b`. Commits `904f981` and `056ec89`
+add documentation, evidence and the packaging checksum fix; no engine, CLI or
+skill code differs from the tag. The sealed manifest names `056ec89`, the
+commit the assets and gate artifact were built and verified against.
 
 ## Readiness
 
@@ -38,6 +43,7 @@ covered by a command that was actually run.
 | 8 | Packaging and publishing were not bound to the gate | `seal` hashes the exact installer/ZIP/CLI; `publish` re-verifies gate, commit, workflow run, manifest and every file. A tampered package is rejected. |
 | 9 | Orchestrators could answer a probe but not execute | `orchestrators test --self-test` runs a real bounded fixture: 3 worker PIDs at depth 2, with max_agents/max_depth/max_steps/timeout/cancel/workspace-escape enforcement. A version probe is never execution. |
 | 10 | Agent permissions were prose, not host outcomes | Live harness 11/11: Plan writes denied, Build/implementer writes allowed, reviewer write/shell/delegation denied, external directory denied, independent gate verified. The writer lost `shell: *` and keeps a bounded command allowlist. |
+| 11 | `SHA256SUMS.txt` hashed a previous copy of itself, so `sha256sum -c` failed on its own line | Generate the list excluding itself and verify it with `sha256sum -c` (`shasum -a 256 -c` on macOS) in both platform jobs. |
 
 ## New CLI surfaces
 
@@ -54,10 +60,10 @@ so it reports `ADAPTER_ONLY` and nothing is spawned.
 ## Verification
 
 ```
-release_gate.py run (CI, commit dddc03b, run 39852134381)
-  engine       PASS  (4 commands)  FE167869C6A5387AE74D9136D649C1A1CAC1A1E6CA3451F7DBE00EBE160B2B36
-  security     PASS  (1 command)   92B99AA68E0C3BDF7DB78BB731264F63C252FE7C82FAD6F0D485628B68F1EFC8
-  regression   PASS  (4 commands)  24D14D7B42B31E5C967C4283B1E41C3B94600D48D7E91B9B6FF0CA06CDEBD805
+release_gate.py run (CI, commit 056ec89, run 39854082689)
+  engine       PASS  (4 commands)  BB0DC2157E26DE1DB0E795C2B84946D579C55F5AB0CC1DDBDAF37FE34256EFF7
+  security     PASS  (1 command)   D804F363293170F46A1459FA8B1657DE40E5B1C90C0973866E72E4FF3A0B732B
+  regression   PASS  (4 commands)  39AF1AB9FB6CDEDB0D3755A8A3305035C2B5DFDF437A5BBA360E67A63BB8DCAE
   baseline 109 files, clean before/after, GATES.json E4537F90432F5E79
   forged PASS artifact for a wrong commit -> BLOCKED
   tampered setup after sealing             -> BLOCKED (artifact hash changed)
@@ -76,14 +82,14 @@ secret scan                         103 files, 0 insecure, 0 forbidden
 NSIS silent install/run/uninstall   PASS on windows-latest
 local NSIS install                  exit 0; doctor --product 3294 files, 0 problems
 local rollback                     0.2.4-alpha -> 0.2.5-alpha, both directions PASS
-local uninstall                    exit 0; launcher/version/install dir/PATH removed
+local uninstall                    exit 0; launcher/version dirs/install dir removed
 ```
 
 The live permission evidence is at
 `docs/evidence/permission-evidence-20261022T202737Z.json`
 (SHA-256 `175D84061EE63FECAD465D13892EB6A2355157BE32AD1AA42C218AB278C2550F`).
-The CI gate artifact is at `docs/evidence/release-gate-39852134381.json`
-(SHA-256 `B800914272EFC0C4F85F08E79D87A9ED83208678FE17492C2A7A28F4F5469FC0`).
+The CI gate artifact is at `docs/evidence/release-gate-39854082689.json`
+(SHA-256 `8EF195BFA75F637799E0EF82F370F4B87EE49DC3434127C0B75E4DAD41924FB1`).
 
 ## Artifacts
 
@@ -93,11 +99,11 @@ gate artifact and commit above:
 
 | Asset | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `EngineeringOS-Setup-0.2.5-alpha.exe` | 28,860,086 | `3F30E1AA986E2FE04D5A2D6D0F553E986B8AF8917FD48FCA2E4135E790639290` |
-| `EngineeringOS-0.2.5-alpha-portable.zip` | 50,027,587 | `59042F16258D5EBDEFE920D41FF1CBD65F254D193945A55F491F6AD65740E811` |
-| `eos-0.2.5-alpha.exe` | 487,424 | `376D00D58411988612C728F59BEB906A146307CCAECC28372897DA80A04EDBF1` |
-| `SHA256SUMS.txt` | 374 | `68ADBC7BE4E25101D8ADBBF6BF6A3AAB2174052AD8641CC7936409AE4E2C8EA3` |
-| `RELEASE-MANIFEST.json` | 1,078 | `D46B22B4DC61784DB94E608D658819DFB286AA84222950C176803249BB4AFB03` |
+| `EngineeringOS-Setup-0.2.5-alpha.exe` | 28,863,879 | `E92699165FD7E8B1598E76C1FF412AA86747E580FE763499631B2F855F522357` |
+| `EngineeringOS-0.2.5-alpha-portable.zip` | 50,027,590 | `81CCE072121ECD8B2BA3C2CEA36A32915BD69D8576FEA2F4251B20872EF87622` |
+| `eos-0.2.5-alpha.exe` | 487,424 | `D607A29EF8CCE97D7FE23F4B4658CF129B0C8CE9188CB17894CCBE3CDD3223F8` |
+| `SHA256SUMS.txt` | 293 | `3549B9E2BDE7E251C1970174CC9832139157A1C45D91290CF13C131F3975185D` |
+| `RELEASE-MANIFEST.json` | 1,078 | `983662097474B5A92D9D44F58AFD0465188C0ACD8694B2637D3AD5ACCD929027` |
 
 Verify before running:
 
@@ -107,8 +113,10 @@ Get-Content .\RELEASE-MANIFEST.json
 ```
 
 The 0.2.4 packages were not renamed or presented as 0.2.5; they remain separate.
+`SHA256SUMS.txt` no longer hashes itself, and `sha256sum -c SHA256SUMS.txt`
+(or `shasum -a 256 -c`) passes on the downloaded directory.
 
-macOS is reported separately. The `macos-arm64` artifact (59,966,697 bytes) was
+macOS is reported separately. The `macos-arm64` artifact (59,968,316 bytes) was
 built in the same run, but it is not attached to this release because
 `publish-macos` waits for both matrix legs and the Intel (`macos-13`) job stayed
 queued with no runner. No Intel 0.2.5 package is claimed, and no macOS package
@@ -146,7 +154,7 @@ The previous version remains installed; rollback swaps the active version and
 does not download anything.
 
 ```powershell
-eos uninstall                  # removes the launcher, versions and PATH entry
+eos uninstall                  # removes the launcher and versions; removes the PATH entry it owns
 eos uninstall --keep-versions  # keeps downloaded versions for a later repair
 ```
 

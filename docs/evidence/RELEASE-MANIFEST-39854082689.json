@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "kind": "release_manifest",
+  "created_at": "2026-10-22T21:07:18+00:00",
+  "version": "0.2.5-alpha",
+  "commit": "056ec89ea935e780268295bf40cb2dfb101d2af8",
+  "gate_sha256": "8EF195BFA75F637799E0EF82F370F4B87EE49DC3434127C0B75E4DAD41924FB1",
+  "workflow_run": {
+    "run_id": "39854082689",
+    "run_attempt": "1",
+    "workflow": "release",
+    "job": "gate"
+  },
+  "artifacts": [
+    {
+      "name": "EngineeringOS-0.2.5-alpha-portable.zip",
+      "size": 50027590,
+      "sha256": "81CCE072121ECD8B2BA3C2CEA36A32915BD69D8576FEA2F4251B20872EF87622"
+    },
+    {
+      "name": "EngineeringOS-Setup-0.2.5-alpha.exe",
+      "size": 28863879,
+      "sha256": "E92699165FD7E8B1598E76C1FF412AA86747E580FE763499631B2F855F522357"
+    },
+    {
+      "name": "SHA256SUMS.txt",
+      "size": 293,
+      "sha256": "3549B9E2BDE7E251C1970174CC9832139157A1C45D91290CF13C131F3975185D"
+    },
+    {
+      "name": "eos-0.2.5-alpha.exe",
+      "size": 487424,
+      "sha256": "D607A29EF8CCE97D7FE23F4B4658CF129B0C8CE9188CB17894CCBE3CDD3223F8"
+    }
+  ],
+  "verdict": "PASS"
+}

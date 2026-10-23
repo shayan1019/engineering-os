@@ -3,11 +3,16 @@
 Product: `eos 0.2.5-alpha` (unsigned development build)
 Host: OpenCode 2.0.32 on Windows 11 Pro 26200
 Workspace: `MY PROCECT` (installation) + `engineering-os` (canonical source)
-Release commit: `dddc03bd8b28192404fce1671b140f66d14042fc`
-Release workflow: run `39852134381` (workflow_dispatch, version 0.2.5-alpha)
+Release commit: `056ec89ea935e780268295bf40cb2dfb101d2af8`
+Release workflow: run `39854082689` (workflow_dispatch, version 0.2.5-alpha)
 Windows jobs (gate, build, seal, publish): **success**. Only the macOS Intel
 job was still queued at the time of this record; it does not gate the Windows
 publication.
+
+The `v0.2.5-alpha` tag points to `dddc03b`. Commits `904f981` and `056ec89`
+add documentation, evidence and the packaging checksum fix; no engine, CLI or
+skill code differs from the tag. The manifest on the release names `056ec89`,
+the commit the sealed assets and gate artifact were built and verified against.
 
 A row is **DONE** only when a command or artifact produced in this session shows
 it. A row that could not be executed says **PARTIAL** or **BLOCKED** and names
@@ -37,14 +42,14 @@ package; and neither implies a signed production release.
 | B | Plan read-only, Build writes, controlled implementer, independent gate | **DONE** | live host harness 11/11; host denial text and filesystem outcomes recorded |
 | C | Bounded nested orchestration | **DONE for the bounded fixture; ADAPTER_ONLY for Ruflo** | 9/9 real-process cases; `orchestrators test --self-test` 6/6; no live Ruflo runtime |
 | D | Negative permissions / security | **DONE** | contracts 9 agents / 0 problems; 8 violations + stale-dispatch check; secret scan 0/0 |
-| E | Regression of the EOS suite | **DONE** | CI release gate: engine/security/regression PASS on commit `dddc03b`; 109-file baseline |
+| E | Regression of the EOS suite | **DONE** | CI release gate: engine/security/regression PASS on commit `056ec89`; 109-file baseline |
 | F | Clean installation | **DONE** | NSIS silent install/run/uninstall PASS in CI; local install + doctor 3294 files 0 problems |
 | F2 | Packaged Windows artifacts | **DONE** | sealed NSIS + portable ZIP + CLI; SHA-256 verified locally; published private prerelease |
 | G | Real-project safety | **DONE** | writes only to `%TEMP%`, `~/.eos`, `MY PROCECT`, `engineering-os`; BigHero untouched |
 | P0 | Release gate is the authority | **DONE** | forged gate commit, missing suite, changed registry and tampered installer all rejected |
 | P1 | Orchestrator executes, not just probes | **DONE** | real PIDs, depth/timeout/cancel/step/agent/workspace bounds; Ruflo ADAPTER_ONLY |
 | P2 | Real Plan/Build permission proof | **DONE** | Plan write denied, Build/implementer write allowed, reviewer denied; external/shell/delegation cases |
-| P3 | Packages | **WINDOWS DONE; macOS arm64 BUILT; macOS Intel BLOCKED** | Windows run `39852134381` published; arm64 DMG artifact exists; Intel runner never became available |
+| P3 | Packages | **WINDOWS DONE; macOS arm64 BUILT; macOS Intel BLOCKED** | Windows run `39854082689` published; arm64 DMG artifact exists; Intel runner never became available |
 | P4 | Status split | **DONE** | this table, README and release notes use the four statuses |
 
 ## A. Host / workspace independence - DONE
@@ -168,21 +173,21 @@ counted as a delegated task. No Ruflo worker was started or installed.
 ## E. Regression - DONE
 
 Local release gate (clean tree, commit `0d7866b` at the time) and CI release
-gate (commit `dddc03b`) both returned PASS. CI artifact:
-`docs/evidence/release-gate-39852134381.json`:
+gate (commit `056ec89`) both returned PASS. CI artifact:
+`docs/evidence/release-gate-39854082689.json`:
 
 ```
 version 0.2.5-alpha
-commit  dddc03bd8b28192404fce1671b140f66d14042fc
+commit  056ec89ea935e780268295bf40cb2dfb101d2af8
 ref     refs/heads/main
 repository shayan1019/engineering-os
 workspace_clean_before true
 workspace_clean_after  true
 baseline entries 109
 gates_sha256 E4537F90432F5E79A0872B844991EA6E12A0015791046A580D82F531F72C0EAA
-engine      PASS  FE167869C6A5387AE74D9136D649C1A1CAC1A1E6CA3451F7DBE00EBE160B2B36
-security    PASS  92B99AA68E0C3BDF7DB78BB731264F63C252FE7C82FAD6F0D485628B68F1EFC8
-regression  PASS  24D14D7B42B31E5C967C4283B1E41C3B94600D48D7E91B9B6FF0CA06CDEBD805
+engine      PASS  BB0DC2157E26DE1DB0E795C2B84946D579C55F5AB0CC1DDBDAF37FE34256EFF7
+security    PASS  D804F363293170F46A1459FA8B1657DE40E5B1C90C0973866E72E4FF3A0B732B
+regression  PASS  39AF1AB9FB6CDEDB0D3755A8A3305035C2B5DFDF437A5BBA360E67A63BB8DCAE
 ```
 
 Engine suite (4 commands): skill index discover, router 20/20, OpenCode plugin
@@ -214,9 +219,10 @@ eos rollback                            -> rolled back to 0.2.5-alpha
 eos version                             -> eos 0.2.5-alpha
 
 uninstall.exe /S (from the same install dir) -> exit 0
-  removed: ~/.eos/bin/eos.exe, ~/.eos/versions/0.2.5-alpha, install dir,
-           the EOS entry in the user PATH
+  removed: ~/.eos/bin/eos.exe, every version directory, the install dir
   retained: ~/.eos/config.json, state, evidence, baselines (user data)
+  PATH: the captured user PATH was restored; the uninstaller leaves an entry
+        it does not own untouched rather than deleting a user setting
 ```
 
 The uninstall test was destructive by design, so the whole `~/.eos` tree and
@@ -234,26 +240,28 @@ Produced by the GitHub Actions release workflow, not by a local `makensis`:
 
 | Asset | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `EngineeringOS-Setup-0.2.5-alpha.exe` (NSIS) | 28,860,086 | `3F30E1AA986E2FE04D5A2D6D0F553E986B8AF8917FD48FCA2E4135E790639290` |
-| `EngineeringOS-0.2.5-alpha-portable.zip` | 50,027,587 | `59042F16258D5EBDEFE920D41FF1CBD65F254D193945A55F491F6AD65740E811` |
-| `eos-0.2.5-alpha.exe` (standalone CLI) | 487,424 | `376D00D58411988612C728F59BEB906A146307CCAECC28372897DA80A04EDBF1` |
-| `SHA256SUMS.txt` | 374 | `68ADBC7BE4E25101D8ADBBF6BF6A3AAB2174052AD8641CC7936409AE4E2C8EA3` |
-| `RELEASE-MANIFEST.json` | 1,078 | `D46B22B4DC61784DB94E608D658819DFB286AA84222950C176803249BB4AFB03` |
+| `EngineeringOS-Setup-0.2.5-alpha.exe` (NSIS) | 28,863,879 | `E92699165FD7E8B1598E76C1FF412AA86747E580FE763499631B2F855F522357` |
+| `EngineeringOS-0.2.5-alpha-portable.zip` | 50,027,590 | `81CCE072121ECD8B2BA3C2CEA36A32915BD69D8576FEA2F4251B20872EF87622` |
+| `eos-0.2.5-alpha.exe` (standalone CLI) | 487,424 | `D607A29EF8CCE97D7FE23F4B4658CF129B0C8CE9188CB17894CCBE3CDD3223F8` |
+| `SHA256SUMS.txt` | 293 | `3549B9E2BDE7E251C1970174CC9832139157A1C45D91290CF13C131F3975185D` |
+| `RELEASE-MANIFEST.json` | 1,078 | `983662097474B5A92D9D44F58AFD0465188C0ACD8694B2637D3AD5ACCD929027` |
 
 All five are attached to the private prerelease `v0.2.5-alpha`. The manifest
 binds them to gate artifact SHA-256
-`B800914272EFC0C4F85F08E79D87A9ED83208678FE17492C2A7A28F4F5469FC0` and commit
-`dddc03bd8b28192404fce1671b140f66d14042fc`. The 0.2.4 packages were not renamed
-or presented as 0.2.5; they remain separate.
+`8EF195BFA75F637799E0EF82F370F4B87EE49DC3434127C0B75E4DAD41924FB1` and commit
+`056ec89ea935e780268295bf40cb2dfb101d2af8`. `SHA256SUMS.txt` no longer lists a
+hash of itself, and `sha256sum -c SHA256SUMS.txt` passes on the downloaded
+directory. The 0.2.4 packages were not renamed or presented as 0.2.5; they
+remain separate.
 
 Local verification: every downloaded file's SHA-256 matched the manifest and
 the release asset digest; the NSIS install exited 0; `doctor --product` passed
 with 3294 files verified and 0 blocking items; `eos agents test` was 9/9; the
 orchestrator self-test was 6/6; rollback moved the active version to 0.2.4 and
 back to 0.2.5; and the uninstaller exited 0 and removed the launcher, version
-directory, install directory and PATH entry.
+directories and install directory.
 
-macOS is reported separately: the `macos-arm64` artifact (59,966,697 bytes) was
+macOS is reported separately: the `macos-arm64` artifact (59,968,316 bytes) was
 built in the same run. It is not attached to the release because `publish-macos`
 waits for both matrix legs, and the Intel (`macos-13`) job remained queued with
 no runner at the time of this record. No Intel 0.2.5 artifact is claimed, and

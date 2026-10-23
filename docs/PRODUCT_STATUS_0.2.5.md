@@ -1,8 +1,10 @@
 # Product state - 0.2.5-alpha (2026-10-22)
 
 `eos 0.2.5-alpha` is an unsigned alpha engineering control plane for OpenCode
-V2 on Windows. Release commit `dddc03bd8b28192404fce1671b140f66d14042fc`;
-release workflow run `39852134381`.
+V2 on Windows. Release commit `056ec89ea935e780268295bf40cb2dfb101d2af8`;
+release workflow run `39854082689`. The `v0.2.5-alpha` tag points to `dddc03b`;
+commits `904f981` and `056ec89` add docs/evidence and the packaging checksum fix,
+with no engine, CLI or skill code change.
 
 ## Readiness
 
@@ -117,7 +119,7 @@ dispatch expectations against the canonical specs so a stale proof fails in CI.
 
 | Check | Result |
 | --- | --- |
-| CI release gate (commit `dddc03b`, run `39852134381`) | PASS: engine + security + regression, 109-file baseline, clean before/after |
+| CI release gate (commit `056ec89`, run `39854082689`) | PASS: engine + security + regression, 109-file baseline, clean before/after |
 | Forged gate commit in CI | rejected |
 | Tampered installer in CI | rejected |
 | `release_gate.py selftest` | 16 gate + 6 seal/binding cases |
@@ -132,8 +134,8 @@ dispatch expectations against the canonical specs so a stale proof fails in CI.
 | `validate_skills.py` | 211 records, 210 unique, 0 errors |
 | NSIS silent install/run/uninstall (CI) | PASS |
 | local NSIS install + `doctor --product` | 3294 files verified, 0 problems, 0 blocking |
-| local NSIS uninstaller | exit 0; launcher, version dir, install dir and PATH entry removed; `~/.eos` config/evidence retained; state restored and `doctor --product` PASS again |
-| Windows assets | setup `3F30E1AA...639290`, portable `59042F16...40E811`, CLI `376D00D5...EDBF1`; manifest binds gate `B8009142...69FC0` and commit `dddc03b` |
+| local NSIS uninstaller | exit 0; launcher, version dirs and install dir removed; `~/.eos` config/evidence retained; captured PATH/state restored and `doctor --product` PASS again |
+| Windows assets | setup `E9269916...522357`, portable `81CCE072...F87622`, CLI `D607A29E...3223F8`; manifest binds gate `8EF195BF...24FB1` and commit `056ec89` |
 | rollback | 0.2.4-alpha -> 0.2.5-alpha, both `eos version` PASS |
 | secret scan | 103 files, 0 insecure, 0 forbidden |
 
