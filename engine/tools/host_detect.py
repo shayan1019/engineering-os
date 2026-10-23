@@ -66,16 +66,28 @@ def detect() -> list[dict]:
     for host in HOSTS:
         binary = find_binary(host)
         present = binary is not None
-        adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "..", host.get("adapter", "") or "nonexistent")
-        adapter_ready = os.path.isfile(adapter_path) if host.get("adapter") else False
-        # Determine status
+        # Adapter paths are relative to the repository root (parent of ENGINE_ROOT)
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        adapter_rel = host.get("adapter", "") or ""
+        adapter_path = os.path.join(repo_root, adapter_rel) if adapter_rel else ""
+        adapter_ready = os.path.isfile(adapter_path) if adapter_rel else False
+        # Determine status based on evidence, not just presence
         if not present:
             status = "BLOCKED"
-        elif host["id"] in ("opencode",):
-            status = "LIVE_VERIFIED"
-        elif host["id"] in ("claude",):
-            status = "ADAPTER_READY"
+        elif host["id"] == "opencode":
+            # Check for live verification evidence
+            evidence_dir = os.path.join(os.path.expanduser("~"), ".eos", "evidence", "host-verification")
+            evidence_file = os.path.join(evidence_dir, "opencode-live.json")
+            if os.path.isfile(evidence_file):
+                status = "LIVE_VERIFIED"
+            else:
+                status = "ADAPTER_READY"
+        elif host["id"] == "claude":
+            evidence_file = os.path.join(os.path.expanduser("~"), ".eos", "evidence", "host-verification", "claude-live.json")
+            if os.path.isfile(evidence_file):
+                status = "LIVE_VERIFIED"
+            else:
+                status = "ADAPTER_READY"
         else:
             status = "DETECTED"
         results.append({
