@@ -1,0 +1,81 @@
+{
+  "version": 2,
+  "note": "Executable command authority for the EOS quality gate. An agent can choose a project and a suite, never a command. `%ENGINE%`, `%WORKSPACE%` and `%SELFTEST%` are the only path tokens; nothing here records a machine-specific absolute path. A suite with no verified entry point is marked NOT_CONFIGURED so the gate returns BLOCKED instead of a fake green.",
+  "defaults": {
+    "timeout_seconds": 300
+  },
+  "projects": {
+    "eos": {
+      "path": "%ENGINE%",
+      "suites": {
+        "pass": {
+          "description": "Self-test fixture that must pass. Proves the gate can return PASS.",
+          "commands": [
+            { "name": "pass_case", "cmd": ["python", "%SELFTEST%/pass_case.py"], "required": true }
+          ]
+        },
+        "fail": {
+          "description": "Self-test fixture that must fail. Proves the gate does not rubber-stamp.",
+          "commands": [
+            { "name": "fail_case", "cmd": ["python", "%SELFTEST%/fail_case.py"], "required": true }
+          ]
+        },
+        "mixed": {
+          "description": "One passing and one failing required command. Proves a single failure fails the suite.",
+          "commands": [
+            { "name": "pass_case", "cmd": ["python", "%SELFTEST%/pass_case.py"], "required": true },
+            { "name": "fail_case", "cmd": ["python", "%SELFTEST%/fail_case.py"], "required": true }
+          ]
+        },
+        "optional_failure": {
+          "description": "Passing required command plus a failing optional one. Proves optional steps are recorded without blocking.",
+          "commands": [
+            { "name": "pass_case", "cmd": ["python", "%SELFTEST%/pass_case.py"], "required": true },
+            { "name": "fail_optional", "cmd": ["python", "%SELFTEST%/fail_case.py"], "required": false }
+          ]
+        },
+        "timeout": {
+          "description": "Proves a hung command is killed and reported, not waited on forever.",
+          "timeout_seconds": 2,
+          "commands": [
+            { "name": "slow_case", "cmd": ["python", "%SELFTEST%/slow_case.py"], "required": true }
+          ]
+        },
+        "missing_binary": {
+          "description": "Proves a missing executable is a recorded failure, not an exception.",
+          "commands": [
+            { "name": "missing", "cmd": ["eos-binary-that-does-not-exist", "--version"], "required": true }
+          ]
+        },
+        "engine": {
+          "description": "Real behavioural suite of the product itself: a full skill-index rebuild followed by the router's routing scenarios, the activation plugin, and the orchestrator registry self-test.",
+          "timeout_seconds": 300,
+          "commands": [
+            { "name": "skill_index_discover", "cmd": ["python", "tools/skill_index.py", "discover"], "required": true },
+            { "name": "router_tests", "cmd": ["python", "router/route_tests.py"], "required": true },
+            { "name": "plugin_test", "cmd": ["node", "%ENGINE%/host-plugins/opencode/eos-activation.test.mjs"], "required": true },
+            { "name": "agent_dispatch", "cmd": ["python", "tools/agent_dispatch_test.py"], "required": true },
+            { "name": "orchestrator_selftest", "cmd": ["python", "tools/orchestrator_registry.py", "test", "--self-test"], "required": true }
+          ]
+        },
+        "security": {
+          "description": "Real secret scan over the engine. Fails if a credential-shaped string is committed in the product.",
+          "timeout_seconds": 300,
+          "commands": [
+            { "name": "secret_scan_engine", "cmd": ["python", "tools/secret_scan.py", "%ENGINE%", "--include-tests"], "required": true }
+          ]
+        },
+        "regression": {
+          "description": "Release and permission regressions. The release-gate self-test must reject forged PASS records, mismatched commits, changed gate registries, missing suites and tampered packages. The orchestrator runtime self-test must run real nested processes and prove depth, agent, step, timeout, cancellation and workspace bounds. The permission checks must prove no read-only role can write, delegate or bypass an external-directory denial.",
+          "timeout_seconds": 300,
+          "commands": [
+            { "name": "release_gate_selftest", "cmd": ["python", "tools/release_gate.py", "selftest"], "required": true },
+            { "name": "orchestrator_runtime_selftest", "cmd": ["python", "tools/orchestrator_runtime.py", "selftest"], "required": true },
+            { "name": "permission_contract_selftest", "cmd": ["python", "tools/runtime_permissions.py", "selftest"], "required": true },
+            { "name": "permission_contracts", "cmd": ["python", "tools/runtime_permissions.py", "check-contracts"], "required": true }
+          ]
+        }
+      }
+    }
+  }
+}

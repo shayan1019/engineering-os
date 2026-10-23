@@ -1,0 +1,59 @@
+{
+  "version": "2",
+  "generated": "2026-10-23",
+  "portability": "Committed configuration contains no absolute paths. A machine-specific path is a bug, even in an example.",
+  "runtime_matrix": [
+    {
+      "runtime": "opencode",
+      "status": "active",
+      "skills_path": ".agents/skills/<name>/SKILL.md",
+      "reads_agents_md": true,
+      "verified": "activation plugin test in CI; live Plan/Build permission harness on Windows 11 with OpenCode 2.0.32",
+      "notes": "Depth-1 is required. With duplicate names, the first discovery root wins."
+    },
+    {
+      "runtime": "claude",
+      "status": "integration",
+      "skills_path": ".claude/skills/<name>/SKILL.md",
+      "reads_agents_md": true,
+      "imports": "@AGENTS.md",
+      "verified": "documentation path only; not live-verified in this release",
+      "source": "https://code.claude.com/docs/en/skills"
+    },
+    {
+      "runtime": "codex",
+      "status": "integration",
+      "skills_path": ".agents/skills/<name>/SKILL.md (repo-scoped)",
+      "reads_agents_md": true,
+      "agents": ".codex/agents/*.toml (name, description, developer_instructions required)",
+      "limit": "AGENTS.md 32 KiB",
+      "verified": "documentation path only; not live-verified in this release",
+      "source": "https://developers.openai.com/codex/concepts/customization"
+    },
+    {
+      "runtime": "gemini",
+      "status": "integration",
+      "skills_path": ".agents/skills/<name>/SKILL.md (alias, depth-1 only)",
+      "reads_agents_md": true,
+      "verified": "documentation path only; not live-verified in this release",
+      "source": "https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/using-agent-skills.md"
+    }
+  ],
+  "openai_yaml_schema": {
+    "canonical": "interface: {display_name, short_description (25-64 chars), default_prompt, icon_small, icon_large, brand_color} + policy.allow_implicit_invocation (default true) + dependencies.tools",
+    "note": "agents/openai.yaml is a UI agent card, not a custom Codex agent definition.",
+    "source": "https://github.com/openai/skills/blob/main/skills/.system/skill-creator/references/openai_yaml.md"
+  },
+  "literal_translation": [
+    { "pattern": "Skill(\"<name>\")", "rule": "Use the runtime's native skill mechanism; if it has none, apply the skill body as inline instructions." },
+    { "pattern": "Task(<...>) / subagent calls", "rule": "If the runtime has no subagents, run the steps sequentially in the main thread and parallelize only independent work." },
+    { "pattern": "Read/Write/Edit and other harness tool names", "rule": "Use your own harness tools. Treat tool names inside a skill as intent, not as literal API calls." },
+    { "pattern": "CLI literals such as /agents list, --agents, claude -p", "rule": "Use the CLI of the runtime you are actually in; do not transplant another runtime's syntax." }
+  ],
+  "known_limits": [
+    "Skill discovery is depth-1 by contract.",
+    "Host capability claims are not guarantees; a host that does not expose a capability is reported as BLOCKED or ADAPTER_ONLY.",
+    "The public package ships four methodology skills; everything else is discovered from the workspace or user library.",
+    "No AI host is bundled or endorsed by EOS."
+  ]
+}

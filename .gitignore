@@ -1,0 +1,61 @@
+# Secrets and personal data never enter this repository.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+*.keystore
+credentials*
+id_rsa
+id_ed25519
+.npmrc
+.netrc
+
+# Project data, evidence and logs stay on the machine that produced them.
+# The patterns are anchored to the repository root: a skill package may carry
+# its own `runtime/` and `evidence/` documents, and those are product files.
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.ex5
+*.ex4
+*.hcc
+*.mdf
+*.ldf
+/evidence/
+/backups/
+*.jsonl
+
+# Build and runtime output.
+node_modules/
+target/
+dist/
+build/
+release-gate/
+__pycache__/
+*.pyc
+.venv/
+.venv-win/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS noise.
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated per workspace by `eos skills discover`.
+engine/registry/SKILL_INDEX.json
+engine/registry/SKILL_CATALOG.json
+
+# Bundled interpreter is staged at build time, never tracked (145 MB).
+# Anchored: a skill package may ship a `runtime/` directory of its own.
+/runtime/
+/installer/out/
+/installer/stage/

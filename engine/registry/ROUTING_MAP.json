@@ -1,0 +1,114 @@
+{
+  "version": 2,
+  "generated": "2026-10-23",
+  "purpose": "Resolve overlapping skill triggers to one primary skill. route_task.py applies this map; it does not decide knowledge-graph need, risk, or scope.",
+  "policy": {
+    "resolution": "When a cluster triggers (a task keyword matches, or two or more of its members are candidates), the first installed member of `primary` wins; if none is installed, `fallback` is tried in order.",
+    "precedence": [
+      "A project profile's preferred_skills are preserved; this map only deduplicates overlapping candidates.",
+      "A skill named explicitly in the task wins over the map.",
+      "Knowledge-graph and risk decisions remain in GRAPH_CORE and the risk policy."
+    ],
+    "override_note": "Name a fallback skill explicitly in the task when you need it (for example, 'academic backtest' or 'lightweight review')."
+  },
+  "clusters": [
+    {
+      "id": "tdd",
+      "triggers": ["tdd", "test driven", "red green", "red-green", "write tests", "unit test", "pytest", "test coverage"],
+      "primary": ["tdd"],
+      "fallback": ["test-driven-development", "test-auto-fix"],
+      "note": "TDD with a failing test first."
+    },
+    {
+      "id": "debugging",
+      "triggers": ["bug", "debug", "exception", "traceback", "failing test", "broken", "regression"],
+      "primary": ["debugging-and-error-recovery"],
+      "fallback": ["systematic-debugging", "diagnosing-bugs"],
+      "note": "Diagnose before patching."
+    },
+    {
+      "id": "code-review",
+      "triggers": ["review", "code review", "diff review", "audit this change"],
+      "primary": ["code-review"],
+      "fallback": ["code-review-and-quality", "requesting-code-review"],
+      "note": "Review the diff against standards and intent."
+    },
+    {
+      "id": "planning",
+      "triggers": ["implementation plan", "write a plan", "multi-step plan", "task breakdown"],
+      "primary": ["writing-plans"],
+      "fallback": ["planning-and-task-breakdown"],
+      "note": "Written plans for multi-step work."
+    },
+    {
+      "id": "spec",
+      "triggers": ["spec", "specification", "requirements document"],
+      "primary": ["spec-driven-development"],
+      "fallback": ["writing-plans"],
+      "note": "Specification before implementation."
+    },
+    {
+      "id": "memory",
+      "triggers": ["remember this", "persistent memory", "memory file"],
+      "primary": ["persistent-memory"],
+      "fallback": ["memory-management"],
+      "note": "Durable notes without secrets."
+    },
+    {
+      "id": "backtesting",
+      "triggers": ["backtest", "backtesting", "strategy test"],
+      "primary": ["backtesting"],
+      "fallback": ["backtesting-frameworks", "backtest"],
+      "note": "Historical strategy evaluation."
+    },
+    {
+      "id": "e2e-web-test",
+      "triggers": ["e2e", "end-to-end test", "playwright test"],
+      "primary": ["e2e-testing"],
+      "fallback": ["webapp-testing", "web-testing"],
+      "note": "Browser-level verification."
+    },
+    {
+      "id": "ui-build",
+      "triggers": ["build ui", "component", "page", "design system", "ui design"],
+      "primary": ["frontend-ui-engineering"],
+      "fallback": ["ui-ux-pro-max", "ui-styling", "visual-design", "ux"],
+      "note": "Build first; audit with ux."
+    },
+    {
+      "id": "skill-authoring",
+      "triggers": ["new skill", "write a skill", "skill package", "skill contract"],
+      "primary": ["skill-creator"],
+      "fallback": ["writing-skills"],
+      "note": "Skill format and evaluation."
+    },
+    {
+      "id": "knowledge-graph",
+      "triggers": ["knowledge graph", "ontology", "graphrag", "entity resolution", "graph engineering"],
+      "primary": ["graph-engineering"],
+      "fallback": ["fable-5-1"],
+      "note": "Graph design or a graph deliverable."
+    },
+    {
+      "id": "security",
+      "triggers": ["security", "vulnerability", "secret", "auth", "permission boundary"],
+      "primary": ["security-and-hardening"],
+      "fallback": ["security-auditor"],
+      "note": "Threat model and hardening."
+    },
+    {
+      "id": "performance",
+      "triggers": ["performance", "profiling", "benchmark", "slow query"],
+      "primary": ["performance-optimization"],
+      "fallback": ["performance-engineer"],
+      "note": "Measure before optimizing."
+    },
+    {
+      "id": "api-design",
+      "triggers": ["api design", "interface design", "rest endpoint", "graphql schema"],
+      "primary": ["api-and-interface-design"],
+      "fallback": ["documentation-and-adrs"],
+      "note": "Contract before implementation."
+    }
+  ]
+}

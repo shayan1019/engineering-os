@@ -1,0 +1,93 @@
+schema_version: "fable5.1/v1"
+
+skill:
+  id: "fable-5-1"
+  display_name: "EOS Working Discipline"
+  companions:
+    - "fable5-thinking"
+    - "graph-engineering"
+  lifecycle: "stable"
+
+execution_depth_model:
+  default: "direct"
+  levels:
+    - "atomic"
+    - "direct"
+    - "planned"
+    - "graph"
+    - "multi_agent_graph"
+    - "evidence_graph"
+
+capability_model:
+  flags:
+    - "structured_output"
+    - "async_tools"
+    - "mid_turn_steering"
+    - "subagents"
+    - "persistent_state"
+    - "history_constraints"
+    - "parallel_tool_support"
+
+authority_model:
+  roles:
+    eos_methodology: "working discipline / decision methodology"
+    graph_engineering: "internal structuring engine -- does not redefine scope or completion rules"
+    runtime_capability_layer: "execution optimization -- does not redefine behavioral policy"
+    graphify: "optional repo-graph provider -- evidence only, not policy, not scheduler, not verifier"
+  precedence_on_conflict:
+    - "external_control_plane_policy_authority"
+    - "eos_methodology"
+    - "graph_scheduling_preference"
+    - "runtime_optimization"
+    - "repo_graph_advice"
+  invariants:
+    - "model_is_not_policy_authority"
+    - "writer_is_not_verifier"
+    - "parallelism_requires_disjoint_write_sets"
+    - "worker_is_not_merge_owner_unless_assigned"
+    - "model_saying_done_is_not_verified_completion"
+
+do_not_regress:
+  source:
+    - "fable5-thinking"
+    - "graph-engineering"
+    - "FABLE_CORE.md"
+    - "GRAPH_CORE.md"
+  checklist: "core/do-not-regress.md"
+
+risk_policy:
+  levels:
+    - "auto"
+    - "verify_required"
+    - "approval_required"
+  enforcement: "documented convention checked by the gate, the verifier role, and the release workflow"
+  note: "This is a classification and policy contract. It is not a claim that every host can be mechanically prevented from ignoring it."
+
+repo_intelligence:
+  provider: "optional"
+  per_project: true
+  access: ["cli", "mcp"]
+  capabilities:
+    query_graph: "optional"
+    get_node: "optional"
+    get_neighbors: "optional"
+    shortest_path: "optional"
+    communities: "optional"
+    source_locations: "optional"
+    change_impact: "optional"
+  invariants:
+    - "graphify_is_not_policy_authority"
+    - "repo_graph_is_not_task_graph"
+    - "extracted_edges_preferred_over_inferred_edges"
+    - "inferred_edges_cannot_alone_authorize_high_risk_mutation"
+    - "unavailable_graphify_must_fallback"
+    - "stale_graph_must_not_be_treated_as_current"
+    - "mql5_without_parser_is_partial_coverage_only"
+    - "graphify_agents_md_must_not_override_fable_authority"
+
+context_efficiency:
+  graph_before_broad_scan: true
+  max_graph_nodes_in_context: 25
+  prefer_symbol_ranges_over_full_files: true
+  deduplicate_already_read_sources: true
+  expand_context_only_on_evidence_gap: true

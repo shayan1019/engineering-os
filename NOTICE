@@ -1,0 +1,21 @@
+Engineering OS (EOS)
+Copyright 2026 Shayan (shayan1019) and EOS contributors
+
+This product is licensed under the Apache License, Version 2.0. You may obtain
+a copy of the license at:
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+EOS bundles or depends on third-party software. The corresponding licenses and
+attribution notices are listed in THIRD_PARTY_LICENSES.md and in the license
+files shipped with each dependency. No third-party source is relicensed under
+the Apache License by this project.
+
+"OpenCode", "Claude", "Codex", "Gemini", "Windows", "macOS" and other product
+names are trademarks of their respective owners. Their use here is descriptive
+and does not imply endorsement.

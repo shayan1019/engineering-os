@@ -1,0 +1,12 @@
+{
+  "version": "1",
+  "generated": "2026-10-23",
+  "portability": "All project paths are relative to the workspace root. Absolute paths, drive letters, and user-home literals are rejected by the public contract.",
+  "resolution_rule": "1) match an alias or keyword in the task text  2) use cwd/discovery  3) leave the project unresolved and report it. Add projects with `eos workspace add` or `python engine/router/new_project.py`.",
+  "profiles": [],
+  "workspace_index": {
+    "root_children": [],
+    "desktop_siblings": [],
+    "note": "Empty by design. The public package does not ship anybody's project inventory. A workspace fills this index when it adopts the control plane."
+  }
+}

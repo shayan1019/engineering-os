@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fable-5-1.skill-contract.v1",
+  "title": "EOS Skill Contract",
+  "description": "Descriptive schema for skill.contract.yaml's shape. The actual enforcement engine is check_contract() in engine/router/validate_skills.py (stdlib-only, no jsonschema dependency, per this workspace's zero-new-dependency convention) -- this file documents the same rules for humans and any future tooling, it is not itself executed by validate_skills.py.",
+  "type": "object",
+  "required": ["schema_version", "skill", "execution_depth_model", "capability_model", "authority_model", "do_not_regress"],
+  "properties": {
+    "schema_version": { "const": "fable5.1/v1" },
+    "skill": {
+      "type": "object",
+      "required": ["id", "display_name"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "display_name": { "type": "string" },
+        "supersedes": { "type": "array", "items": { "type": "string" } },
+        "lifecycle": { "enum": ["experimental", "stable", "deprecated"] }
+      }
+    },
+    "execution_depth_model": {
+      "type": "object",
+      "required": ["levels"],
+      "properties": {
+        "default": { "enum": ["atomic", "direct", "planned", "graph", "multi_agent_graph"] },
+        "levels": {
+          "type": "array",
+          "items": { "enum": ["atomic", "direct", "planned", "graph", "multi_agent_graph", "evidence_graph"] }
+        }
+      }
+    },
+    "capability_model": {
+      "type": "object",
+      "required": ["flags"],
+      "properties": {
+        "flags": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "structured_output", "async_tools", "mid_turn_steering", "subagents",
+              "persistent_state", "history_constraints", "parallel_tool_support"
+            ]
+          }
+        }
+      }
+    },
+    "authority_model": {
+      "type": "object",
+      "required": ["invariants"],
+      "properties": {
+        "roles": { "type": "object" },
+        "precedence_on_conflict": { "type": "array", "items": { "type": "string" } },
+        "invariants": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "model_is_not_policy_authority",
+              "writer_is_not_verifier",
+              "parallelism_requires_disjoint_write_sets",
+              "worker_is_not_merge_owner_unless_assigned",
+              "model_saying_done_is_not_verified_completion"
+            ]
+          }
+        }
+      }
+    },
+    "do_not_regress": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": { "type": "array", "items": { "type": "string" } },
+        "checklist": { "type": "string" }
+      }
+    },
+    "risk_policy": {
+      "type": "object",
+      "properties": {
+        "levels": { "type": "array", "items": { "type": "string" } },
+        "enforcement": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}

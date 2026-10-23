@@ -1,0 +1,419 @@
+name: release
+
+# Release authority lives here, not in an agent's hands:
+#   * the workflow file itself can only be changed with a token that has the
+#     `workflow` scope,
+#   * every build needs a real `release_gate` artifact produced in this run,
+#     scoped to this commit, this workflow run and the embedded suite results,
+#   * packaging seals SHA-256 hashes of the exact files that will be published,
+#     and publishing re-verifies the gate + manifest + files before it uploads,
+#   * Windows publishing does not wait for macOS, but macOS is never reported as
+#     a Windows success.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.2.6-alpha"
+        required: true
+      dry_run:
+        description: "Build and verify everything, publish nothing"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eos-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHON_VERSION: "3.11.17"
+  PYTHON_TAG: "20261013"
+
+jobs:
+  gate:
+    name: release gate (engine + security + regression)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve version
+        id: meta
+        shell: bash
+        run: |
+          raw="${{ inputs.version || github.ref_name }}"
+          echo "version=${raw#v}" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build the CLI
+        run: cargo build --release --manifest-path cli/Cargo.toml
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run the real EOS gate against this commit
+        run: |
+          python engine/tools/release_gate.py run \
+            --engine engine \
+            --out release-gate \
+            --version "${{ steps.meta.outputs.version }}" \
+            --commit "$GITHUB_SHA" \
+            --ref "$GITHUB_REF"
+      - name: Prove a forged PASS is rejected
+        run: |
+          python - <<'PY'
+          import json
+          data = json.load(open("release-gate/release-gate.json", encoding="utf-8"))
+          data["commit"] = "0" * 40
+          data["verdict"] = "PASS"
+          json.dump(data, open("release-gate/forged.json", "w", encoding="utf-8"))
+          PY
+          if python engine/tools/release_gate.py verify \
+               --gate release-gate/forged.json --commit "$GITHUB_SHA"; then
+            echo "BLOCKED: a forged PASS artifact was accepted" >&2
+            exit 1
+          fi
+          echo "PASS: the forged PASS artifact was rejected"
+      - name: Upload the gate artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate
+          path: release-gate/
+          if-no-files-found: error
+
+  build-windows:
+    name: build windows installer
+    needs: gate
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+      - name: Build the CLI
+        run: cargo build --release --manifest-path cli/Cargo.toml
+      - name: Stage the bundled interpreter
+        shell: pwsh
+        run: |
+          $url = "https://github.com/astral-sh/python-build-standalone/releases/download/${{ env.PYTHON_TAG }}/cpython-${{ env.PYTHON_VERSION }}+${{ env.PYTHON_TAG }}-x86_64-pc-windows-msvc-install_only.tar.gz"
+          curl.exe -L --fail --silent --show-error -o runtime.tar.gz $url
+          New-Item -ItemType Directory -Path runtime\python | Out-Null
+          tar.exe -xzf runtime.tar.gz -C runtime\python --strip-components 1
+      - name: Build the artifacts
+        shell: pwsh
+        run: ./installer/build.ps1 -Version "${{ needs.gate.outputs.version }}"
+      - name: Smoke install, run, uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = Get-ChildItem installer\out\EngineeringOS-Setup-*.exe | Select-Object -First 1
+          if (-not $setup) { throw "no installer was built" }
+          $dir = Join-Path $env:RUNNER_TEMP "eos-smoke"
+          if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+          Start-Process -FilePath $setup.FullName -ArgumentList "/S", "/D=$dir" -Wait
+          if (-not (Test-Path "$dir\EngineeringOS.cmd")) { throw "installer did not create the launcher" }
+          if (-not (Test-Path "$dir\uninstall.exe")) { throw "installer did not create the uninstaller" }
+          $eos = Join-Path $env:USERPROFILE ".eos\bin\eos.exe"
+          if (-not (Test-Path $eos)) { throw "the CLI did not install to $eos" }
+          $version = & $eos version
+          if ($LASTEXITCODE -ne 0) { throw "installed eos failed to run" }
+          if ($version -notmatch [regex]::Escape("${{ needs.gate.outputs.version }}")) {
+            throw "installed version is '$version', expected ${{ needs.gate.outputs.version }}"
+          }
+          Write-Host "installed: $version"
+          Start-Process -FilePath "$dir\uninstall.exe" -ArgumentList "/S" -Wait
+          Start-Sleep -Seconds 2
+          if (Test-Path $eos) { throw "uninstall left the launcher behind: $eos" }
+          if (Test-Path "$dir\EngineeringOS.cmd") { throw "uninstall left the install directory behind" }
+          Write-Host "smoke install + uninstall PASS"
+      - name: Upload the Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: installer/out/*
+          if-no-files-found: error
+
+  build-macos:
+    name: build macos dmg (${{ matrix.arch }})
+    needs: gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build the CLI
+        run: cargo build --release --manifest-path cli/Cargo.toml
+      - name: Stage the bundled interpreter
+        run: |
+          set -euo pipefail
+          mkdir -p runtime/python
+          curl -L --fail --silent --show-error -o runtime.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/${{ env.PYTHON_TAG }}/cpython-${{ env.PYTHON_VERSION }}+${{ env.PYTHON_TAG }}-${{ matrix.arch == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}-install_only.tar.gz"
+          tar -xzf runtime.tar.gz -C runtime/python --strip-components 1
+      - name: Assemble the app bundle and DMG
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.gate.outputs.version }}"
+          APP="EngineeringOS"
+          rm -f engine/registry/SKILL_INDEX.json engine/registry/SKILL_CATALOG.json
+          find engine -type d -name __pycache__ -prune -exec rm -rf {} +
+          mkdir -p "stage/$APP.app/Contents/MacOS"
+          cp cli/target/release/eos "stage/$APP.app/Contents/MacOS/eos"
+          cp -R engine "stage/$APP.app/Contents/MacOS/engine"
+          mkdir -p "stage/$APP.app/Contents/MacOS/runtime"
+          cp -R runtime/python "stage/$APP.app/Contents/MacOS/runtime/python"
+          cat > "stage/$APP.app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>$APP</string>
+            <key>CFBundleIdentifier</key><string>io.github.shayan1019.engineeringos</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleExecutable</key><string>eos</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          "./stage/$APP.app/Contents/MacOS/eos" version
+          hdiutil create -volname "$APP" -srcfolder "stage/$APP.app" -ov -format UDZO "EngineeringOS-$VERSION-${{ matrix.arch }}.dmg"
+          mkdir -p out
+          cp "EngineeringOS-$VERSION-${{ matrix.arch }}.dmg" out/
+          tar -czf "out/EngineeringOS-$VERSION-${{ matrix.arch }}-portable.tar.gz" -C stage "$APP.app"
+          python3 - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+          root = Path("out")
+          lines = [f"{sha256(p.read_bytes()).hexdigest()}  {p.name}\n"
+                   for p in sorted(root.iterdir())
+                   if p.is_file() and p.name != "SHA256SUMS.txt"]
+          (root / "SHA256SUMS.txt").write_text("".join(lines), encoding="utf-8", newline="\n")
+          PY
+          (cd out && shasum -a 256 -c SHA256SUMS.txt)
+      - name: Upload the macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  package-windows:
+    name: seal windows artifacts
+    needs: [gate, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the gate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-gate
+          path: gate
+      - name: Download the Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-artifacts
+          path: artifacts
+      - name: Flatten, checksum and seal
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f -exec cp {} dist/ \;
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+          root = Path("dist")
+          lines = [f"{sha256(p.read_bytes()).hexdigest()}  {p.name}\n"
+                   for p in sorted(root.iterdir())
+                   if p.is_file() and p.name != "SHA256SUMS.txt"]
+          (root / "SHA256SUMS.txt").write_text("".join(lines), encoding="utf-8", newline="\n")
+          PY
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+          python engine/tools/release_gate.py seal \
+            --gate gate/release-gate.json \
+            --dist dist \
+            --require-ext .exe \
+            --out dist/RELEASE-MANIFEST.json
+      - name: Verify the sealed release before upload
+        run: |
+          python engine/tools/release_gate.py verify \
+            --gate gate/release-gate.json \
+            --manifest dist/RELEASE-MANIFEST.json \
+            --dist dist \
+            --commit "$GITHUB_SHA" \
+            --require-ext .exe
+      - name: Prove a tampered package is rejected
+        run: |
+          cp -R dist tampered
+          python - <<'PY'
+          from pathlib import Path
+          target = next(p for p in Path("tampered").glob("*.exe")
+                        if p.name.startswith("EngineeringOS-Setup-"))
+          data = bytearray(target.read_bytes())
+          data[0] ^= 0xFF
+          target.write_bytes(data)
+          PY
+          if python engine/tools/release_gate.py verify \
+               --gate gate/release-gate.json \
+               --manifest tampered/RELEASE-MANIFEST.json \
+               --dist tampered --commit "$GITHUB_SHA" --require-ext .exe; then
+            echo "BLOCKED: a tampered installer was accepted" >&2
+            exit 1
+          fi
+          echo "PASS: the tampered installer was rejected"
+      - name: Upload the sealed Windows release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/
+          if-no-files-found: error
+
+  publish-windows:
+    name: publish windows
+    needs: [gate, package-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the gate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-gate
+          path: gate
+      - name: Download the sealed Windows release
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: dist
+      - name: Re-verify gate, manifest and every file
+        run: |
+          python engine/tools/release_gate.py verify \
+            --gate gate/release-gate.json \
+            --manifest dist/RELEASE-MANIFEST.json \
+            --dist dist \
+            --commit "$GITHUB_SHA" \
+            --require-ext .exe
+      - name: Publish
+        if: inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.gate.outputs.version }}"
+          NOTES="release/RELEASE_NOTES-$VERSION.md"
+          test -f "$NOTES" || { echo "BLOCKED: missing $NOTES" >&2; exit 1; }
+          if [ "${{ github.ref_type }}" = "tag" ]; then TAG="${{ github.ref_name }}"; else TAG="v$VERSION"; fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            echo "assets refreshed on $TAG"
+          else
+            gh release create "$TAG" dist/* --title "EngineeringOS $VERSION" \
+              --notes-file "$NOTES" --prerelease
+          fi
+      - name: Dry run summary
+        if: inputs.dry_run == true
+        run: |
+          echo "dry run: gate and sealed Windows artifacts verified; nothing published"
+          ls -l dist
+
+  publish-macos:
+    name: publish macos
+    needs: [gate, build-macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the gate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-gate
+          path: gate
+      - name: Download the macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*
+          merge-multiple: true
+          path: artifacts
+      - name: Flatten, checksum and seal
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f -exec cp {} dist/ \;
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+          root = Path("dist")
+          lines = [f"{sha256(p.read_bytes()).hexdigest()}  {p.name}\n"
+                   for p in sorted(root.iterdir())
+                   if p.is_file() and p.name != "SHA256SUMS.txt"]
+          (root / "SHA256SUMS.txt").write_text("".join(lines), encoding="utf-8", newline="\n")
+          PY
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+          python engine/tools/release_gate.py seal \
+            --gate gate/release-gate.json \
+            --dist dist \
+            --require-ext .dmg \
+            --out dist/RELEASE-MANIFEST.json
+          python engine/tools/release_gate.py verify \
+            --gate gate/release-gate.json \
+            --manifest dist/RELEASE-MANIFEST.json \
+            --dist dist \
+            --commit "$GITHUB_SHA" \
+            --require-ext .dmg
+      - name: Publish
+        if: inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.gate.outputs.version }}"
+          NOTES="release/RELEASE_NOTES-$VERSION.md"
+          test -f "$NOTES" || { echo "BLOCKED: missing $NOTES" >&2; exit 1; }
+          if [ "${{ github.ref_type }}" = "tag" ]; then TAG="${{ github.ref_name }}"; else TAG="v$VERSION"; fi
+          # Windows normally creates the release first; wait briefly rather
+          # than racing it, then create it only if it is still absent.
+          for _ in $(seq 1 30); do
+            if gh release view "$TAG" >/dev/null 2>&1; then break; fi
+            sleep 10
+          done
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "EngineeringOS $VERSION" \
+              --notes-file "$NOTES" --prerelease
+          fi
+          gh release upload "$TAG" dist/* --clobber
+          echo "macOS assets uploaded to $TAG"
+      - name: Dry run summary
+        if: inputs.dry_run == true
+        run: |
+          echo "dry run: gate and sealed macOS artifacts verified; nothing published"
+          ls -l dist

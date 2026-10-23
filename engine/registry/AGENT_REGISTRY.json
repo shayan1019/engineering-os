@@ -1,0 +1,79 @@
+{
+  "version": "2",
+  "generated": "2026-10-23",
+  "note": "The canonical definitions are engine/agents/<id>.md. This registry is the machine-readable role index used by documentation, dispatch checks, and host installers. The implementer is the only writer; the verifier is read-only.",
+  "roles": [
+    {
+      "id": "chief-architect",
+      "purpose": "task intake, project resolution, specialist selection, and the final decision",
+      "sandbox": "read-only",
+      "when": "every non-trivial task; coordinates and never writes code or bypasses the gate",
+      "runtime": { "opencode": "primary agent", "claude": "main agent", "codex": "inline", "gemini": "main agent" },
+      "source": "engine/agents/chief-architect.md"
+    },
+    {
+      "id": "architect",
+      "purpose": "design and planning: compare approaches and map blast radius",
+      "sandbox": "read-only",
+      "when": "approach selection, large changes, regression-risk assessment",
+      "runtime": { "opencode": "subagent", "claude": "subagent", "codex": "codex/agents/architect.toml", "gemini": "inline" },
+      "source": "engine/agents/architect.md"
+    },
+    {
+      "id": "implementer",
+      "purpose": "implementation: the single authorised writer",
+      "sandbox": "workspace-write",
+      "when": "the implementation phase; exactly one implementer is active",
+      "runtime": { "opencode": "subagent", "claude": "main agent", "codex": "codex/agents/implementer.toml", "gemini": "main agent" },
+      "source": "engine/agents/implementer.md"
+    },
+    {
+      "id": "reviewer",
+      "purpose": "adversarial review: break the change, find missing tests and contract drift",
+      "sandbox": "read-only",
+      "when": "after implementation and before verification",
+      "runtime": { "opencode": "subagent", "claude": "subagent", "codex": "codex/agents/reviewer.toml", "gemini": "inline" },
+      "source": "engine/agents/reviewer.md"
+    },
+    {
+      "id": "verifier",
+      "purpose": "independent verification: run the constrained gate and issue PASS/FAIL/BLOCKED from the artifact",
+      "sandbox": "read-only",
+      "when": "after review; never the writer",
+      "runtime": { "opencode": "subagent", "claude": "subagent", "codex": "codex/agents/verifier.toml", "gemini": "inline" },
+      "source": "engine/agents/verifier.md"
+    },
+    {
+      "id": "test-engineer",
+      "purpose": "test design and test code only; cannot modify production code",
+      "sandbox": "tests-only",
+      "when": "a regression test, fixture, or reproduction is needed",
+      "runtime": { "opencode": "subagent", "claude": "subagent", "codex": "codex/agents/test-engineer.toml", "gemini": "inline" },
+      "source": "engine/agents/test-engineer.md"
+    },
+    {
+      "id": "performance-engineer",
+      "purpose": "profiling and benchmark comparison with measured numbers only",
+      "sandbox": "read-only",
+      "when": "a performance claim or regression needs evidence",
+      "runtime": { "opencode": "subagent", "claude": "subagent", "codex": "codex/agents/performance-engineer.toml", "gemini": "inline" },
+      "source": "engine/agents/performance-engineer.md"
+    },
+    {
+      "id": "security-auditor",
+      "purpose": "security, secrets, dependencies, and permission-boundary audit",
+      "sandbox": "read-only",
+      "when": "untrusted input, credentials, dependencies, or a permission change is in scope",
+      "runtime": { "opencode": "subagent", "claude": "subagent", "codex": "codex/agents/security-auditor.toml", "gemini": "inline" },
+      "source": "engine/agents/security-auditor.md"
+    },
+    {
+      "id": "evidence-analyst",
+      "purpose": "data provenance and claim verification: decide whether evidence supports the claim",
+      "sandbox": "read-only",
+      "when": "a claim needs a source, a hash, or a measured result behind it",
+      "runtime": { "opencode": "subagent", "claude": "subagent", "codex": "codex/agents/evidence-analyst.toml", "gemini": "inline" },
+      "source": "engine/agents/evidence-analyst.md"
+    }
+  ]
+}

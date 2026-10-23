@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eos-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: engine self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Routing regression (14 scenarios + registry scope, index dedupe, badge tamper)
+        run: python engine/router/route_tests.py
+      - name: Skill index rebuild
+        run: python engine/tools/skill_index.py discover
+      - name: Skill doctor
+        run: python engine/tools/skill_index.py doctor || true
+      - name: Activation plugin test (automatic EOS activation)
+        run: node engine/host-plugins/opencode/eos-activation.test.mjs
+      - name: Secret scan over the engine
+        run: python engine/tools/secret_scan.py engine --include-tests
+
+  cli:
+    name: cli build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --manifest-path cli/Cargo.toml
+      - name: CLI smoke test
+        run: |
+          ./cli/target/release/eos version
+          ./cli/target/release/eos --help
+          ./cli/target/release/eos hosts detect

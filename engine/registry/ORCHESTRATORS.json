@@ -1,0 +1,70 @@
+{
+  "version": 2,
+  "generated": "2026-10-22",
+  "purpose": "Bounded adapter contract for nested orchestrators. A provider is listed only with the evidence that it exists; nothing here installs, downloads or upgrades a provider, and EOS never runs a nested task it cannot bound.",
+  "policy": {
+    "missing_runtime": "ADAPTER_ONLY -- the contract is known, nothing is executed, and the caller is told which capability is unavailable",
+    "discovery": "a skill package that ships orchestrator.contract.json declares itself; a name alone is never a capability",
+    "bounds": "every provider must declare timeout_seconds, max_depth and max_agents; max_steps bounds total worker executions; a probe is a bounded version call, never a task",
+    "execution": "a probe is not delegation. `orchestrators run` executes only when the contract names execution.protocol=eos-orchestrator/1; a provider without that contract stays ADAPTER_ONLY even when its binary answers --version",
+    "permissions": "write, network, execute and outside_workspace are booleans so a caller can refuse before delegating",
+    "evidence": "a provider that runs must have an evidence directory and a format for what it returns"
+  },
+  "classes": {
+    "INSTRUCTION": "prose guidance only; no execution surface",
+    "TOOL_PROVIDER": "ships tools, usually MCP, but no agents",
+    "SPECIALIST_PROVIDER": "ships agent definitions",
+    "AGENT_ORCHESTRATOR": "delegates to subagents",
+    "MULTI_AGENT_ORCHESTRATOR": "coordinates several agents (swarm, team, graph)",
+    "MEMORY_PROVIDER": "persists state across sessions",
+    "WORKFLOW_PROVIDER": "runs a declared pipeline of steps"
+  },
+  "providers": [
+    {
+      "id": "ruflo",
+      "class": "MULTI_AGENT_ORCHESTRATOR",
+      "skill": "ruflo",
+      "confidence": "DECLARED",
+      "runtime": {
+        "binary": "ruflo",
+        "probe": ["--version"],
+        "timeout_seconds": 20
+      },
+      "execution": {
+        "protocol": null,
+        "note": "Ruflo exposes MCP tools, not the EOS json-stdin worker boundary. Until an adapter implements eos-orchestrator/1, a version probe must not be reported as a successful delegation."
+      },
+      "delegation": {
+        "method": "mcp-tools",
+        "entry_point": "ruflo CLI / MCP server",
+        "specialists": [],
+        "note": "the specialist inventory is read from the provider at run time; EOS does not cache a roster it cannot verify"
+      },
+      "permissions": {
+        "write": true,
+        "network": true,
+        "execute": true,
+        "outside_workspace": false
+      },
+      "side_effects": [
+        "may install dependencies into the project",
+        "writes provider state under the project or the home directory",
+        "spawns child agent sessions outside the host's own loop"
+      ],
+      "cost": {
+        "billing": "delegated to the host model provider",
+        "budget": "bounded by the EOS timeout and max_agents, not by the provider"
+      },
+      "bounds": {
+        "timeout_seconds": 120,
+        "max_depth": 2,
+        "max_agents": 8,
+        "max_steps": 24
+      },
+      "evidence": {
+        "dir": "evidence/orchestrators",
+        "format": "json"
+      }
+    }
+  ]
+}

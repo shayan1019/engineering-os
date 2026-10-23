@@ -1,0 +1,32 @@
+# Deliberately malformed fixture -- drives the Phase 1 deterministic acceptance test:
+# "a deliberately malformed EOS contract must deterministically fail validation."
+# Run: python engine/router/validate_skills.py --check-contract=engine/skills/fable-5-1/tests/fixtures/malformed-contract-example.yaml
+# Expected: non-zero exit, multiple ERROR lines (see route_tests.py's assertion for the exact list).
+
+schema_version: "not-a-real-version"
+
+skill:
+  id: "wrong-id-does-not-match-directory"
+  display_name: "Broken Contract"
+  lifecycle: "experimental"
+
+execution_depth_model:
+  default: "evidence_graph"
+  levels:
+    - "atomic"
+    - "direct"
+    - "grph"
+    - "multi_agent_graph"
+
+capability_model:
+  flags:
+    - "async_tools"
+    - "telepathy"
+
+authority_model:
+  invariants:
+    - "model_is_not_policy_authority"
+
+do_not_regress:
+  source:
+    - "this-path-does-not-exist-anywhere"
