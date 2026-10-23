@@ -65,7 +65,7 @@ jobs:
       - name: Install EOS agents (global, for the dispatch proof)
         env:
           EOS_ENGINE: ${{ github.workspace }}/engine
-        run: python engine/tools/agent_install.py install --target global --force
+        run: python engine/tools/agent_install.py install --target project --project engine --force
       - name: Run the real EOS gate against this commit
         run: |
           python engine/tools/release_gate.py run \
