@@ -61,7 +61,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install OpenCode (for the agent dispatch proof)
-        run: npm install -g opencode-ai@1.19.4
+        run: npm install -g @opencode/cli@2.1.4
       - name: Install EOS agents (global, for the dispatch proof)
         env:
           EOS_ENGINE: ${{ github.workspace }}/engine
