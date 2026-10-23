@@ -57,7 +57,7 @@ is available.
 ## Release evidence
 
 - Release run: https://github.com/shayan1019/engineering-os/actions/runs/39956508938
-- Windows assets: EngineeringOS-Setup-0.2.6-alpha.exe, EngineeringOS-0.2.6-alpha-windows-x64-portable.zip, eos-0.2.6-alpha.exe
+- Windows assets: EngineeringOS-Setup-0.2.6-alpha.exe, EngineeringOS-0.2.6-alpha-portable.zip, eos-0.2.6-alpha.exe
 - macOS assets: built in the same run (arm64 and Intel)
 - SHA-256 manifest: SHA256SUMS.txt on the release page
 - Gate artifact: release-gate.json in the run artifacts

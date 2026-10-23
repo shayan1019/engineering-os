@@ -56,7 +56,7 @@ before choosing **More info → Run anyway**.
 ### Portable Windows archive
 
 ```powershell
-Expand-Archive EngineeringOS-0.2.6-alpha-windows-x64-portable.zip -DestinationPath .\eos
+Expand-Archive EngineeringOS-0.2.6-alpha-portable.zip -DestinationPath .\eos
 cd .\eos
 .\eos.exe install --source . --add-to-path
 eos doctor

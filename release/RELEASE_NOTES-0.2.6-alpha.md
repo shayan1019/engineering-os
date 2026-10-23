@@ -29,7 +29,7 @@ a chat client.
 Download from the release page:
 
 - `EngineeringOS-Setup-0.2.6-alpha.exe` (Windows, per-user, unsigned)
-- `EngineeringOS-0.2.6-alpha-windows-x64-portable.zip`
+- `EngineeringOS-0.2.6-alpha-portable.zip`
 - macOS archives when the Intel/arm64 builds complete
 
 Verify `SHA256SUMS.txt` before running. The Windows installer does not require
