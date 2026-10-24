@@ -200,8 +200,8 @@ alpha.
 | Claude Code | LIVE_VERIFIED | `engine/tools/claude_host.py` |
 | Codex | DETECTED | `engine/tools/codex_host.py` |
 | Gemini CLI | DETECTED | `engine/tools/gemini_host.py` |
-| Cursor | BLOCKED (not installed) | contract tests only |
-| BLACKBOX AI | BLOCKED (not installed) | contract tests only |
+| Cursor | DETECTED | engine/tools/cursor_host.py |
+| BLACKBOX AI | DETECTED | engine/tools/blackbox_host.py |
 
 Run `python engine/tools/host_detect.py` to check which hosts are available.
 
