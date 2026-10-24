@@ -25,14 +25,14 @@ HOSTS = [
      "caps": {"subagents": True, "skills": True, "permissions": True, "mcp": True,
               "skill_discovery": True, "native_activation": True},
      "adapter": "engine/tools/claude_host.py"},
-    {"id": "cursor", "binary": "cursor", "alt": ["cursor-agent"], "config_dir": ".cursor",
+    {"id": "cursor", "binary": "cursor", "alt": ["cursor-agent", "Cursor"], "config_dir": ".cursor",
+     "caps": {"subagents": True, "skills": True, "permissions": True, "mcp": True,
+              "skill_discovery": True, "native_activation": True},
+     "adapter": "engine/tools/cursor_host.py"},
+    {"id": "blackbox", "binary": "blackbox-cli", "alt": ["blackbox"], "config_dir": ".blackbox",
      "caps": {"subagents": True, "skills": True, "permissions": False, "mcp": True,
               "skill_discovery": True, "native_activation": True},
-     "adapter": None},
-    {"id": "blackbox", "binary": "blackbox", "alt": [], "config_dir": ".blackbox",
-     "caps": {"subagents": True, "skills": True, "permissions": False, "mcp": True,
-              "skill_discovery": True, "native_activation": True},
-     "adapter": None},
+     "adapter": "engine/tools/blackbox_host.py"},
     {"id": "codex", "binary": "codex", "alt": [], "config_dir": ".codex",
      "caps": {"subagents": False, "skills": True, "permissions": False, "mcp": True,
               "skill_discovery": True, "native_activation": False},
@@ -44,10 +44,29 @@ HOSTS = [
 ]
 
 
+COMMON_PATHS = {
+    "cursor": [
+        r"C:\Users\{user}\AppData\Local\Programs\Cursor\resources\app\bin\cursor.cmd",
+        r"C:\Users\{user}\AppData\Local\Programs\Cursor\resources\app\bin\cursor",
+        r"C:\Program Files\Cursor\resources\app\bin\cursor.cmd",
+    ],
+    "blackbox": [
+        r"C:\Users\{user}\AppData\Local\hermes\node\blackbox-cli.cmd",
+        r"C:\Users\{user}\AppData\Local\hermes\node\blackbox-cli",
+    ],
+}
+
+
 def find_binary(host: dict) -> str | None:
     for name in [host["binary"]] + host.get("alt", []):
         path = shutil.which(name)
         if path:
+            return path
+    # Check common installation paths
+    user = os.environ.get("USERNAME", "")
+    for template in COMMON_PATHS.get(host["id"], []):
+        path = template.format(user=user)
+        if os.path.isfile(path):
             return path
     return None
 
