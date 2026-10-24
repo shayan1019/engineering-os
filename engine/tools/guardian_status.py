@@ -40,6 +40,25 @@ def status(workspace: str) -> dict:
     high = [f for f in findings if f["severity"] == "HIGH"]
     medium = [f for f in findings if f["severity"] == "MEDIUM"]
 
+    # Health should consider test coverage, not just findings
+    test_count = snapshot.get("test_count", 0)
+    file_count = snapshot.get("file_count", 0)
+    test_ratio = test_count / max(file_count, 1)
+    has_tests = test_count > 0
+
+    health_issues = []
+    if high:
+        health_issues.append(f"{len(high)} HIGH findings")
+    if not has_tests and file_count > 5:
+        health_issues.append("no test files found")
+    if test_ratio < 0.1 and file_count > 20:
+        health_issues.append(f"low test ratio ({test_count}/{file_count})")
+
+    if health_issues:
+        health = "ATTENTION"
+    else:
+        health = "PASS"
+
     return {
         "schema": 1,
         "kind": "guardian_status",
@@ -64,7 +83,8 @@ def status(workspace: str) -> dict:
             "open_items": len([i for i in ledger_items if i.get("status") not in ("DONE", "BLOCKED")]),
             "total_items": len(ledger_items),
         },
-        "health": "PASS" if not high else "ATTENTION",
+        "health": health,
+        "health_issues": health_issues,
     }
 
 

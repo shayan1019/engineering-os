@@ -26,13 +26,24 @@ def _ensure_dir():
 
 
 def _ledger_path(item_id: str) -> str:
+    # Reject path traversal
+    if not item_id or "/" in item_id or "\\" in item_id or ".." in item_id:
+        raise ValueError(f"invalid item_id: {item_id}")
+    # Only allow alphanumeric, hyphen, underscore
+    import re
+    if not re.match(r"^[A-Za-z0-9_\-]+$", item_id):
+        raise ValueError(f"invalid item_id (must be alphanumeric/hyphen/underscore): {item_id}")
     return os.path.join(LEDGER_DIR, f"{item_id}.json")
 
 
 def add(item_id: str, scope: str, objective: str, prerequisites: str = "",
         implementation: str = "", verification: str = "", status: str = "OPEN") -> int:
     _ensure_dir()
-    path = _ledger_path(item_id)
+    try:
+        path = _ledger_path(item_id)
+    except ValueError as e:
+        print(f"BLOCKED: {e}")
+        return 1
     if os.path.exists(path):
         print(f"EXISTS: {item_id} (use update to modify)")
         return 1
@@ -60,7 +71,11 @@ def add(item_id: str, scope: str, objective: str, prerequisites: str = "",
 def update(item_id: str, status: str | None = None, evidence: str | None = None,
           commit: str | None = None, blockers: str | None = None,
           implementation: str | None = None, verification: str | None = None) -> int:
-    path = _ledger_path(item_id)
+    try:
+        path = _ledger_path(item_id)
+    except ValueError as e:
+        print(f"BLOCKED: {e}")
+        return 1
     if not os.path.exists(path):
         print(f"NOT FOUND: {item_id}")
         return 1
@@ -106,7 +121,11 @@ def list_items(status_filter: str | None = None) -> int:
 
 
 def show(item_id: str) -> int:
-    path = _ledger_path(item_id)
+    try:
+        path = _ledger_path(item_id)
+    except ValueError as e:
+        print(f"BLOCKED: {e}")
+        return 1
     if not os.path.exists(path):
         print(f"NOT FOUND: {item_id}")
         return 1

@@ -62,12 +62,37 @@ def install_skills(force=False):
             installed += 1
             if res["backed_up"]:
                 backed_up += 1
-    # Also install EOS rules file
+    # Also install EOS rules file (track in manifest, don't overwrite user's)
     rules_path = os.path.join(RULES_DIR, "eos.md")
-    rules_content = "# EOS Rules\n\nEOS engineering control plane is active.\nRun `eos guardian scan` for project intelligence.\n"
-    with open(rules_path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(rules_content)
-    manifest.setdefault("rules", {})["eos.md"] = {"path": rules_path, "installed_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()}
+    if os.path.exists(rules_path) and "eos.md" not in manifest.get("rules", {}):
+        # Foreign file exists; don't overwrite
+        print(f"SKIP: rules/eos.md (exists, not EOS-owned)")
+    else:
+        rules_content = "# EOS Rules\n\nEOS engineering control plane is active.\nRun `eos guardian scan` for project intelligence.\n"
+        # Atomic write
+        import tempfile
+        os.makedirs(RULES_DIR, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=RULES_DIR, prefix=".eos-tmp-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(rules_content)
+            os.replace(tmp, rules_path)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+        import hashlib
+        h = hashlib.sha256()
+        with open(rules_path, "rb") as fh:
+            h.update(fh.read())
+        manifest.setdefault("rules", {})["eos.md"] = {
+            "path": rules_path,
+            "hash": h.hexdigest(),
+            "installed_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        }
+        print(f"INSTALL: rules/eos.md")
     _save_manifest(manifest)
     print(f"PASS: installed {installed}, skipped {skipped}, backed up {backed_up}")
     print(f"Rules written to {rules_path}")
@@ -123,11 +148,20 @@ def uninstall():
             print(f"REMOVE: {os.path.basename(path)}/ ({res['removed']} files)")
         else:
             print(f"SKIP: {os.path.basename(path)}/ (modified externally)")
-    # Remove rules
-    rules_path = os.path.join(RULES_DIR, "eos.md")
-    if os.path.exists(rules_path):
-        os.remove(rules_path)
-        print(f"REMOVE: rules/eos.md")
+    # Remove only EOS-owned rules file
+    rules_info = manifest.get("rules", {}).get("eos.md", {})
+    rules_path = rules_info.get("path", os.path.join(RULES_DIR, "eos.md"))
+    if os.path.exists(rules_path) and rules_info.get("hash"):
+        current_hash = __import__("hashlib").sha256(open(rules_path, "rb").read()).hexdigest()
+        if current_hash == rules_info["hash"]:
+            os.remove(rules_path)
+            print(f"REMOVE: rules/eos.md")
+            del manifest["rules"]["eos.md"]
+        else:
+            print(f"SKIP: rules/eos.md (modified externally, not removing)")
+    elif os.path.exists(rules_path) and not rules_info.get("hash"):
+        # Foreign file, don't touch
+        print(f"SKIP: rules/eos.md (not EOS-owned, not removing)")
     _save_manifest(manifest)
     print(f"PASS: removed {removed}, skipped {skipped}")
     return 0

@@ -50,19 +50,46 @@ def verify_claim(claim: str, evidence_paths: list[str] | None = None) -> dict:
 
         result["evidence_checked"].append({"path": ep_path, "status": "READ"})
 
-        # Check for verdict/pass/fail in evidence
-        verdict = data.get("verdict") or data.get("status") or data.get("result")
-        if verdict:
-            v = str(verdict).upper()
-            if v in ("PASS", "VERIFIED", "OK", "SUCCESS"):
-                result["state"] = "TESTED"
-                result["reason"] = f"Evidence shows {verdict}"
-            elif v in ("FAIL", "ERROR", "CONTRADICTED"):
-                result["state"] = "CONTRADICTED"
-                result["reason"] = f"Evidence shows {verdict}"
-            elif v in ("BLOCKED", "PARTIAL"):
-                result["state"] = "OBSERVED"
-                result["reason"] = f"Evidence shows {verdict} (incomplete)"
+        # A JSON "PASS" alone is NOT proof. Check for real test evidence:
+        # - exit codes, command lists, or structured test results
+        has_real_evidence = False
+        if isinstance(data, dict):
+            # Quality gate artifact: has commands with exit codes
+            if "commands" in data and isinstance(data["commands"], list):
+                cmds = data["commands"]
+                if cmds and all(isinstance(c, dict) and "exit_code" in c for c in cmds):
+                    has_real_evidence = True
+                    failed = [c for c in cmds if c.get("exit_code", 1) != 0]
+                    if not failed and data.get("verdict", "").upper() in ("PASS",):
+                        result["state"] = "TESTED"
+                        result["reason"] = f"Quality gate PASS with {len(cmds)} commands, 0 failures"
+                    elif failed:
+                        result["state"] = "CONTRADICTED"
+                        result["reason"] = f"Quality gate has {len(failed)} failed command(s)"
+                    else:
+                        result["state"] = "OBSERVED"
+                        result["reason"] = "Quality gate artifact found but verdict unclear"
+            # Test result with exit code
+            elif "exit_code" in data and "test" in str(data).lower():
+                has_real_evidence = True
+                if data.get("exit_code") == 0:
+                    result["state"] = "TESTED"
+                    result["reason"] = "Test exited 0"
+                else:
+                    result["state"] = "CONTRADICTED"
+                    result["reason"] = f"Test exited {data.get('exit_code')}"
+            # Simple verdict without real evidence
+            elif data.get("verdict") or data.get("status") or data.get("result"):
+                verdict = str(data.get("verdict") or data.get("status") or data.get("result")).upper()
+                if verdict in ("PASS", "VERIFIED", "OK", "SUCCESS"):
+                    result["state"] = "OBSERVED"
+                    result["reason"] = f"Verdict '{verdict}' found but no real test evidence (exit codes); downgraded from TESTED"
+                elif verdict in ("FAIL", "ERROR", "CONTRADICTED"):
+                    result["state"] = "CONTRADICTED"
+                    result["reason"] = f"Evidence shows {verdict}"
+                elif verdict in ("BLOCKED", "PARTIAL"):
+                    result["state"] = "OBSERVED"
+                    result["reason"] = f"Evidence shows {verdict} (incomplete)"
 
     # If we have evidence but no clear verdict
     if result["state"] == "CLAIMED" and result["evidence_checked"]:
