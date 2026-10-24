@@ -241,6 +241,7 @@ Engineering (forwarded to the Python engine)
   orchestrators discover | doctor | test [--self-test] [--provider <id>] | run --provider <id> --plan <file> [--workspace DIR]
   route --task T
   snapshot create | verify | restore-test
+  guardian scan | map | audit | verify | status
 
 Environment: EOS_HOME (user data, default ~/.eos), EOS_WORKSPACE (project in scope),
 EOS_ENGINE (engine directory), EOS_PYTHON (interpreter)."
@@ -1282,6 +1283,16 @@ fn main() -> ExitCode {
                     }
                     _ => {
                         warn!("usage: eos snapshot create|verify|restore-test|restore");
+                        2
+                    }
+                },
+                "guardian" => match forwarded.first().map(String::as_str) {
+                    Some(cmd @ ("scan" | "map" | "audit" | "verify" | "status")) => {
+                        let _ = cmd;
+                        run_script(&engine, "guardian.py", false, &forwarded, &ws)
+                    }
+                    _ => {
+                        warn!("usage: eos guardian scan|map|audit|verify|status");
                         2
                     }
                 },
