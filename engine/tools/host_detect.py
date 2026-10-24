@@ -61,6 +61,30 @@ def get_version(binary: str) -> str:
         return "unknown"
 
 
+def _validate_evidence(host_id: str, evidence_file: str) -> bool:
+    """Validate that an evidence file contains real verification data."""
+    if not os.path.isfile(evidence_file):
+        return False
+    try:
+        with open(evidence_file, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    # Required fields for a valid evidence record
+    required = {"host", "version", "verified_at", "test_scope"}
+    if not required.issubset(data.keys()):
+        return False
+    if data.get("host") != host_id:
+        return False
+    if not data.get("test_scope"):
+        return False
+    if not data.get("verified_at"):
+        return False
+    return True
+
+
 def detect() -> list[dict]:
     results = []
     for host in HOSTS:
@@ -75,16 +99,14 @@ def detect() -> list[dict]:
         if not present:
             status = "BLOCKED"
         elif host["id"] == "opencode":
-            # Check for live verification evidence
-            evidence_dir = os.path.join(os.path.expanduser("~"), ".eos", "evidence", "host-verification")
-            evidence_file = os.path.join(evidence_dir, "opencode-live.json")
-            if os.path.isfile(evidence_file):
+            evidence_file = os.path.join(os.path.expanduser("~"), ".eos", "evidence", "host-verification", "opencode-live.json")
+            if _validate_evidence("opencode", evidence_file):
                 status = "LIVE_VERIFIED"
             else:
                 status = "ADAPTER_READY"
         elif host["id"] == "claude":
             evidence_file = os.path.join(os.path.expanduser("~"), ".eos", "evidence", "host-verification", "claude-live.json")
-            if os.path.isfile(evidence_file):
+            if _validate_evidence("claude", evidence_file):
                 status = "LIVE_VERIFIED"
             else:
                 status = "ADAPTER_READY"

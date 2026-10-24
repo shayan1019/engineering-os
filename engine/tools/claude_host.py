@@ -451,19 +451,9 @@ def restore(backup_path: str) -> int:
             break
 
     if target_path is None:
-        # Fallback: infer from backup contents, but warn
-        print("WARN: no manifest entry references this backup; inferring from contents")
-        items = os.listdir(backup_path)
-        if len(items) == 1 and os.path.isdir(os.path.join(backup_path, items[0])):
-            target_path = os.path.join(SKILLS_DIR, items[0])
-            is_skill = True
-        elif any(f.endswith(".md") for f in items):
-            # Could be agent backup
-            target_path = os.path.join(AGENTS_DIR, [f for f in items if f.endswith(".md")][0])
-            is_skill = False
-        else:
-            print("BLOCKED: cannot determine restore target")
-            return 1
+        # No manifest entry references this backup. Do NOT guess from contents.
+        print("BLOCKED: no manifest entry references this backup; cannot determine restore target safely")
+        return 1
 
     if is_skill:
         if os.path.exists(target_path):
