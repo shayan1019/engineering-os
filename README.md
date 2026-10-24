@@ -192,6 +192,19 @@ read-only, and the installer only removes files recorded in its own manifest.
 See [SECURITY.md](SECURITY.md) for reporting and for the limits of the current
 alpha.
 
+## Supported hosts
+
+| Host | Status | Adapter |
+| --- | --- | --- |
+| OpenCode | LIVE_VERIFIED | `engine/host-plugins/opencode/` |
+| Claude Code | LIVE_VERIFIED | `engine/tools/claude_host.py` |
+| Codex | DETECTED | `engine/tools/codex_host.py` |
+| Gemini CLI | DETECTED | `engine/tools/gemini_host.py` |
+| Cursor | BLOCKED (not installed) | contract tests only |
+| BLACKBOX AI | BLOCKED (not installed) | contract tests only |
+
+Run `python engine/tools/host_detect.py` to check which hosts are available.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and
