@@ -36,11 +36,11 @@ HOSTS = [
     {"id": "codex", "binary": "codex", "alt": [], "config_dir": ".codex",
      "caps": {"subagents": False, "skills": True, "permissions": False, "mcp": True,
               "skill_discovery": True, "native_activation": False},
-     "adapter": None},
+     "adapter": "engine/tools/codex_host.py"},
     {"id": "gemini", "binary": "gemini", "alt": ["gemini-cli"], "config_dir": ".gemini",
      "caps": {"subagents": True, "skills": True, "permissions": False, "mcp": True,
               "skill_discovery": True, "native_activation": True},
-     "adapter": None},
+     "adapter": "engine/tools/gemini_host.py"},
 ]
 
 
