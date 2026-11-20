@@ -63,6 +63,9 @@ const READ_ONLY_PREFIXES = [
   // an allowlisted tool that can write anywhere is a bypass.
   "python .agents/tools/decision.py",
   "python .agents/tools/auto_decision.py",
+  "python .agents/tools/project_map.py",
+  "python .agents/tools/work_state.py",
+  "python .agents/tools/preflight.py",
   "python .agents/tools/challenge.py",
   "python .agents/tools/quality_gate.py",
   "python .agents/tools/impact.py",

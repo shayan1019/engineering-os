@@ -40,15 +40,23 @@ SENSITIVE = (".env", "secret", "credential", "deploy", "production", ".mq5", ".m
              "dockerfile", "docker-compose")
 
 
-def classify(task: str, scope: list, impact: dict | None) -> tuple:
+def _high_hit(text: str, word: str) -> bool:
+    """A high-risk word must start a word. 'nasil' must not match 'sil'."""
+    return bool(re.search(r"(?<!\w)" + re.escape(word), text))
+
+
+def classify(task: str, scope: list, impact: dict | None, impact_required: bool = False) -> tuple:
     text = task.lower()
-    high = any(word in text for word in HIGH_WORDS)
+    high = any(_high_hit(text, word) for word in HIGH_WORDS)
     sensitive = any(any(token in item.lower() for token in SENSITIVE) for item in scope)
     cross = bool((impact or {}).get("cross_process"))
-    if high or sensitive or cross or len(scope) > 3:
-        return "CRITICAL", [reason for reason, hit in (
-            ("high-risk wording", high), ("sensitive surface", sensitive),
-            ("cross-process change", cross), ("more than three files", len(scope) > 3)) if hit]
+    impact_missing = impact_required and impact is None
+    reasons = [reason for reason, hit in (
+        ("high-risk wording", high), ("sensitive surface", sensitive),
+        ("cross-process change", cross), ("more than three files", len(scope) > 3),
+        ("impact analysis unavailable", impact_missing)) if hit]
+    if high or sensitive or cross or len(scope) > 3 or impact_missing:
+        return "CRITICAL" if (high or sensitive or cross) else "STANDARD", reasons
     if len(scope) == 1:
         edges = len((impact or {}).get("edges") or [])
         if edges <= 25:
@@ -59,12 +67,14 @@ def classify(task: str, scope: list, impact: dict | None) -> tuple:
 
 def safe_scope(workspace: str, values: list) -> tuple:
     scope, problems = [], []
+    workspace_real = os.path.realpath(os.path.abspath(workspace))
     for raw in values:
-        absolute = os.path.abspath(raw if os.path.isabs(raw) else os.path.join(workspace, raw))
-        if not (absolute == workspace or absolute.startswith(workspace + os.sep)):
-            problems.append(f"outside the workspace: {raw}")
+        candidate = raw if os.path.isabs(raw) else os.path.join(workspace_real, raw)
+        absolute = os.path.realpath(os.path.abspath(candidate))
+        if not (absolute == workspace_real or absolute.startswith(workspace_real + os.sep)):
+            problems.append(f"outside the workspace (real path): {raw}")
             continue
-        rel = ep.store_path(absolute, workspace).replace("\\", "/")
+        rel = ep.store_path(absolute, workspace_real).replace("\\", "/")
         if rel not in scope:
             scope.append(rel)
     return scope, problems
@@ -77,15 +87,25 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
         return {"verdict": "BLOCKED", "problems": problems or ["no scope"],
                 "next": "pass --scope with the file(s) the change touches"}
     if not project:
-        project = edr.infer_project(workspace, os.path.join(workspace, scope[0])) or "workspace"
+        project = edr.infer_project(workspace, os.path.join(os.path.realpath(workspace), scope[0])) or "workspace"
     project = edr.safe_project(project)
 
-    existing = edr.check_edit(workspace, None, os.path.join(workspace, scope[0]))
-    if existing.get("ok"):
-        return {"verdict": "READY", "decision": existing["decision"],
-                "risk": "UNKNOWN", "reasons": ["an approved decision already covers this path"],
-                "project": existing.get("project"), "scope": scope,
-                "state": existing.get("state"), "approved": True, "impact": "reused",
+    reused = None
+    for rel in scope:
+        check = edr.check_edit(workspace, None, os.path.join(os.path.realpath(workspace), rel))
+        if not check.get("ok"):
+            reused = None
+            break
+        if reused is None:
+            reused = check
+        elif check.get("decision") != reused.get("decision"):
+            reused = None
+            break
+    if reused:
+        return {"verdict": "READY", "decision": reused["decision"],
+                "risk": "UNKNOWN", "reasons": ["an approved decision covers every scope path"],
+                "project": reused.get("project"), "scope": scope,
+                "state": reused.get("state"), "approved": True, "impact": "reused",
                 "missing": [], "next": "write inside the scope",
                 "human_approval_required": False, "reused": True}
 
@@ -98,7 +118,7 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
             impact_note = impact.get("verdict", "UNKNOWN")
         except (SystemExit, Exception) as exc:  # noqa: BLE001 - impact must not block an ATOMIC fix
             impact_note = f"UNKNOWN: {type(exc).__name__}: {exc}"
-    risk, reasons = classify(task, scope, impact)
+    risk, reasons = classify(task, scope, impact, impact_required=use_impact)
     if risk == "CRITICAL":
         reasons.append("critical never auto-approves")
     if problems:
@@ -196,7 +216,7 @@ def selftest() -> int:
             open(os.path.join(root, name), "w").write("x")
         result = prepare(root, "eos", "refactor the module", ["app.py", "b.py", "c.py", "d.py"],
                          approve=True, use_impact=False)
-        assert result["risk"] == "CRITICAL", result
+        assert result["risk"] == "STANDARD", result
         assert result["approved"] is False
         return result["risk"]
 
@@ -209,6 +229,49 @@ def selftest() -> int:
         assert result["approved"] is False
         assert result["human_approval_required"] is True
         return "human required"
+
+    @case("nasil is not a delete; silmek is high risk")
+    def _():
+        root = fixture()
+        okay = prepare(root, "eos", "nasil calisir", ["app.py"], approve=True, use_impact=False)
+        assert okay["risk"] == "ATOMIC", okay
+        danger = classify("silmek", ["app.py"], None, impact_required=False)
+        assert danger[0] == "CRITICAL", danger
+        return "word start"
+
+    @case("impact failure prevents ATOMIC")
+    def _():
+        risk, reasons = classify("fix a typo", ["app.py"], None, impact_required=True)
+        assert risk == "STANDARD", (risk, reasons)
+        return "standard"
+
+    @case("a decision covering one file is not reused for two")
+    def _():
+        root = fixture()
+        open(os.path.join(root, "b.py"), "w").write("x\n")
+        args = argparse.Namespace(project="eos", task="one", risk="ATOMIC",
+                                  scope=["app.py"], suite="unit", actor="eos.test",
+                                  approve=True, workspace=root)
+        assert edr.cmd_open(args) == 0
+        result = prepare(root, "eos", "two files", ["app.py", "b.py"],
+                         approve=True, use_impact=False)
+        assert not result.get("reused"), result
+        assert result["state"] == "DRAFT", result
+        return "not reused"
+
+    @case("a junction/symlink escape is BLOCKED")
+    def _():
+        root = fixture()
+        outside = tempfile.mkdtemp(prefix="eos-out-")
+        open(os.path.join(outside, "x.py"), "w").write("x\n")
+        link = os.path.join(root, "link")
+        try:
+            os.symlink(outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            return "symlink unavailable on this host (UNKNOWN)"
+        result = prepare(root, "eos", "fix", ["link/x.py"], approve=True, use_impact=False)
+        assert result["verdict"] == "BLOCKED", result
+        return "blocked"
 
     @case("an outside path is BLOCKED")
     def _():

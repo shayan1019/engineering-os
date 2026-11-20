@@ -44,7 +44,7 @@ ROLE_HINTS = [
     ("evidence-analyst", "provenance and evidence-chain claims"),
 ]
 
-MAX_BLOCK_CHARS = 2400
+MAX_BLOCK_CHARS = 6000
 
 
 def load_json(path: str, default=None):
@@ -182,6 +182,16 @@ def build(task: str, project: str, host: str, max_skills: int) -> dict:
 
     gate = gate_for(resolved_project) if resolved_project else {}
 
+    preflight_ctx = {}
+    try:
+        import preflight as pf
+        project_path = resolved.get("path") or ""
+        cwd = os.path.join(workspace, project_path) if project_path else workspace
+        preflight_ctx = pf.run(task, workspace, resolved_project, cwd, "", use_route=False)
+    except Exception as exc:  # noqa: BLE001 - activation must not crash the host
+        preflight_ctx = {"verdict": "UNKNOWN",
+                         "error": f"{type(exc).__name__}: {exc}"}
+
     return {
         "task": task,
         "workspace": workspace,
@@ -204,6 +214,7 @@ def build(task: str, project: str, host: str, max_skills: int) -> dict:
         "rationale": rationale,
         "roles": [{"name": n, "purpose": p} for n, p in ROLE_HINTS],
         "gate": gate,
+        "preflight": preflight_ctx,
         "host": host,
         "engine": ep.ENGINE_ROOT,
     }
@@ -228,6 +239,21 @@ def render(ctx: dict) -> str:
         lines.append("domains: " + ", ".join(ctx["domains"][:8]))
     if ctx.get("tech"):
         lines.append("tech: " + ", ".join(str(item) for item in ctx["tech"][:8]))
+    preflight = ctx.get("preflight") or {}
+    if preflight:
+        map_state = (preflight.get("map") or {}).get("state", "UNKNOWN")
+        work = preflight.get("work") or {}
+        edr_ctx = preflight.get("edr") or {}
+        lines.append(f"preflight: {preflight.get('verdict')} | map={map_state} | "
+                     f"work={work.get('state', 'UNKNOWN')} | edr={edr_ctx.get('state', 'UNKNOWN')}")
+        if work.get("task"):
+            lines.append(f"work: {work.get('task')} [{work.get('state')}] "
+                         f"next: {work.get('next_action') or 'UNKNOWN'}")
+        for blocker in (preflight.get("blockers") or [])[:3]:
+            lines.append(f"preflight blocker: {blocker}")
+        excerpt = (preflight.get("map") or {}).get("excerpt") or ""
+        if excerpt:
+            lines.extend("  " + row for row in excerpt.splitlines()[:12])
     if ctx.get("rules"):
         lines.append("rules in effect: " + ", ".join(ctx["rules"]))
     if ctx.get("skills"):

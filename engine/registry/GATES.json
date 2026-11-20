@@ -117,6 +117,10 @@
           "timeout_seconds": 600,
           "commands": [
             {"name": "workspace_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/workspace.py", "selftest"], "required": true},
+            {"name": "project_map_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/project_map.py", "selftest"], "required": true},
+            {"name": "work_state_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/work_state.py", "selftest"], "required": true},
+            {"name": "preflight_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/preflight.py", "selftest"], "required": true},
+            {"name": "auto_decision_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/auto_decision.py", "selftest"], "required": true},
             {"name": "tool_evidence_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/tool_evidence.py", "selftest"], "required": true},
             {"name": "completion_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/completion.py", "selftest"], "required": true},
             {"name": "ship_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/ship.py", "selftest"], "required": true},
