@@ -455,7 +455,8 @@ def _select_agents(task, domains, risk, kg, tech=None):
                  "performance-engineer", "evidence-analyst", "explore", "researcher",
                  "dependency-analyst", "logic-reviewer", "bug-hunter")
     skipped = [a for a in all_roles if a not in specialists]
-    return {"orchestrator": "chief-architect", "specialists": specialists,
+    return {"orchestrator": "host-session", "coordination": "host-session",
+            "specialists": specialists,
             "rationale": why, "not_needed": skipped,
             "tech": tech,
             "conditional": {"test-engineer": "test-engineer" in specialists,

@@ -26,7 +26,7 @@ import _eos_paths as ep  # noqa: E402
 ROOT = ep.resolve_workspace()
 
 EXPECTED = {
-    "chief-architect": {"mode": "primary", "edit": "deny", "shell": "deny"},
+    "chief-architect": {"mode": "subagent", "edit": "deny", "shell": "deny"},
     "architect": {"mode": "subagent", "edit": "deny", "shell": "deny"},
     "implementer": {"mode": "subagent", "edit": "allow", "shell": "deny"},
     "reviewer": {"mode": "subagent", "edit": "deny", "shell": "deny"},
@@ -155,17 +155,9 @@ def main() -> int:
     chief = by_id.get("chief-architect")
     if chief:
         tasks = task_allowlist(chief)
-        if not tasks:
+        if tasks and (tasks["star_allow"] or tasks["allow"]):
             findings.append({"severity": "ERROR", "agent": "chief-architect",
-                             "detail": "no task permission block: any subagent can be invoked"})
-        else:
-            if tasks["star_allow"]:
-                findings.append({"severity": "ERROR", "agent": "chief-architect",
-                                 "detail": "task '*' is allowed; delegation is unbounded"})
-            missing = sorted(set(EXPECTED) - {"chief-architect"} - set(tasks["allow"]))
-            if missing:
-                findings.append({"severity": "ERROR", "agent": "chief-architect",
-                                 "detail": f"cannot delegate to: {', '.join(missing)}"})
+                             "detail": "chief-architect delegates; the host session owns coordination"})
 
     for name in EXPECTED:
         agent = by_id.get(name)

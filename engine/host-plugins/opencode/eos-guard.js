@@ -62,9 +62,11 @@ const READ_ONLY_PREFIXES = [
   // --baseline, team run, model_probe invoke) are deliberately NOT in this list:
   // an allowlisted tool that can write anywhere is a bypass.
   "python .agents/tools/decision.py",
+  "python .agents/tools/auto_decision.py",
   "python .agents/tools/challenge.py",
   "python .agents/tools/quality_gate.py",
   "python .agents/tools/impact.py",
+  "python .agents/tools/team.py",
   "python .agents/tools/workspace.py",
   "python .agents/tools/tool_evidence.py",
   "python .agents/tools/completion.py",
@@ -86,6 +88,7 @@ const READ_ONLY_PREFIXES = [
 const DENIED_ARGS = [
   { prefix: "python .agents/tools/impact.py", token: "--out" },
   { prefix: "python .agents/tools/graph_freshness.py", token: "invalidate" },
+  { prefix: "python .agents/tools/team.py", token: " run --plan" },
   { prefix: "python .agents/tools/scope_install.py", token: "scope_install.py install" },
   { prefix: "python .agents/tools/scope_install.py", token: "scope_install.py uninstall" },
   { prefix: "python .agents/tools/workspace.py", token: "scope set" },
@@ -193,6 +196,69 @@ function askEngine(engine, python, workspace, path, timeoutMs = TIMEOUT_MS) {
         }
       }
       done({ ok: false, reasons: [`engine produced no decision (exit ${code}) ${err}`.slice(0, MAX_REASON)] })
+    })
+  })
+}
+
+function sessionKey(input) {
+  const id = input && typeof input.sessionID === "string" ? input.sessionID : ""
+  return id || "default"
+}
+
+/**
+ * Prepare an Engineering Decision Record for one path, automatically.
+ * Only ATOMIC is auto-approved by the engine; STANDARD returns approved=false
+ * and CRITICAL always requires a human. The guard never invents an approval.
+ */
+function askAutoDecision(engine, python, workspace, task, path, timeoutMs = 12000) {
+  return new Promise((resolvePromise) => {
+    let settled = false
+    const done = (value) => {
+      if (!settled) {
+        settled = true
+        resolvePromise(value)
+      }
+    }
+    let child
+    try {
+      child = spawn(python, [
+        join(engine, "tools", "auto_decision.py"), "prepare",
+        "--workspace", workspace, "--task", String(task).slice(0, 4000),
+        "--scope", path, "--approve", "--json",
+      ], { cwd: workspace, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    } catch (error) {
+      done({ ok: false, reasons: [`auto decision spawn failed: ${error.message}`] })
+      return
+    }
+    let out = ""
+    let err = ""
+    const timer = setTimeout(() => {
+      try { child.kill() } catch {}
+      done({ ok: false, reasons: ["auto decision timed out"] })
+    }, timeoutMs)
+    child.stdout.on("data", (chunk) => { if (out.length < 100000) out += chunk.toString() })
+    child.stderr.on("data", (chunk) => { if (err.length < 4000) err += chunk.toString() })
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      done({ ok: false, reasons: [`auto decision error: ${error.message}`] })
+    })
+    child.on("close", () => {
+      clearTimeout(timer)
+      const lines = out.trim().split(/\r?\n/).filter(Boolean)
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        try {
+          const parsed = JSON.parse(lines[index])
+          if (parsed && typeof parsed.approved === "boolean") {
+            done({ ok: parsed.approved, decision: parsed.decision, risk: parsed.risk,
+                   reasons: parsed.reasons || [], next: parsed.next || "",
+                   state: parsed.state })
+            return
+          }
+        } catch {
+          // not the JSON line
+        }
+      }
+      done({ ok: false, reasons: [`auto decision produced no JSON ${err}`.slice(0, MAX_REASON)] })
     })
   })
 }
@@ -308,9 +374,30 @@ async function install(ctx, options) {
   const workspace = workspaceOf(ctx, options && options.workspace)
   const { engine, python } = engineFor(workspace)
   const cache = new Map()
+  const sessionTasks = new Map()
   let enforcement = "unknown"
   let hooks = []
   let permissionHookAvailable = false
+
+  const taskFor = (sessionID) => sessionTasks.get(sessionKey({ sessionID })) || ""
+  const allowAtomic = async (sessionID, path) => {
+    const task = taskFor(sessionID)
+    if (!task) return { ok: false, reasons: ["no task text captured for this session"] }
+    return askAutoDecision(engine, python, workspace, task, path)
+  }
+
+  try {
+    if (ctx && ctx.session && typeof ctx.session.hook === "function") {
+      await ctx.session.hook("prompt", (event) => {
+        const text = event && event.prompt && typeof event.prompt.text === "string"
+          ? event.prompt.text.trim() : ""
+        if (text) sessionTasks.set(sessionKey(event), text)
+      })
+    }
+  } catch {
+    // Activation already injects context; a failed task cache only means the
+    // guard cannot auto-create an ATOMIC decision and will deny instead.
+  }
 
   const decide = async (path) => {
     const key = `${path}`
@@ -340,11 +427,17 @@ async function install(ctx, options) {
       }
       const decision = await decide(path)
       if (!decision.ok) {
-        record(workspace, sessionID, { ...summary, verdict: "DENY", reason: decision.reasons || [] })
+        const auto = await allowAtomic(sessionID, path)
+        if (auto.ok) {
+          record(workspace, sessionID, { ...summary, verdict: "ALLOW",
+            decision: auto.decision, reason: "auto ATOMIC decision" })
+          return
+        }
+        record(workspace, sessionID, { ...summary, verdict: "DENY",
+          reason: (auto.reasons || decision.reasons || []) })
         throw new Error(`EOS BLOCKED: no approved decision covers ${path}. ` +
-          `Open one: python .agents/tools/decision.py open --project <id> --task "..." ` +
-          `--risk ATOMIC --scope ${path} --approve. ` +
-          `Reasons: ${(decision.reasons || []).join("; ").slice(0, MAX_REASON)}`)
+          `EOS tried to prepare one automatically: ${(auto.reasons || []).join("; ").slice(0, MAX_REASON)}. ` +
+          `Next: ${auto.next || "open a decision with auto_decision.py prepare"}`)
       }
       record(workspace, sessionID, { ...summary, verdict: "ALLOW", decision: decision.decision })
       return
@@ -399,10 +492,18 @@ async function install(ctx, options) {
       }
       const decision = await decide(path)
       if (!decision.ok) {
+        const auto = await allowAtomic(input.sessionID, path)
+        if (auto.ok) {
+          record(workspace, input.sessionID, {
+            kind: "permission", action: "write", resource: path,
+            verdict: "ALLOW", decision: auto.decision, reason: "auto ATOMIC decision",
+          })
+          return
+        }
         input.effect = "deny"
         record(workspace, input.sessionID, {
           kind: "permission", action: "write", resource: path,
-          verdict: "DENY", reason: decision.reasons || [],
+          verdict: "DENY", reason: auto.reasons || decision.reasons || [],
         })
         return
       }

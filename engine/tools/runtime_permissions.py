@@ -152,15 +152,9 @@ def check_specs(specs: dict) -> list:
         if name == "chief-architect":
             if writes:
                 problems.append(f"{name}: the coordinator must not write")
-            allowed = [r for r, e in delegation_rules(spec) if e == "allow"]
-            if not allowed:
-                problems.append(f"{name}: the coordinator cannot delegate")
-            if "*" in allowed:
-                problems.append(f"{name}: the coordinator delegates to '*'; name the team")
-        else:
-            allowed = [r for r, e in delegation_rules(spec) if e == "allow"]
-            if allowed:
-                problems.append(f"{name}: delegation is allowed ({allowed[0]}); subagents are not a write bypass")
+        allowed = [r for r, e in delegation_rules(spec) if e == "allow"]
+        if allowed:
+            problems.append(f"{name}: delegation is allowed ({allowed[0]}); subagents are not a write bypass")
         if name in ("verifier", "reviewer", "architect", "evidence-analyst",
                     "security-auditor", "performance-engineer", "researcher",
                     "dependency-analyst", "logic-reviewer", "bug-hunter") and ("*", "allow") in shell_rules(spec):
@@ -515,7 +509,6 @@ def selftest() -> int:
                                            ("shell", "*", "deny"), ("shell", "python *", "allow"),
                                            ("subagent", "*", "deny")])
     good["test-engineer"]["permissions"] += [("edit", "tests/**", "allow")]
-    good["chief-architect"]["permissions"] += [("subagent", "implementer", "allow")]
     if check_specs(good):
         failures.append("valid fixture contracts were rejected")
 
@@ -532,6 +525,7 @@ def selftest() -> int:
         ("reviewer_delegates", lambda s: s["reviewer"]["permissions"].append(("subagent", "implementer", "allow"))),
         ("implementer_delegates", lambda s: s["implementer"]["permissions"].append(("subagent", "reviewer", "allow"))),
         ("chief_writes", lambda s: s["chief-architect"]["permissions"].append(("edit", "*", "allow"))),
+        ("chief_delegates", lambda s: s["chief-architect"]["permissions"].append(("subagent", "implementer", "allow"))),
         ("test_writes_source", lambda s: s["test-engineer"]["permissions"].append(("edit", "src/**", "allow"))),
     ]
     for name, mutate in cases:
@@ -552,7 +546,7 @@ def selftest() -> int:
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print("PASS runtime-permissions selftest: 8 contract violations and "
+    print(f"PASS runtime-permissions selftest: {len(cases)} contract violations and "
           "1 stale dispatch expectation detected")
     return 0
 

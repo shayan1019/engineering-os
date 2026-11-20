@@ -151,6 +151,48 @@ def safe_project(project: str) -> str:
     return project
 
 
+def infer_project(workspace: str, path: str) -> str:
+    """Which project owns this path? A decision from another project must not
+    authorise it.
+
+    The workspace root's `.eos/project.json` is the *workspace* identity, not a
+    project identity: it must never swallow every child project. A marker below
+    the root wins; registered profile paths come before the workspace fallback.
+    """
+    absolute = os.path.abspath(path)
+    current = absolute if os.path.isdir(absolute) else os.path.dirname(absolute)
+    workspace_abs = os.path.abspath(workspace)
+    workspace_id = ""
+    while current == workspace_abs or current.startswith(workspace_abs + os.sep):
+        marker = os.path.join(current, ".eos", "project.json")
+        if os.path.isfile(marker):
+            try:
+                data = read_json(marker)
+                marker_id = str(data.get("id") or "")
+            except (OSError, json.JSONDecodeError):
+                marker_id = ""
+            if marker_id:
+                if current != workspace_abs:
+                    return marker_id
+                workspace_id = marker_id
+        if current == workspace_abs:
+            break
+        current = os.path.dirname(current)
+    for registry in (os.path.join(workspace, ".agents", "registry"), ep.REGISTRY):
+        profiles = os.path.join(registry, "PROJECT_PROFILES.json")
+        if not os.path.isfile(profiles):
+            continue
+        try:
+            data = read_json(profiles)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for profile in data.get("profiles", []):
+            root = os.path.abspath(os.path.join(workspace, profile.get("path", "")))
+            if absolute == root or absolute.startswith(root + os.sep):
+                return str(profile.get("id") or "")
+    return workspace_id
+
+
 def decisions_root(workspace: str) -> str:
     return os.path.join(workspace, ".agents", "evidence", "decisions")
 
@@ -730,6 +772,8 @@ def latest_decisions(workspace: str, project: str | None = None) -> list:
     ]
     for name in projects:
         directory = os.path.join(root, name)
+        if not os.path.isdir(directory):
+            continue
         for entry in os.listdir(directory):
             if not entry.endswith(".json"):
                 continue
@@ -747,6 +791,8 @@ def latest_decisions(workspace: str, project: str | None = None) -> list:
 def check_edit(workspace: str, project: str | None, path: str,
                max_age_hours: float = 24.0) -> dict:
     rel = ep.store_path(path, workspace)
+    if project is None:
+        project = infer_project(workspace, path) or None
     reasons = []
     for record in latest_decisions(workspace, project):
         problems = integrity(record)
@@ -1166,6 +1212,48 @@ def selftest() -> int:
         r = record(root, decision_id)
         assert approve_record(root, r, "architect", "architect", auto=False) == 0
         return "blocked then released"
+
+    @case("another project's decision cannot authorise a path")
+    def _():
+        root = workspace()
+        project_dir = os.path.join(root, "proj")
+        os.makedirs(os.path.join(project_dir, ".eos"))
+        with open(os.path.join(project_dir, ".eos", "project.json"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            json.dump({"schema": 1, "id": "other"}, handle)
+        with open(os.path.join(project_dir, "x.py"), "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("x = 1\n")
+        args = argparse.Namespace(project="demo", task="demo change", risk="ATOMIC",
+                                  scope=["proj/x.py"], suite="unit", actor="eos.test",
+                                  approve=True, workspace=root)
+        assert cmd_open(args) == 0
+        denied = check_edit(root, None, os.path.join(project_dir, "x.py"))
+        assert not denied["ok"], denied
+        args = argparse.Namespace(project="other", task="other change", risk="ATOMIC",
+                                  scope=["proj/x.py"], suite="unit", actor="eos.test",
+                                  approve=True, workspace=root)
+        assert cmd_open(args) == 0
+        allowed = check_edit(root, None, os.path.join(project_dir, "x.py"))
+        assert allowed["ok"], allowed
+        return "project isolation"
+
+    @case("workspace root marker does not swallow a registered child project")
+    def _():
+        root = workspace()
+        os.makedirs(os.path.join(root, ".eos"))
+        with open(os.path.join(root, ".eos", "project.json"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            json.dump({"schema": 1, "id": "workspace-root"}, handle)
+        os.makedirs(os.path.join(root, "proj"))
+        open(os.path.join(root, "proj", "x.py"), "w").write("x\n")
+        registry = os.path.join(root, ".agents", "registry")
+        os.makedirs(registry)
+        with open(os.path.join(registry, "PROJECT_PROFILES.json"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            json.dump({"profiles": [{"id": "child", "path": "proj"}]}, handle)
+        assert infer_project(root, os.path.join(root, "proj", "x.py")) == "child"
+        assert infer_project(root, os.path.join(root, "other.py")) == "workspace-root"
+        return "child wins"
 
     @case("unregistered path is denied")
     def _():

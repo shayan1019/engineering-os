@@ -218,6 +218,7 @@ def cmd_apply(args) -> int:
 
     pushed = False
     push_output = ""
+    remote_sha = ""
     if args.push:
         if not plan.get("remote"):
             print(f"BLOCKED: commit {commit_sha} created, but no origin remote is configured")
@@ -238,13 +239,25 @@ def cmd_apply(args) -> int:
                                       "files": files, "pushed": False,
                                       "problems": [f"push failed: {push_output[-500:]}"]})
             return 1
+        remote = git(repo, ["ls-remote", "origin", f"refs/heads/{args.branch}"])
+        remote_sha = remote.stdout.strip().split()[0] if remote.stdout.strip() else ""
+        if remote_sha != commit_sha:
+            print(f"BLOCKED: push returned 0, but remote SHA {remote_sha or '(missing)'} "
+                  f"!= local {commit_sha}")
+            write_receipt(workspace, {"schema": SCHEMA, "kind": "ship", "created_at": utc_now(),
+                                      "project": args.project, "decision": args.decision,
+                                      "branch": args.branch, "commit": commit_sha,
+                                      "remote_sha": remote_sha, "files": files, "pushed": False,
+                                      "problems": ["remote SHA does not match the commit"]})
+            return 1
         pushed = True
 
     receipt = write_receipt(workspace, {
         "schema": SCHEMA, "kind": "ship", "created_at": utc_now(),
         "project": args.project, "decision": args.decision, "branch": args.branch,
         "commit": commit_sha, "files": files, "pushed": pushed,
-        "remote": plan.get("remote", ""), "push_output": push_output,
+        "remote": plan.get("remote", ""), "remote_sha": remote_sha,
+        "push_output": push_output,
         "gate": plan["gate"], "problems": [],
     })
     print(f"PASS: {args.branch} @ {commit_sha[:12]} ({len(files)} file(s), pushed={pushed})")

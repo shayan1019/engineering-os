@@ -104,6 +104,14 @@
             }
           ]
         },
+        "deploy": {
+          "description": "Synchronise the product engine into the workspace .agents through the official local installer. The command is fixed in this registry; an agent cannot inject a target or a source. This is the only deploy path the gate knows.",
+          "timeout_seconds": 300,
+          "commands": [
+            {"name": "local_install", "cmd": ["eos", "install", "--local", "%WORKSPACE%/.agents", "--source", "%WORKSPACE%/engineering-os", "--force"], "required": true},
+            {"name": "agents_install", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/agent_install.py", "install", "--target", "project", "--project", "%WORKSPACE%", "--force"], "required": true}
+          ]
+        },
         "vnext_dev": {
           "description": "Development-only behavioural suite for the universal runtime. It executes the product tree directly (%WORKSPACE%/engineering-os) so new tools can be verified before deployment. Release gates keep using the fixed 'engine' and 'vnext' suites.",
           "timeout_seconds": 600,

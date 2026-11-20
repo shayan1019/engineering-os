@@ -177,7 +177,7 @@ def build(task: str, project: str, host: str, max_skills: int) -> dict:
     agents = routed.get("agents") or {}
     selected = [a for a in (agents.get("specialists") or [])]
     not_needed = [a for a in (agents.get("not_needed") or [])]
-    orchestrator = agents.get("orchestrator") or "chief-architect"
+    orchestrator = agents.get("orchestrator") or "host-session"
     rationale = agents.get("rationale") or {}
 
     gate = gate_for(resolved_project) if resolved_project else {}
@@ -238,7 +238,7 @@ def render(ctx: dict) -> str:
         lines.append("relevant skills: " + names)
         lines.append("  read a skill file only when the task actually needs it")
     if ctx.get("specialists"):
-        lines.append("orchestrator: " + str(ctx.get("orchestrator")))
+        lines.append("orchestrator: host session (EOS Core coordinates; no Chief mode required)")
         lines.append("specialists to use: " + ", ".join(ctx["specialists"]))
         purposes = {r["name"]: r["purpose"] for r in ctx["roles"]}
         rationale = ctx.get("rationale") or {}
@@ -254,8 +254,8 @@ def render(ctx: dict) -> str:
         else:
             lines.append(f"gate for this project: eos gate run --project {ctx['project']} --suite {ctx['gate']['suite']}")
     lines.append("permissions: only the implementer may write; the others are read-only")
-    lines.append("write gate: open an EDR before any write (`decision.py open ...`); "
-                 "an unapproved write is denied by eos-guard")
+    lines.append("write gate: EOS prepares the EDR automatically; ATOMIC is auto-approved, "
+                 "STANDARD needs specialist review, CRITICAL needs a human")
     lines.append("completion: CLOSED decision + PASS gate + tool/skill evidence "
                  "(`completion.py check`)")
     lines.append("procedure: use the specialists above, delegate the change to the implementer, "

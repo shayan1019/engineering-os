@@ -37,7 +37,6 @@ SCHEMA = 1
 PROTOCOL = "eos-team/1"
 POLICY = os.path.join(ep.REGISTRY, "MODEL_POLICY.json")
 ROLES = {
-    "coordinator": {"agent": "chief-architect", "read_only": True},
     "architect": {"agent": "architect", "read_only": True},
     "researcher": {"agent": "researcher", "read_only": True},
     "dependency-analyst": {"agent": "dependency-analyst", "read_only": True},
@@ -223,6 +222,7 @@ def build_plan(project: str, task: str, risk: str, decision: str, workspace: str
         })
     plan = {
         "schema": SCHEMA, "protocol": PROTOCOL, "id": plan_id,
+        "orchestrator": "host-session",
         "project": project, "task": task, "risk": risk, "decision": decision,
         "created_at": utc_now(),
         "budget": {
@@ -529,6 +529,7 @@ print(json.dumps(base))
         root = workspace()
         plan = make_plan(root, "STANDARD")
         assert len(plan["nodes"]) == 4, plan["nodes"]
+        assert plan.get("orchestrator") == "host-session", plan.get("orchestrator")
         assert plan["nodes"][-1]["role"] == "verifier"
         assert all(node.get("prompt_file") for node in plan["nodes"])
         return plan["id"]

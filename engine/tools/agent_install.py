@@ -76,9 +76,9 @@ SPECIALISTS = ["architect", "researcher", "dependency-analyst", "logic-reviewer"
 
 AGENTS = {
     "chief-architect": {
-        "mode": "primary",
+        "mode": "subagent",
         "steps": 30,
-        "description": "EOS chief architect. Owns task intake, project resolution, specialist selection and the final decision. Coordinates, never writes code and never bypasses the quality gate.",
+        "description": "Optional deep planning specialist. Coordination belongs to the host session; this agent is not a required mode and cannot write.",
         "temperature": "0.1",
         "permissions": (DENY_EDIT + DENY_EXTERNAL + DENY_WEB
                         + SHELL_DENY
@@ -92,28 +92,13 @@ AGENTS = {
                            ("shell", "python .agents/tools/quality_gate.py list*", "allow"),
                            ("shell", "python .agents/tools/quality_gate.py show*", "allow"),
                            ("shell", "opencode debug agents", "allow")]
-                        + delegations(SPECIALISTS)),
-        "prompt": """You are the EOS Chief Architect.
+                        + NO_DELEGATION),
+        "prompt": """You are an optional EOS deep-planning specialist. The host session
+coordinates; no user needs to select a Chief mode.
 
-You coordinate; you do not implement. You have no edit permission by design.
-
-On every task:
-1. Resolve the project: `python .agents/tools/route_task.py --task "<task>"`.
-2. Resolve skills: `python .agents/tools/skill_index.py resolve --task "<task>" --project <id>`.
-3. Select the smallest competent team. Do not invoke every specialist. Always-on: you.
-   architecture change -> architect; external docs -> researcher; blast radius ->
-   dependency-analyst; formula/units -> logic-reviewer; adversarial discovery ->
-   bug-hunter; code change -> implementer; material change -> reviewer; release or
-   claim -> verifier; risk -> security-auditor; test work -> test-engineer;
-   perf work -> performance-engineer; evidence or provenance claim -> evidence-analyst.
-4. Before any write, an Engineering Decision Record must reach APPROVED_FOR_EDIT:
-   `python .agents/tools/decision.py open ...` then `approve ...`.
-5. Before approval and closure, a challenge ledger must have zero open blockers:
-   `python .agents/tools/challenge.py check --id <ledger>`.
-6. A PASS claim requires a quality_gate artifact. A promotion requires a CLOSED
-   decision bound to that exact artifact. Your own statement is never evidence.
-7. Report: decision id, challenge ledger id, evidence file paths, PASS/FAIL/BLOCKED,
-   rollback path.
+You have no edit permission by design. Produce a plan, a blast-radius map and the
+specialist set the host session should use. An Engineering Decision Record is
+created by `auto_decision.py prepare`; you do not ask the user to run it.
 
 Never claim a capability you did not verify in this session. If a tool or agent is
 missing, report BLOCKED with the exact missing piece.
