@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "generated": "2026-11-20",
+  "status": "PROVISIONAL",
+  "note": "Model IDs were verified with `opencode models` on 2026-11-20. Existence is not capability: no role assignment is evidence-backed until scenario_bench records a score for that model on that role. PROVISIONAL entries require --allow-provisional.",
+  "providers": {
+    "opencode": {
+      "kind": "managed",
+      "status": "LISTED",
+      "evidence": "opencode models (2026-11-20): opencode/claude-fable-5-2, opencode/gpt-6.2-astra present"
+    },
+    "openrouter": {
+      "kind": "external",
+      "status": "LISTED_UNVERIFIED_AUTH",
+      "evidence": "opencode models lists openrouter/anthropic/claude-fable-5.2 and openrouter/openai/gpt-6.2-astra; no authenticated invocation was made"
+    }
+  },
+  "roles": {
+    "coordinator": {
+      "family": "anthropic",
+      "candidates": ["opencode/claude-fable-5-2", "openrouter/anthropic/claude-fable-5.2"],
+      "reason": "coordination and root-cause work; family diversity against the independent critic",
+      "status": "PROVISIONAL"
+    },
+    "architect": {
+      "family": "anthropic",
+      "candidates": ["opencode/claude-fable-5-2", "openrouter/anthropic/claude-fable-5.2"],
+      "reason": "design and blast-radius reasoning",
+      "status": "PROVISIONAL"
+    },
+    "researcher": {
+      "family": "openai",
+      "candidates": ["opencode/gpt-6.2-astra", "openrouter/openai/gpt-6.2-astra"],
+      "reason": "independent literature and documentation research; external content is untrusted data",
+      "status": "PROVISIONAL"
+    },
+    "dependency-analyst": {
+      "family": "deepseek",
+      "candidates": ["opencode/deepseek-v4-pro", "opencode/deepseek-v4.1-flash"],
+      "reason": "mechanical impact and topology work; cost-efficient",
+      "status": "PROVISIONAL"
+    },
+    "logic-reviewer": {
+      "family": "openai",
+      "candidates": ["opencode/gpt-6.2-astra", "openrouter/openai/gpt-6.2-astra"],
+      "reason": "independent math, units and boundary review; different family from the architect",
+      "status": "PROVISIONAL"
+    },
+    "bug-hunter": {
+      "family": "openai",
+      "candidates": ["opencode/gpt-6.2-astra", "openrouter/openai/gpt-6.2-astra"],
+      "reason": "adversarial defect discovery before the change is approved",
+      "status": "PROVISIONAL"
+    },
+    "implementer": {
+      "family": "deepseek",
+      "candidates": ["opencode/deepseek-v4-pro", "opencode/kimi-k3.1-pro"],
+      "reason": "single writer; coding ability must be measured by the scenario bench, not assumed",
+      "status": "PROVISIONAL"
+    },
+    "test-engineer": {
+      "family": "moonshot",
+      "candidates": ["opencode/kimi-k3.1-pro", "opencode/deepseek-v4-pro"],
+      "reason": "test authoring; may not be the implementer",
+      "status": "PROVISIONAL"
+    },
+    "security-auditor": {
+      "family": "anthropic",
+      "candidates": ["opencode/claude-fable-5-2"],
+      "reason": "security and permission boundaries",
+      "status": "PROVISIONAL"
+    },
+    "verifier": {
+      "family": "anthropic",
+      "candidates": ["opencode/claude-fable-5-2"],
+      "reason": "narrative verification only; the PASS verdict itself comes from quality_gate, never from this model",
+      "status": "PROVISIONAL"
+    }
+  },
+  "rules": [
+    "A PASS verdict is produced by quality_gate + decision.py, never by a model.",
+    "CRITICAL: architect family must differ from logic-reviewer family.",
+    "CRITICAL: implementer family must differ from verifier family.",
+    "One writer: exactly one node may hold the implementer role in a plan.",
+    "Premium models are used only on decision nodes (coordinator, architect, logic-reviewer, bug-hunter).",
+    "A role may only use a model whose ID was present in the probe for the selected provider.",
+    "PROVISIONAL assignments require --allow-provisional and are recorded as provisional in the plan."
+  ],
+  "budget": {
+    "max_agents_atomic": 1,
+    "max_agents_standard": 4,
+    "max_agents_critical": 6,
+    "max_context_chars_per_node": 40000,
+    "note": "Context and output budgets are bounded per node; the host model prices are not guessed here."
+  },
+  "benchmark": {
+    "status": "MISSING",
+    "required_for": "promotion from PROVISIONAL to MEASURED",
+    "artifact": "engine/scenarios/scorecard.json",
+    "note": "No role may claim a measured advantage before scenario_bench has produced a scorecard."
+  }
+}

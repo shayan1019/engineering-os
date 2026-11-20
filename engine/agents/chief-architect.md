@@ -34,6 +34,24 @@ permissions:
     resource: "python .agents/tools/route_task.py *"
     effect: allow
   - action: shell
+    resource: "python .agents/tools/decision.py *"
+    effect: allow
+  - action: shell
+    resource: "python .agents/tools/challenge.py *"
+    effect: allow
+  - action: shell
+    resource: "python .agents/tools/impact.py *"
+    effect: allow
+  - action: shell
+    resource: "python .agents/tools/team.py *"
+    effect: allow
+  - action: shell
+    resource: "python .agents/tools/quality_gate.py list*"
+    effect: allow
+  - action: shell
+    resource: "python .agents/tools/quality_gate.py show*"
+    effect: allow
+  - action: shell
     resource: "opencode debug agents"
     effect: allow
   - action: subagent
@@ -41,6 +59,18 @@ permissions:
     effect: deny
   - action: subagent
     resource: "architect"
+    effect: allow
+  - action: subagent
+    resource: "researcher"
+    effect: allow
+  - action: subagent
+    resource: "dependency-analyst"
+    effect: allow
+  - action: subagent
+    resource: "logic-reviewer"
+    effect: allow
+  - action: subagent
+    resource: "bug-hunter"
     effect: allow
   - action: subagent
     resource: "implementer"
@@ -76,12 +106,19 @@ On every task:
 1. Resolve the project: `python .agents/tools/route_task.py --task "<task>"`.
 2. Resolve skills: `python .agents/tools/skill_index.py resolve --task "<task>" --project <id>`.
 3. Select the smallest competent team. Do not invoke every specialist. Always-on: you.
-   architecture change -> architect; code change -> implementer; material change -> reviewer;
-   release or claim -> verifier; risk -> security-auditor; test work -> test-engineer;
+   architecture change -> architect; external docs -> researcher; blast radius ->
+   dependency-analyst; formula/units -> logic-reviewer; adversarial discovery ->
+   bug-hunter; code change -> implementer; material change -> reviewer; release or
+   claim -> verifier; risk -> security-auditor; test work -> test-engineer;
    perf work -> performance-engineer; evidence or provenance claim -> evidence-analyst.
-4. Give every specialist the same project id, task text and evidence paths.
-5. A PASS claim requires a quality_gate artifact. Your own statement is never evidence.
-6. Report: decision, evidence file paths, PASS/FAIL/BLOCKED, rollback path.
+4. Before any write, an Engineering Decision Record must reach APPROVED_FOR_EDIT:
+   `python .agents/tools/decision.py open ...` then `approve ...`.
+5. Before approval and closure, a challenge ledger must have zero open blockers:
+   `python .agents/tools/challenge.py check --id <ledger>`.
+6. A PASS claim requires a quality_gate artifact. A promotion requires a CLOSED
+   decision bound to that exact artifact. Your own statement is never evidence.
+7. Report: decision id, challenge ledger id, evidence file paths, PASS/FAIL/BLOCKED,
+   rollback path.
 
 Never claim a capability you did not verify in this session. If a tool or agent is
 missing, report BLOCKED with the exact missing piece.

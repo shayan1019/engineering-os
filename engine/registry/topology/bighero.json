@@ -1,0 +1,279 @@
+{
+  "schema": 1,
+  "project": "bighero",
+  "generated": "2026-11-20",
+  "environment": "local",
+  "source": "read-only inspection of 6.0_final_merge (no process started, no file changed)",
+  "components": [
+    {
+      "id": "trading_api",
+      "kind": "http_server",
+      "process": "python.exe python_ai/app.py (uvicorn, single event loop)",
+      "entrypoints": ["python_ai/app.py"],
+      "paths": [
+        "python_ai/app.py",
+        "python_ai/api/",
+        "python_ai/decision_engine.py",
+        "python_ai/manage_engine.py",
+        "python_ai/risk_calculator.py",
+        "python_ai/entry_core.py",
+        "python_ai/exit_arbiter.py",
+        "python_ai/portfolio_manager.py",
+        "python_ai/portfolio_context.py",
+        "python_ai/reconciliation.py",
+        "python_ai/feedback_idempotency.py",
+        "python_ai/storage/"
+      ],
+      "ports": [
+        {"host": "127.0.0.1", "port": 8000, "protocol": "http", "evidence": "python_ai/app.py:609"}
+      ],
+      "reads": ["decision_log.db", "execution_lineage.db", "feedback_store.db", "portfolio_context.db", "account_registry.db"],
+      "writes": ["decision_log.db", "execution_lineage.db", "feedback_store.db", "portfolio_context.db", ".portfolio_lock*.json"],
+      "confidence": "HIGH",
+      "evidence": [
+        "python_ai/app.py:496 (FastAPI app)",
+        "python_ai/app.py:609 (uvicorn 127.0.0.1:8000)",
+        "AGENTS.md O1.3 (single uvicorn, watchdog supervisor)",
+        "AGENTS.md O1.4 (trading app no longer serves /panel or /api/dashboard/*)"
+      ]
+    },
+    {
+      "id": "observability_web",
+      "kind": "http_server",
+      "process": "python.exe python_ai/tools/observability_web.py (separate uvicorn)",
+      "entrypoints": ["python_ai/tools/observability_web.py"],
+      "paths": [
+        "python_ai/tools/observability_web.py",
+        "python_ai/observability/",
+        "python_ai/static/dashboard.html",
+        "python_ai/templates/"
+      ],
+      "ports": [
+        {"host": "127.0.0.1", "port": 8765, "protocol": "http", "evidence": "python_ai/tools/observability_web.py:560"}
+      ],
+      "reads": ["decision_log.db", "execution_lineage.db", "feedback_store.db", "portfolio_context.db"],
+      "writes": [".local_position_projection.db"],
+      "confidence": "HIGH",
+      "evidence": [
+        "python_ai/tools/observability_web.py:6 (own process on 127.0.0.1:8765)",
+        "python_ai/tools/observability_web.py:560 (uvicorn.run on OBSERVABILITY_PORT)",
+        "python_ai/observability/position_projection.py:17 (default projection DB path)",
+        "python_ai/observability/position_projection.py:35 (INSERT/UPDATE position_projection)",
+        "AGENTS.md O1.4 (loopback-only, GET-only, TTL-cached snapshot)"
+      ]
+    },
+    {
+      "id": "supervisor",
+      "kind": "supervisor",
+      "process": "python.exe python_ai/tools/server_watchdog.py (single instance via named mutex)",
+      "entrypoints": ["python_ai/tools/server_watchdog.py"],
+      "paths": ["python_ai/tools/server_watchdog.py", "python_ai/tools/launcher_isolation.py"],
+      "ports": [],
+      "reads": ["health endpoint of trading_api"],
+      "writes": [],
+      "confidence": "HIGH",
+      "evidence": [
+        "AGENTS.md O1.3 (server_watchdog.py is THE single server-lifecycle supervisor; supervises :8000 only)",
+        "AGENTS.md O1.4 (watchdog supervises :8000 only)"
+      ]
+    },
+    {
+      "id": "launcher",
+      "kind": "launcher",
+      "process": "python.exe python_ai/tools/bighero_launcher.py",
+      "entrypoints": ["python_ai/tools/bighero_launcher.py", "python_ai/start_bighero.bat"],
+      "paths": ["python_ai/tools/bighero_launcher.py", "python_ai/start_bighero.bat"],
+      "ports": [],
+      "reads": ["trading_api /health", "observability_web /health"],
+      "writes": [],
+      "confidence": "HIGH",
+      "evidence": [
+        "python_ai/tools/bighero_launcher.py:43-49 (supervisor-first decision, scheduler check)",
+        "python_ai/tools/bighero_launcher.py:142 (spawns -m research.counterfactual_scheduler)",
+        "AGENTS.md O1.3 (USER-FACING ENTRY: start_bighero.bat only)"
+      ]
+    },
+    {
+      "id": "scheduler",
+      "kind": "scheduler",
+      "process": "python.exe -m research.counterfactual_scheduler",
+      "entrypoints": ["python_ai/research/counterfactual_scheduler.py"],
+      "paths": ["python_ai/research/counterfactual_scheduler.py"],
+      "ports": [],
+      "reads": [],
+      "writes": [],
+      "confidence": "MEDIUM",
+      "evidence": [
+        "python_ai/tools/bighero_launcher.py:142 (spawn argv)",
+        "python_ai/research/counterfactual_scheduler.py exists"
+      ]
+    },
+    {
+      "id": "mt5_ea",
+      "kind": "ea",
+      "process": "MetaTrader 5 terminal (external; not started or touched by EOS)",
+      "entrypoints": ["*QuantumCore.mq5"],
+      "paths": ["Modules/", "*QuantumCore.mq5"],
+      "ports": [],
+      "reads": ["trading_api JSON responses"],
+      "writes": ["broker orders (live), via the terminal"],
+      "confidence": "HIGH",
+      "evidence": [
+        "Modules/PythonDecisionBridge.mqh exists",
+        "AGENTS.md section 11 (bridge must stay small and reliable)",
+        "AGENTS.md section 21 (MQL changes are compiled in 6.0_final_merge then copied to the terminal)"
+      ]
+    },
+    {
+      "id": "panel_client",
+      "kind": "gui_client",
+      "process": "browser",
+      "entrypoints": ["python_ai/static/dashboard.html"],
+      "paths": ["python_ai/static/dashboard.html"],
+      "ports": [],
+      "reads": ["observability_web /panel", "observability_web /api/dashboard/*"],
+      "writes": [],
+      "confidence": "HIGH",
+      "evidence": [
+        "AGENTS.md O1.4 (browser opens :8765/panel; sync XHR removed)",
+        "python_ai/static/dashboard.html exists"
+      ]
+    },
+    {
+      "id": "store_trading",
+      "kind": "store",
+      "process": "none (SQLite files in python_ai)",
+      "entrypoints": [],
+      "paths": [
+        "python_ai/decision_log.db",
+        "python_ai/execution_lineage.db",
+        "python_ai/feedback_store.db",
+        "python_ai/portfolio_context.db",
+        "python_ai/account_registry.db",
+        "python_ai/manage_log.db",
+        "python_ai/runtime_events.db"
+      ],
+      "ports": [],
+      "reads": [],
+      "writes": [],
+      "confidence": "MEDIUM",
+      "evidence": [
+        "files present in python_ai (directory listing, 2026-11-20)",
+        "AGENTS.md section 20.6 (account identity is never guessed; missing identity fails closed)"
+      ]
+    },
+    {
+      "id": "store_observability",
+      "kind": "store",
+      "process": "none (SQLite)",
+      "entrypoints": [],
+      "paths": ["python_ai/.local_position_projection.db"],
+      "ports": [],
+      "reads": [],
+      "writes": [],
+      "confidence": "HIGH",
+      "evidence": [
+        "python_ai/observability/position_projection.py:17",
+        "python_ai/observability/position_projection.py:29-43"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "mt5_ea",
+      "to": "trading_api",
+      "kind": "http_json",
+      "direction": "bidirectional",
+      "confidence": "HIGH",
+      "evidence": ["AGENTS.md section 11", "Modules/PythonDecisionBridge.mqh"]
+    },
+    {
+      "from": "panel_client",
+      "to": "observability_web",
+      "kind": "http",
+      "direction": "one_way",
+      "confidence": "HIGH",
+      "evidence": ["AGENTS.md O1.4 (browser opens :8765/panel)"]
+    },
+    {
+      "from": "observability_web",
+      "to": "trading_api",
+      "kind": "http",
+      "direction": "one_way",
+      "confidence": "HIGH",
+      "evidence": ["python_ai/tools/bighero_launcher.py:192 (reuses the observability /health fetch)"]
+    },
+    {
+      "from": "observability_web",
+      "to": "store_trading",
+      "kind": "sqlite",
+      "direction": "one_way",
+      "confidence": "MEDIUM",
+      "evidence": ["AGENTS.md O1.4 (read-only snapshot aggregation)", "python_ai/observability/aggregator.py"]
+    },
+    {
+      "from": "observability_web",
+      "to": "store_observability",
+      "kind": "file_write",
+      "direction": "one_way",
+      "confidence": "HIGH",
+      "evidence": ["python_ai/observability/position_projection.py:35"]
+    },
+    {
+      "from": "trading_api",
+      "to": "store_trading",
+      "kind": "sqlite",
+      "direction": "bidirectional",
+      "confidence": "MEDIUM",
+      "evidence": ["python_ai/decision_log_store.py", "python_ai/execution_lineage_store.py", "python_ai/feedback_idempotency.py"]
+    },
+    {
+      "from": "launcher",
+      "to": "supervisor",
+      "kind": "process_spawn",
+      "direction": "one_way",
+      "confidence": "HIGH",
+      "evidence": ["AGENTS.md O1.3", "python_ai/tools/bighero_launcher.py:43-49"]
+    },
+    {
+      "from": "launcher",
+      "to": "scheduler",
+      "kind": "process_spawn",
+      "direction": "one_way",
+      "confidence": "HIGH",
+      "evidence": ["python_ai/tools/bighero_launcher.py:142"]
+    },
+    {
+      "from": "launcher",
+      "to": "observability_web",
+      "kind": "process_spawn",
+      "direction": "one_way",
+      "confidence": "HIGH",
+      "evidence": ["AGENTS.md O1.3 (1 supervisor + 1 trading server + 1 scheduler + 1 observability server)"]
+    },
+    {
+      "from": "supervisor",
+      "to": "trading_api",
+      "kind": "process_supervision",
+      "direction": "one_way",
+      "confidence": "HIGH",
+      "evidence": ["AGENTS.md O1.3", "AGENTS.md O1.4 (watchdog supervises :8000 only)"]
+    }
+  ],
+  "invariants": [
+    "Panel must not show BUY/SELL READY when execution was blocked (AGENTS.md section 10).",
+    "Account identity is never guessed; missing identity fails closed and never falls back to the last account (AGENTS.md section 20.6).",
+    "The watchdog supervises :8000 only; the observability server is a separate process (AGENTS.md O1.4).",
+    "Local (Windows/XM/FundedNext) and cloud (Contabo/Docker/PostgreSQL) are separate production environments (AGENTS.md section 22).",
+    "MQL changes are made and compiled only in 6.0_final_merge, then copied to the terminal (AGENTS.md section 21).",
+    "Live trading configuration must not be changed without explicit approval (AGENTS.md section 9)."
+  ],
+  "unknowns": [
+    "Exact table-level ownership of every SQLite database is not enumerated in this registry; component-level ownership is declared, table-level is not.",
+    "The scheduler's persistence and data ownership were not traced; no edge to a store is claimed.",
+    "The cloud topology (Contabo/Docker/PostgreSQL) was not inspected in this session; do not infer it from the local graph.",
+    "MQL has no parser in this workspace; MQL impact is lexical/PARTIAL and must never be reported as a full graph.",
+    "Other writers of .local_position_projection.db were not searched; only the observed writer is declared.",
+    "Named-mutex behaviour in server_watchdog.py was not re-read line by line in this session; the documentation claim is recorded as evidence, not re-verified."
+  ]
+}

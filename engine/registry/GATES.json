@@ -26,6 +26,16 @@
             { "name": "fail_case", "cmd": ["python", "%SELFTEST%/fail_case.py"], "required": true }
           ]
         },
+        "blocked": {
+          "description": "Fixture that exits 2. Proves the gate reports BLOCKED (the check could not run) instead of FAIL (the code failed). Differential suites depend on this distinction: a missing baseline must never look like a regression.",
+          "commands": [
+            {
+              "name": "blocked_case",
+              "cmd": ["python", "%SELFTEST%/blocked_case.py"],
+              "required": true
+            }
+          ]
+        },
         "mixed": {
           "description": "One passing and one failing required command. Proves a single failure fails the suite.",
           "commands": [
@@ -63,6 +73,50 @@
             { "name": "orchestrator_selftest", "cmd": ["python", "tools/orchestrator_registry.py", "test", "--self-test"], "required": true }
           ]
         },
+        "vnext": {
+          "description": "The vNext enforcement core: EDR state machine (14 cases), challenge ledger (5), typed team runtime (5), differential pytest wrapper (5), and model-probe parsing (3). A failure here means the gate that stops a bad change is itself broken.",
+          "timeout_seconds": 300,
+          "commands": [
+            {
+              "name": "decision_selftest",
+              "cmd": ["python", "tools/decision.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "challenge_selftest",
+              "cmd": ["python", "tools/challenge.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "team_selftest",
+              "cmd": ["python", "tools/team.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "pytest_delta_selftest",
+              "cmd": ["python", "tools/pytest_delta.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "model_probe_selftest",
+              "cmd": ["python", "tools/model_probe.py", "selftest"],
+              "required": true
+            }
+          ]
+        },
+        "vnext_dev": {
+          "description": "Development-only behavioural suite for the universal runtime. It executes the product tree directly (%WORKSPACE%/engineering-os) so new tools can be verified before deployment. Release gates keep using the fixed 'engine' and 'vnext' suites.",
+          "timeout_seconds": 600,
+          "commands": [
+            {"name": "workspace_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/workspace.py", "selftest"], "required": true},
+            {"name": "tool_evidence_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/tool_evidence.py", "selftest"], "required": true},
+            {"name": "completion_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/completion.py", "selftest"], "required": true},
+            {"name": "ship_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/ship.py", "selftest"], "required": true},
+            {"name": "scope_install_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/scope_install.py", "selftest"], "required": true},
+            {"name": "guard_contract_test", "cmd": ["node", "--test", "%WORKSPACE%/engineering-os/engine/host-plugins/opencode/eos-guard.test.mjs"], "required": true},
+            {"name": "router_tests", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/router/route_tests.py"], "required": true}
+          ]
+        },
         "security": {
           "description": "Real secret scan over the engine. Fails if a credential-shaped string is committed in the product.",
           "timeout_seconds": 300,
@@ -95,11 +149,11 @@
         },
         "unit": {
           "status": "CONFIGURED",
-          "description": "Full python_ai unit suite. Measured 2026-10-19: 4138 passed, 17 failed, 2 skipped in 813 s. The 17 failures pre-date EOS and are recorded here as a project status, not an EOS claim. Timeout is set above the measured runtime.",
+          "description": "Full python_ai unit suite, measured differentially. The 2026-10-19 run (4138 passed / 17 failed / 2 skipped) is why this suite is no longer all-or-nothing: a stored baseline names the known failures, so the gate reports NEW failures and DISAPPEARED tests separately instead of repeating the same red line. Baseline: .agents/registry/failures/bighero-unit.json. A missing baseline is BLOCKED, never a fake green.",
           "interpreter": "bighero-venv",
-          "timeout_seconds": 1500,
+          "timeout_seconds": 1800,
           "commands": [
-            { "name": "pytest_python_ai", "cmd": ["python", "-m", "pytest", "python_ai/tests", "-q", "--no-header", "-p", "no:cacheprovider"], "required": true }
+            { "name": "pytest_python_ai_delta", "cmd": ["python", "%ENGINE%/tools/pytest_delta.py", "--project", "bighero", "--suite", "unit", "--baseline", "%WORKSPACE%/.agents/registry/failures/bighero-unit.json", "--", "python_ai/tests", "-q", "--no-header", "-p", "no:cacheprovider"], "required": true }
           ]
         }
       }

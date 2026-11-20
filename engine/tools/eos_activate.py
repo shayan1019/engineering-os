@@ -109,10 +109,27 @@ def skills_for(task: str, project: str, limit: int) -> list:
 
 
 def gate_for(project: str) -> dict:
-    """The gate suite that will judge a change in this project."""
+    """The gate suite that will judge a change in this project.
+
+    Prefer a real suite over a self-test fixture. `blocked`, `pass`, `fail` and
+    their siblings exist to test the gate itself; suggesting one as the project
+    gate would be a false instruction.
+    """
     gates = load_json(os.path.join(ep.REGISTRY, "GATES.json"), {}) or {}
     suites = ((gates.get("projects") or {}).get(project) or {}).get("suites") or {}
+    fixtures = {"pass", "fail", "mixed", "timeout", "blocked", "missing_binary",
+                "optional_failure"}
+    preferred = {
+        "eos": ("vnext", "engine", "regression", "security"),
+        "bighero": ("market_intel", "thesis_exit", "unit"),
+    }.get(project, ())
+    for name in preferred:
+        suite = suites.get(name) or {}
+        if (suite.get("commands") or []) and suite.get("status") != "NOT_CONFIGURED":
+            return {"suite": name, "description": (suite.get("description") or "")[:160]}
     for name, suite in sorted(suites.items()):
+        if name in fixtures:
+            continue
         if (suite.get("commands") or []) and suite.get("status") != "NOT_CONFIGURED":
             return {"suite": name, "description": (suite.get("description") or "")[:160]}
     for name, suite in sorted(suites.items()):
@@ -171,6 +188,8 @@ def build(task: str, project: str, host: str, max_skills: int) -> dict:
         "project": resolved_project or None,
         "project_path": resolved.get("path"),
         "project_source": resolved.get("source"),
+        "tech": resolved.get("tech") or [],
+        "confidence": resolved.get("confidence") or "UNKNOWN",
         "risk": risk.get("level") or "unknown",
         "risk_gate": (risk.get("policy") or {}).get("gate"),
         "kg_required": kg,
@@ -207,6 +226,8 @@ def render(ctx: dict) -> str:
         lines.append(f"project: unresolved (routing did not match a known project) | risk: {ctx.get('risk')}")
     if ctx.get("domains"):
         lines.append("domains: " + ", ".join(ctx["domains"][:8]))
+    if ctx.get("tech"):
+        lines.append("tech: " + ", ".join(str(item) for item in ctx["tech"][:8]))
     if ctx.get("rules"):
         lines.append("rules in effect: " + ", ".join(ctx["rules"]))
     if ctx.get("skills"):
@@ -233,6 +254,10 @@ def render(ctx: dict) -> str:
         else:
             lines.append(f"gate for this project: eos gate run --project {ctx['project']} --suite {ctx['gate']['suite']}")
     lines.append("permissions: only the implementer may write; the others are read-only")
+    lines.append("write gate: open an EDR before any write (`decision.py open ...`); "
+                 "an unapproved write is denied by eos-guard")
+    lines.append("completion: CLOSED decision + PASS gate + tool/skill evidence "
+                 "(`completion.py check`)")
     lines.append("procedure: use the specialists above, delegate the change to the implementer, "
                  "review it, then verify with the gate")
     lines.append("a PASS claim requires a gate artifact; an agent's own statement is never evidence")

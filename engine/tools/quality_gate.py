@@ -228,6 +228,14 @@ def cmd_run(args) -> int:
     verdict = "PASS" if not required_failed else "FAIL"
     if not results:
         verdict = "BLOCKED"
+    elif required_failed:
+        # Exit code 2 is the EOS convention for BLOCKED (could not run, missing
+        # baseline, missing interpreter). A real test failure (any other code, or
+        # a timeout) stays FAIL. A FAIL verdict must mean "the code failed", not
+        # "the environment could not answer".
+        hard = [r for r in required_failed if r["timed_out"] or r["exit_code"] != 2]
+        if not hard:
+            verdict = "BLOCKED"
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = os.path.join(EVIDENCE, args.project)

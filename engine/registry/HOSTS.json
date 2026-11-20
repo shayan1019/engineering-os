@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "generated": "2026-11-20",
+  "note": "Capability is per host and per surface. FULL_GUARD requires a verified tool-hook or permission-hook that can deny a write. A context file is not a guard. A host we did not test is ADAPTER_ONLY, never 'working'.",
+  "hosts": {
+    "opencode": {
+      "context": "plugin",
+      "guard": "verified",
+      "status": "FULL_GUARD",
+      "surfaces": ["session context", "tool.execute.before", "tool.execute.after", "permission.evaluate"],
+      "evidence": [
+        "live permission harness 11/11 (2026-10-22)",
+        "eos-guard.test.mjs 10/10 (2026-11-20)",
+        "live deny/allow probe: write without EDR denied, with EDR allowed, shell write denied"
+      ]
+    },
+    "codex": {
+      "context": "AGENTS.md",
+      "guard": "unverified",
+      "status": "CONTEXT_ONLY",
+      "surfaces": ["AGENTS.md"],
+      "evidence": ["no tool-hook or permission contract was verified on this machine"]
+    },
+    "claude-code": {
+      "context": "CLAUDE.md",
+      "guard": "unverified",
+      "status": "CONTEXT_ONLY",
+      "surfaces": ["CLAUDE.md", "hooks (documented, not verified here)"],
+      "evidence": ["hooks exist but were not exercised in this session; no FULL_GUARD claim"]
+    },
+    "blackbox": {
+      "context": "unknown",
+      "guard": "none",
+      "status": "ADAPTER_ONLY",
+      "surfaces": [],
+      "evidence": ["no documented local plugin or hook contract was verified"]
+    }
+  },
+  "promotion_rule": "A host moves to FULL_GUARD only with a live test that proves a denied write does not reach the filesystem, plus an allowed write that does. Documentation alone never promotes a host."
+}

@@ -126,9 +126,14 @@ def check_specs(specs: dict) -> list:
             continue
         if not allows(spec, "external_directory", "*", "deny"):
             problems.append(f"{name}: external_directory is not denied")
-        for web in ("webfetch", "websearch"):
-            if not allows(spec, web, "*", "deny"):
-                problems.append(f"{name}: {web} is not denied")
+        if spec.get("web_untrusted"):
+            for web in ("webfetch", "websearch"):
+                if not allows(spec, web, "*", "allow"):
+                    problems.append(f"{name}: declares web_untrusted but does not allow {web}")
+        else:
+            for web in ("webfetch", "websearch"):
+                if not allows(spec, web, "*", "deny"):
+                    problems.append(f"{name}: {web} is not denied")
         writes = write_rules(spec)
         if name in ("implementer",):
             if ("*", "allow") not in writes:
@@ -157,7 +162,8 @@ def check_specs(specs: dict) -> list:
             if allowed:
                 problems.append(f"{name}: delegation is allowed ({allowed[0]}); subagents are not a write bypass")
         if name in ("verifier", "reviewer", "architect", "evidence-analyst",
-                    "security-auditor", "performance-engineer") and ("*", "allow") in shell_rules(spec):
+                    "security-auditor", "performance-engineer", "researcher",
+                    "dependency-analyst", "logic-reviewer", "bug-hunter") and ("*", "allow") in shell_rules(spec):
             problems.append(f"{name}: shell:* is allowed for a read-only role")
     return problems
 

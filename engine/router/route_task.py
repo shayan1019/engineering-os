@@ -98,7 +98,97 @@ def resolve_project(task, cwd, root):
             p = os.path.abspath(os.path.join(root, prof["path"]))
             if norm(p) == cwd_n or cwd_n.startswith(norm(p) + os.sep):
                 return prof, "cwd"
+        discovered = discover_project(cwd, root)
+        if discovered:
+            return discovered, "discovered"
     return None, "none"
+
+
+TECH_DOMAINS = {
+    "javascript": ["web", "frontend", "node"],
+    "typescript": ["web", "frontend", "node"],
+    "web": ["web", "frontend"],
+    "static_web": ["web", "frontend"],
+    "python": ["python"],
+    "rust": ["rust"],
+    "go": ["go"],
+    "java": ["java"],
+    "dotnet": ["dotnet", "csharp"],
+    "dart": ["mobile", "flutter"],
+    "android": ["mobile", "android"],
+    "cpp": ["cpp"],
+    "embedded": ["embedded", "firmware"],
+    "container": ["devops", "docker"],
+    "mql": ["trading", "mql5"],
+}
+
+MARKERS = {
+    "package.json": "javascript", "tsconfig.json": "typescript",
+    "pyproject.toml": "python", "requirements.txt": "python", "setup.py": "python",
+    "Cargo.toml": "rust", "go.mod": "go", "pom.xml": "java", "build.gradle": "java",
+    "pubspec.yaml": "dart", "AndroidManifest.xml": "android",
+    "CMakeLists.txt": "cpp", "platformio.ini": "embedded",
+    "docker-compose.yml": "container", "Dockerfile": "container",
+    "index.html": "static_web",
+}
+EXT_MARKERS = {".mq5": "mql", ".mq4": "mql", ".mqh": "mql",
+               ".csproj": "dotnet", ".sln": "dotnet", ".ino": "embedded"}
+SKIP_DISCOVERY = {".git", ".venv", ".venv-win", "node_modules", "__pycache__", "dist",
+                  "build", "target", "backups", ".agents", ".opencode", ".claude"}
+
+
+def discover_project(cwd, root):
+    """Discover an unregistered project from markers, never from a guess.
+
+    A marker file is evidence of a technology; a directory name is not. The
+    synthetic profile carries only what was observed, and its confidence says
+    that architecture and tests are still UNKNOWN.
+    """
+    candidate = os.path.abspath(cwd)
+    root_abs = os.path.abspath(root)
+    while True:
+        if os.path.isdir(candidate) and not any(part in SKIP_DISCOVERY
+                                                for part in candidate.split(os.sep)):
+            tech, markers = [], []
+            try:
+                entries = os.listdir(candidate)
+            except OSError:
+                entries = []
+            for name in entries:
+                if name in MARKERS and MARKERS[name] not in tech:
+                    tech.append(MARKERS[name])
+                    markers.append(name)
+                for ext, label in EXT_MARKERS.items():
+                    if name.lower().endswith(ext) and label not in tech:
+                        tech.append(label)
+                        markers.append(name)
+            if tech:
+                rel = os.path.relpath(candidate, root_abs).replace("\\", "/")
+                domains = []
+                for item in tech:
+                    for domain in TECH_DOMAINS.get(item, []):
+                        if domain not in domains:
+                            domains.append(domain)
+                return {
+                    "id": "discovered-" + re.sub(r"[^a-z0-9]+", "-",
+                                                 os.path.basename(candidate).lower()).strip("-")[:30],
+                    "display": os.path.basename(candidate) + " (discovered)",
+                    "path": rel,
+                    "domains": domains,
+                    "tech": tech,
+                    "markers": sorted(set(markers)),
+                    "preferred_skills": [],
+                    "conditional_skills": [],
+                    "invariants": ["discovered project: architecture and tests are UNKNOWN until inspected"],
+                    "verify": [],
+                    "confidence": "MEDIUM",
+                }
+        if norm(candidate) == norm(root_abs):
+            return None
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            return None
+        candidate = parent
 
 
 def kg_required(task):
@@ -283,13 +373,17 @@ def _eos_skill_ranking(task, project_id, limit=3):
         return [{"name": None, "score": 0, "trust": "UNAVAILABLE", "reasons": [f"skill_index unavailable: {exc}"]}]
 
 
-def _select_agents(task, domains, risk, kg):
+def _select_agents(task, domains, risk, kg, tech=None):
     """Smallest competent specialist set for this task.
 
     Architect and verifier are always on: a change without design or independent
-    verification is not a delivery. Everything else is evidence-triggered.
+    verification is not a delivery. Everything else is evidence-triggered by the
+    task wording, the discovered technology and the risk tier. The team is capped
+    at six: more specialists is not more engineering.
     """
     t = task.lower()
+    tech = tech or []
+    domain_set = {d.lower() for d in domains or []}
     specialists, why = [], {}
 
     def add(name, reason):
@@ -298,20 +392,32 @@ def _select_agents(task, domains, risk, kg):
             why[name] = reason
 
     add("architect", "design and blast-radius step")
-    if re.search(r"ara[t\u015ft]?[i\u0131]r|arastir|ke[s\u015f]fet|kesfet|bul|nerede|hangi dosya|search|explore", t):
+    research = bool(re.search(
+        r"ara[t\u015ft]?[i\u0131]r|arastir|ke[s\u015f]fet|kesfet|bul|nerede|hangi dosya|search|explore|"
+        r"dokuman|doküman|docs|spec|api|unknown|bilinmeyen", t))
+    if research:
+        add("researcher", "external or documented knowledge is required")
         add("explore", "research or codebase discovery requested")
     read_only = bool(re.search(r"analiz|denetle|incele|review|audit|rapor|report|sadece oku", t)) and \
         not re.search(r"ekle|duzelt|fix|implement|yaz|refactor|de[i\u011f]i[t\u015f]tir", t)
     if not read_only:
         add("implementer", "task requires a code or file change")
+    if (risk in ("medium", "high") or not read_only or
+            domain_set & {"web", "mobile", "devops", "docker", "embedded", "rust", "go", "dotnet"}):
+        add("dependency-analyst", "blast radius and runtime boundaries must be mapped")
+    if (re.search(r"risk|formula|formül|hesap|math|matematik|leverage|kald[i\u0131]ra[c\u00e7]|"
+                  r"unit|birim|pnl|lot|trading|finans|finance|backtest|istatistik|ratio|oran", t)
+            or domain_set & {"trading", "finans", "finance"}):
+        add("logic-reviewer", "numeric contract, units or financial risk in scope")
+    if (risk in ("medium", "high") or
+            re.search(r"bug|hata|error|fix|d[u\u00fc]zelt|duzelt|regresyon|regression|crash|fail|"
+                      r"bozuk|k[i\u0131]r[i\u0131]k", t)):
+        add("bug-hunter", "adversarial failure hypotheses are required before approval")
     if risk in ("medium", "high") or not read_only:
         add("reviewer", "independent adversarial review of the change")
     add("verifier", "PASS requires a mechanical gate artifact")
     if risk == "high" or re.search(r"g[u\u00fc]venlik|security|secret|credential|permission|auth|token|s[i\u0131]z", t):
         add("security-auditor", "security-sensitive surface or high risk")
-    # Turkish inflects the noun, so "testi yaz" and "testlerini yaz" never match a
-    # bare \btest\b. Without the stem-prefix alternatives a test-authoring task was
-    # handed no test-engineer at all.
     if re.search(r"\btests?\b|\btesti|\btestler|tdd|coverage|kapsam|regresyon|regression", t):
         add("test-engineer", "test authoring or regression proof requested")
     if re.search(r"performans|performance|benchmark|profil|latency|h[i\u0131]z|bellek", t):
@@ -319,11 +425,39 @@ def _select_agents(task, domains, risk, kg):
     if kg or re.search(r"kan[i\u0131]t|provenance|evidence|veri|data|kaynak|do[g\u011f]rula|verify data", t):
         add("evidence-analyst", "claim or data provenance must be demonstrated")
 
-    skipped = [a for a in ("implementer", "reviewer", "security-auditor", "test-engineer",
-                           "performance-engineer", "evidence-analyst", "explore")
-               if a not in specialists]
+    # A team larger than six stops being a team. Drop the least decision-critical
+    # optional roles first; architect, implementer and verifier are never dropped,
+    # and a role that was explicitly triggered (tests, security, logic, bugs) is
+    # protected too.
+    protected = {"architect", "implementer", "verifier"}
+    if re.search(r"\btests?\b|\btesti|\btestler|tdd|coverage|kapsam|regresyon|regression", t):
+        protected.add("test-engineer")
+    if risk == "high" or re.search(r"g[u\u00fc]venlik|security|secret|credential|permission|auth|token|s[i\u0131]z", t):
+        protected.add("security-auditor")
+    if re.search(r"risk|formula|formül|hesap|math|matematik|leverage|kald[i\u0131]ra[c\u00e7]|"
+                 r"unit|birim|pnl|lot|trading|finans|finance|backtest|istatistik|ratio|oran", t) or \
+            domain_set & {"trading", "finans", "finance"}:
+        protected.add("logic-reviewer")
+    if risk in ("medium", "high") or re.search(r"bug|hata|error|fix|d[u\u00fc]zelt|duzelt|regresyon|regression|crash|fail|"
+                                                r"bozuk|k[i\u0131]r[i\u0131]k", t):
+        protected.add("bug-hunter")
+    drop_order = ["performance-engineer", "explore", "evidence-analyst", "reviewer",
+                  "security-auditor", "bug-hunter", "logic-reviewer", "dependency-analyst",
+                  "researcher", "test-engineer"]
+    for name in drop_order:
+        if len(specialists) <= 6:
+            break
+        if name in specialists and name not in protected:
+            specialists.remove(name)
+            why.pop(name, None)
+
+    all_roles = ("implementer", "reviewer", "security-auditor", "test-engineer",
+                 "performance-engineer", "evidence-analyst", "explore", "researcher",
+                 "dependency-analyst", "logic-reviewer", "bug-hunter")
+    skipped = [a for a in all_roles if a not in specialists]
     return {"orchestrator": "chief-architect", "specialists": specialists,
             "rationale": why, "not_needed": skipped,
+            "tech": tech,
             "conditional": {"test-engineer": "test-engineer" in specialists,
                             "performance-engineer": "performance-engineer" in specialists}}
 
@@ -386,7 +520,8 @@ def main():
     skills["primary"] = primary[:8]
     skills["suppressed"] = map_suppressed
     skills["ranked"] = _eos_skill_ranking(task, prof["id"] if prof else None)
-    agents = _select_agents(task, domains, risk, kg)
+    agents = _select_agents(task, domains, risk, kg,
+                            (prof or {}).get("tech") if prof else [])
 
     delegation = []
     if risk == "high":
@@ -416,6 +551,8 @@ def main():
             "path": prof["path"] if prof else None,
             "legacy_path": prof.get("legacy_path") if prof else None,
             "source": src,
+            "tech": (prof or {}).get("tech") or [],
+            "confidence": (prof or {}).get("confidence") or "UNKNOWN",
         },
         "domains": domains,
         "kg_required": kg,

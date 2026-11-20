@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EOS runtime topology",
+  "description": "Declared process, port, and data-owner model for one project. Every field must be backed by evidence (a file and line, a command output, or a documentation section). An unverified field belongs in `unknowns`, not in `components`.",
+  "type": "object",
+  "required": ["schema", "project", "generated", "environment", "components", "edges", "invariants", "unknowns"],
+  "properties": {
+    "schema": {"const": 1},
+    "project": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+    "generated": {"type": "string"},
+    "environment": {"enum": ["local", "cloud", "mixed"]},
+    "source": {"type": "string"},
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "process", "paths", "confidence", "evidence"],
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"enum": ["http_server", "worker", "supervisor", "launcher", "scheduler", "gui_client", "ea", "store", "database", "unknown"]},
+          "process": {"type": "string", "description": "OS-level process identity; 'none' for a store, 'external' for MT5"},
+          "entrypoints": {"type": "array", "items": {"type": "string"}},
+          "paths": {"type": "array", "items": {"type": "string"}, "description": "Project-relative prefixes or globs owned by this component"},
+          "ports": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["host", "port", "evidence"],
+              "properties": {
+                "host": {"type": "string"},
+                "port": {"type": "integer"},
+                "protocol": {"type": "string"},
+                "evidence": {"type": "string"}
+              }
+            }
+          },
+          "reads": {"type": "array", "items": {"type": "string"}},
+          "writes": {"type": "array", "items": {"type": "string"}},
+          "confidence": {"enum": ["HIGH", "MEDIUM", "LOW", "UNKNOWN"]},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to", "kind", "confidence", "evidence"],
+        "properties": {
+          "from": {"type": "string"},
+          "to": {"type": "string"},
+          "kind": {"enum": ["http", "http_json", "process_spawn", "process_supervision", "sqlite", "file_read", "file_write", "named_mutex", "unknown"]},
+          "direction": {"enum": ["one_way", "bidirectional"]},
+          "confidence": {"enum": ["HIGH", "MEDIUM", "LOW", "UNKNOWN"]},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "invariants": {"type": "array", "items": {"type": "string"}},
+    "unknowns": {"type": "array", "items": {"type": "string"}}
+  }
+}

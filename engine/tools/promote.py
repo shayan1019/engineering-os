@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import quality_gate as qg  # noqa: E402
 import _eos_paths as ep  # noqa: E402
+import decision as edr  # noqa: E402
 
 ROOT = qg.ROOT
 WORKSPACE = qg.WORKSPACE
@@ -56,6 +57,26 @@ def safe_rel(path: str) -> str:
 
 
 def cmd_promote(args) -> int:
+    if not getattr(args, "decision", ""):
+        print("BLOCKED: promotion requires --decision <edr-id>; a gate artifact alone does not authorise a release")
+        return 1
+    try:
+        record = edr.load(WORKSPACE, args.project, args.decision)
+    except edr.DecisionError as exc:
+        print(f"BLOCKED: {exc}")
+        return 1
+    record_problems = edr.integrity(record)
+    if record_problems:
+        print("BLOCKED: decision record is not trustworthy")
+        for p in record_problems:
+            print(f"  - {p}")
+        return 1
+    if record.get("state") != "CLOSED":
+        print(f"BLOCKED: decision {record['id']} is {record.get('state')}, not CLOSED")
+        return 1
+    if record.get("project") != args.project:
+        print(f"BLOCKED: decision project {record.get('project')} != {args.project}")
+        return 1
     gate = qg.verify_artifact(args.gate, args.project, args.max_age_min)
     if not gate["ok"]:
         print("BLOCKED: quality gate is not valid for this project")
@@ -63,6 +84,18 @@ def cmd_promote(args) -> int:
             print(f"  - {p}")
         return 1
     gate_artifact = gate["artifact"]
+    bound = record.get("gate") or {}
+    if not bound.get("ok") or bound.get("verdict") != "PASS":
+        print("BLOCKED: the decision has no verified PASS gate")
+        return 1
+    if bound.get("sha256") != qg.sha256_file(os.path.abspath(args.gate)):
+        print("BLOCKED: this is not the gate artifact the decision was verified against")
+        print(f"  decision gate: {bound.get('path')}")
+        print(f"  supplied gate: {args.gate}")
+        return 1
+    if bound.get("suite") != gate_artifact.get("suite"):
+        print("BLOCKED: gate suite does not match the decision record")
+        return 1
 
     if not args.artifact:
         print("BLOCKED: no artifact provided; a promotion must name what it promotes")
@@ -103,6 +136,13 @@ def cmd_promote(args) -> int:
                          for c in gate_artifact.get("commands", [])],
         },
         "artifacts": files,
+        "decision": {
+            "id": record["id"],
+            "path": qg.ep.store_path(edr.decision_path(WORKSPACE, args.project, record["id"]), WORKSPACE),
+            "sha256": qg.sha256_file(edr.decision_path(WORKSPACE, args.project, record["id"])),
+            "state": record.get("state"),
+            "risk": record.get("risk"),
+        },
         "approved_by": "eos.promote (mechanical)",
         "note": "Promotion certifies evidence, not intent. Re-run the gate after any change.",
     }
@@ -150,6 +190,23 @@ def cmd_verify(args) -> int:
         elif qg.sha256_file(full) != item["sha256"]:
             problems.append(f"promoted file changed since promotion: {item['path']}")
 
+    decision = rec.get("decision") or {}
+    if decision:
+        decision_path = qg.ep.load_stored_path(decision.get("path", ""), WORKSPACE)
+        if not os.path.isfile(decision_path):
+            problems.append("decision record referenced by the promotion is missing")
+        elif qg.sha256_file(decision_path) != decision.get("sha256"):
+            problems.append("decision record changed after promotion")
+        else:
+            try:
+                record = edr.load(WORKSPACE, rec.get("project"), decision.get("id"))
+            except edr.DecisionError as exc:
+                problems.append(f"decision: {exc}")
+            else:
+                problems.extend(f"decision: {p}" for p in edr.integrity(record))
+                if record.get("state") != "CLOSED":
+                    problems.append(f"decision is {record.get('state')}, not CLOSED")
+
     if problems:
         print("BLOCKED: promotion is no longer valid")
         for p in problems:
@@ -166,6 +223,8 @@ def main() -> int:
     p = sub.add_parser("promote")
     p.add_argument("--project", required=True)
     p.add_argument("--gate", required=True)
+    p.add_argument("--decision", required=True,
+                   help="CLOSED engineering decision that authorises this promotion")
     p.add_argument("--artifact", action="append", default=[])
     p.add_argument("--label")
     p.add_argument("--max-age-min", type=int, default=1440)
