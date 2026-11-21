@@ -33,9 +33,39 @@ test("read-only shell commands are allowed", () => {
     "rg --files",
     "Get-Content .agents/registry/GATES.json",
     "cargo test --offline",
+    "cmd /c echo shell-exec-ok",
+    "cmd.exe /c echo shell-exec-ok",
+    "Get-ChildItem -Force | Select-Object Mode,Name",
+    "git status --short && git rev-parse HEAD",
   ]) {
-    const verdict = classifyShell(command)
+    const verdict = classifyShell(command, process.cwd())
     assert.equal(verdict.allow, true, command + " -> " + verdict.reason)
+  }
+})
+
+test("safe wrappers and quoted text are not false positives", () => {
+  for (const command of [
+    "cmd /c echo shell-exec-ok",
+    "cmd.exe /c echo shell-exec-ok",
+    'rg -n "Set-Content" engine',
+    'rg -n "a > b" engine',
+    "Get-ChildItem -Force | Select-Object Mode,Name",
+    "git status --short && git rev-parse HEAD",
+  ]) {
+    assert.equal(classifyShell(command, process.cwd()).effect, "allow", command)
+  }
+})
+
+test("safe test and build commands are allowed in the workspace", () => {
+  for (const command of [
+    "pytest -q",
+    "python -m pytest tests -q",
+    "cargo test",
+    "cargo build",
+    "npm test",
+    "npm run build",
+  ]) {
+    assert.equal(classifyShell(command, process.cwd()).effect, "allow", command)
   }
 })
 
@@ -50,26 +80,54 @@ test("shell writes and bypasses are refused", () => {
     "git status; rm -rf build",
     "git status && python -c \"open('x','w')\"",
     "git status || del x",
-    "npm run build",
+    "npm install",
     "pip install requests",
     "powershell -Command New-Item x",
     "cmd /c del x",
     "Invoke-Expression $payload",
     "rm -rf build",
   ]) {
-    const verdict = classifyShell(command)
+    const verdict = classifyShell(command, process.cwd())
     assert.equal(verdict.allow, false, command)
   }
 })
 
-test("a read-only command with redirection is still a write", () => {
-  assert.equal(classifyShell("pytest -q > report.txt").allow, false)
-  assert.equal(classifyShell("git diff > patch.diff").allow, false)
+test("risky shell commands ask instead of auto-denying", () => {
+  for (const command of [
+    "git commit -am x",
+    "git push origin main",
+    "Set-Content -Path a.txt -Value OK",
+    "echo hi > a.txt",
+    "Remove-Item a.txt",
+    "del a.txt",
+    "script.bat",
+    "C:\\tools\\app.exe",
+    "Start-Process -Verb RunAs cmd",
+    "runas /user:Administrator cmd",
+  ]) {
+    assert.equal(classifyShell(command, process.cwd()).effect, "ask", command)
+  }
 })
 
-test("unknown commands fail closed", () => {
-  assert.equal(classifyShell("some-tool --do-magic").allow, false)
-  assert.equal(classifyShell("").allow, false)
+test("protected EOS files are denied", () => {
+  for (const command of [
+    "Set-Content -Path .opencode/plugins/eos-guard.js -Value x",
+    "Remove-Item .agents/tools/decision.py",
+    "cmd /c copy evil.js .opencode/plugins/eos-guard.js",
+    "echo x > .opencode/plugins/eos-activation.js",
+  ]) {
+    assert.equal(classifyShell(command, process.cwd()).effect, "deny", command)
+  }
+})
+
+test("a read-only command with redirection is still a write", () => {
+  assert.equal(classifyShell("pytest -q > report.txt", process.cwd()).effect, "ask")
+  assert.equal(classifyShell("git diff > patch.diff", process.cwd()).effect, "ask")
+})
+
+test("unknown commands are not auto-allowed", () => {
+  assert.equal(classifyShell("some-tool --do-magic").effect, "ask")
+  assert.equal(classifyShell("").effect, "deny")
 })
 
 test("allowlisted tools cannot write arbitrary paths", () => {
@@ -106,15 +164,22 @@ test("evidence summary never carries file content", () => {
 
 test("permission input carries the shell command in resources", () => {
   const allow = permissionDecision({
-    action: "shell", effect: "allow", resources: ["git status --short"],
+    action: "shell", effect: "allow", resources: ["cmd /c echo shell-exec-ok"],
   })
   assert.equal(allow.allow, true)
-  const deny = permissionDecision({
+  assert.equal(allow.effect, "allow")
+  const ask = permissionDecision({
     action: "shell", effect: "allow",
     resources: ["Set-Content -Path x.txt -Value OK"],
   })
-  assert.equal(deny.allow, false)
-  assert.equal(deny.kind, "shell")
+  assert.equal(ask.allow, false)
+  assert.equal(ask.effect, "ask")
+  assert.equal(ask.kind, "shell")
+  const deny = permissionDecision({
+    action: "shell", effect: "allow",
+    resources: ["Set-Content -Path .opencode/plugins/eos-guard.js -Value x"],
+  })
+  assert.equal(deny.effect, "deny")
 })
 
 test("permission write is deferred to the decision engine", () => {

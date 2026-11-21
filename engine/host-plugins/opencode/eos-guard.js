@@ -33,7 +33,7 @@
 import { spawn } from "node:child_process"
 import { appendFileSync, mkdirSync, existsSync, readdirSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join, resolve, sep } from "node:path"
 import { tmpdir } from "node:os"
 
 const TIMEOUT_MS = 8000
@@ -464,36 +464,563 @@ function shellCommand(args) {
   return ""
 }
 
-/**
- * Classify a shell command. Returns { allow, reason }.
- * Read-only is an allowlist. A write pattern is denied even when it also looks
- * read-only, because `pytest > out.txt` is still a write.
- */
-export function classifyShell(command) {
-  const text = String(command || "").replace(/\\/g, "/").replace(/\s+/g, " ").trim()
-  if (!text) return { allow: false, reason: "empty shell command" }
-  const unquoted = text.replace(/"[^"]*"|'[^']*'/g, "\"\"")
-  if (/[;]|&&|\|\|/.test(unquoted) || /[`]|\$\(/.test(text)) {
-    return { allow: false, reason: "command chaining is not allowed; one command per call" }
+const SAFE_READ_VERBS = new Set([
+  "echo", "printf", "pwd", "ls", "dir", "cat", "type", "head", "tail", "wc",
+  "find", "findstr", "rg", "grep", "where", "which", "whoami", "hostname",
+  "date", "sort", "uniq", "diff", "cmp", "file", "stat", "du", "df", "env",
+  "printenv", "uname", "true", "false", "ping", "test",
+])
+
+const SAFE_PS_VERBS = new Set([
+  "get-content", "get-childitem", "get-item", "get-command", "get-location",
+  "get-date", "get-process", "get-service", "get-help", "get-member",
+  "get-filehash", "get-acl", "get-itemproperty", "get-volume", "get-psdrive",
+  "select-string", "select-object", "where-object", "foreach-object",
+  "test-path", "measure-object", "resolve-path", "split-path", "join-path",
+  "format-table", "format-list", "format-hex", "out-string", "sort-object",
+  "write-output", "write-host", "start-sleep", "test-connection",
+])
+
+const WRITE_VERBS = new Set([
+  "set-content", "add-content", "out-file", "new-item", "remove-item",
+  "move-item", "copy-item", "rename-item", "clear-content", "set-item",
+  "set-itemproperty", "new-itemproperty", "remove-itemproperty", "tee-object",
+  "del", "erase", "rm", "rmdir", "rd", "mv", "move", "cp", "copy", "mkdir",
+  "md", "tee", "touch", "truncate", "chmod", "chown", "icacls", "attrib",
+  "cacls", "takeown",
+])
+
+const DESTRUCTIVE_VERBS = new Set([
+  "remove-item", "del", "erase", "rm", "rmdir", "rd", "move-item", "mv",
+  "move", "rename-item", "ren", "clear-content", "set-item", "set-itemproperty",
+  "remove-itemproperty", "chmod", "chown", "icacls", "attrib", "cacls",
+  "takeown", "truncate",
+])
+
+const SAFE_GIT = new Set([
+  "status", "diff", "log", "show", "rev-parse", "ls-files", "describe",
+  "blame", "shortlog", "reflog",
+])
+
+const RISKY_GIT = new Set([
+  "add", "commit", "push", "fetch", "pull", "checkout", "switch", "restore",
+  "merge", "rebase", "cherry-pick", "revert", "stash", "tag", "rm", "mv",
+  "apply", "am", "format-patch",
+])
+
+const DENY_GIT = new Set(["reset", "clean", "filter-branch", "gc"])
+
+const NETWORK_VERBS = new Set([
+  "curl", "wget", "iwr", "irm", "invoke-webrequest", "invoke-restmethod",
+  "ssh", "scp", "sftp", "ftp", "nc", "netcat", "telnet", "winget", "choco",
+  "scoop", "pip", "pip3",
+])
+
+const EXECUTABLE_RE = /\.(?:exe|bat|cmd|ps1|com)$/i
+
+const PROTECTED_RE =
+  /(^|[/\\])(?:\.opencode[/\\](?:plugin|plugins)|\.agents[/\\](?:tools|registry|core)|eos-guard\.js|eos-activation\.js|GATES\.json|PROJECT_PROFILES\.json|write_gate\.py|post_write\.py|work_state\.py|decision\.py|auto_decision\.py|ship\.py|plugin_install\.py|scope_install\.py)/i
+
+function shellVerdict(effect, reason, targets = [], extra = {}) {
+  return {
+    effect,
+    allow: effect === "allow",
+    ask: effect === "ask",
+    deny: effect === "deny",
+    reason,
+    targets: [...new Set((targets || []).filter(Boolean))],
+    ...extra,
   }
-  for (const pattern of WRITE_PATTERNS) {
-    if (pattern.test(text)) return { allow: false, reason: "command can write or change state" }
+}
+
+function unquote(value) {
+  const text = String(value || "")
+  if ((text.startsWith('"') && text.endsWith('"')) ||
+      (text.startsWith("'") && text.endsWith("'"))) {
+    return text.slice(1, -1)
+  }
+  return text
+}
+
+function basenameWord(token) {
+  return unquote(token).replace(/\\/g, "/").split("/").pop().toLowerCase()
+}
+
+function verbName(token) {
+  let name = basenameWord(token).replace(/^@/, "")
+  for (const ext of [".exe", ".cmd", ".bat", ".ps1", ".com"]) {
+    if (name.endsWith(ext)) {
+      name = name.slice(0, -ext.length)
+      break
+    }
+  }
+  return name
+}
+
+function splitTokens(text) {
+  const out = []
+  let current = ""
+  let quote = ""
+  for (let index = 0; index < text.length; index += 1) {
+    const ch = text[index]
+    if (quote) {
+      current += ch
+      if (ch === quote && text[index - 1] !== "\\") quote = ""
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      current += ch
+      continue
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        out.push(current)
+        current = ""
+      }
+      continue
+    }
+    current += ch
+  }
+  if (current) out.push(current)
+  return out
+}
+
+function splitShell(text) {
+  const parts = []
+  let current = ""
+  let quote = ""
+  for (let index = 0; index < text.length; index += 1) {
+    const ch = text[index]
+    if (quote) {
+      current += ch
+      if (ch === quote && text[index - 1] !== "\\") quote = ""
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      current += ch
+      continue
+    }
+    if (ch === "&" && text[index + 1] === "&") {
+      parts.push(current)
+      current = ""
+      index += 1
+      continue
+    }
+    if (ch === "|" && text[index + 1] === "|") {
+      parts.push(current)
+      current = ""
+      index += 1
+      continue
+    }
+    if (ch === ";" || ch === "|") {
+      parts.push(current)
+      current = ""
+      continue
+    }
+    if (ch === "&" && text[index + 1] !== "&" &&
+        text[index - 1] !== ">" && text[index - 1] !== "<") {
+      parts.push(current)
+      current = ""
+      continue
+    }
+    current += ch
+  }
+  parts.push(current)
+  return parts.map((part) => part.trim()).filter(Boolean)
+}
+
+function unwrapShell(segment) {
+  let text = segment.trim().replace(/^&\s*/, "")
+  let opaque = false
+  for (let depth = 0; depth < 4; depth += 1) {
+    const words = splitTokens(text)
+    if (!words.length) break
+    const head = basenameWord(words[0])
+    if (!["cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
+      "bash", "bash.exe", "sh", "sh.exe"].includes(head)) break
+    const index = words.findIndex((word, position) => position > 0 &&
+      (/^\/(c|k)$/i.test(unquote(word)) ||
+       /^-(c|command|encodedcommand)$/i.test(unquote(word))))
+    if (index < 0) break
+    const flag = unquote(words[index]).toLowerCase()
+    if (flag === "-encodedcommand" || flag === "-e") {
+      opaque = true
+      break
+    }
+    const inner = words.slice(index + 1).map(unquote).join(" ").trim()
+    if (!inner) break
+    text = inner
+  }
+  return { text, opaque }
+}
+
+function operatorText(text) {
+  return String(text || "").replace(/"[^"]*"|'[^']*'/g, '""')
+}
+
+function findRedirection(text) {
+  const match = operatorText(text).match(
+    /(^|[^<>=])(>>?)(?![>=&])\s*([^\s|;&]+)?/,
+  )
+  return match && match[3] ? unquote(match[3]) : ""
+}
+
+function protectedPath(target) {
+  return PROTECTED_RE.test(String(target || "").replace(/\\/g, "/"))
+}
+
+function insideWorkspace(workspace, target) {
+  if (!workspace) return true
+  if (!target || String(target).startsWith("~")) return false
+  const root = resolve(workspace)
+  const absolute = resolve(workspace, unquote(target))
+  return absolute === root || absolute.startsWith(root + sep)
+}
+
+function optionValue(args, names) {
+  for (let index = 0; index < args.length; index += 1) {
+    const value = unquote(args[index])
+    const lower = value.toLowerCase()
+    if (names.includes(lower) && index + 1 < args.length) {
+      return unquote(args[index + 1])
+    }
+    for (const name of names) {
+      if (lower.startsWith(name + ":") || lower.startsWith(name + "=")) {
+        return value.slice(name.length + 1)
+      }
+    }
+  }
+  return ""
+}
+
+function positionals(args) {
+  return args.map(unquote).filter((value) => value && !value.startsWith("-"))
+}
+
+function targetsForVerb(verb, args) {
+  const values = args.map(unquote)
+  const first = positionals(values)[0] || ""
+  const second = positionals(values)[1] || ""
+  if (["set-content", "add-content", "out-file", "new-item", "remove-item",
+    "clear-content", "set-item", "set-itemproperty", "new-itemproperty",
+    "remove-itemproperty", "tee-object", "tee", "touch", "truncate", "mkdir",
+    "md"].includes(verb)) {
+    const option = optionValue(values, ["-path", "-filepath", "-literalpath",
+      "--file", "--path"])
+    if (option) return [option]
+    if (verb === "tee" || verb === "tee-object") return [first]
+    if (verb === "touch") return positionals(values).slice(0, 1)
+    return [first]
+  }
+  if (["move-item", "move", "mv", "rename-item", "ren"].includes(verb)) {
+    return positionals(values).slice(0, 2)
+  }
+  if (["copy-item", "copy", "cp"].includes(verb)) {
+    return [second || first]
+  }
+  if (["del", "erase", "rm", "rmdir", "rd"].includes(verb)) {
+    return positionals(values).slice(0, 1)
+  }
+  if (["chmod", "chown", "icacls", "attrib", "cacls", "takeown"].includes(verb)) {
+    return positionals(values).slice(0, 1)
+  }
+  return []
+}
+
+function targetVerdict(targets, workspace, reason, destructive = false) {
+  const list = [...new Set((targets || []).filter(Boolean))]
+  for (const target of list) {
+    if (protectedPath(target)) {
+      return shellVerdict("deny", `protected EOS path: ${target}`, list)
+    }
+  }
+  if (!list.length) {
+    return shellVerdict("ask", `${reason}: target is not inspectable`, [])
+  }
+  if (list.some((target) => !insideWorkspace(workspace, target))) {
+    return shellVerdict("ask",
+      `${reason}: target is outside the workspace (explicit approval required)`, list)
+  }
+  return shellVerdict("ask",
+    `${reason}: ${list[0]} requires approval or an approved EDR`, list,
+    { destructive })
+}
+
+function deniedArgument(lower) {
+  for (const rule of DENIED_ARGS) {
+    if ((lower === rule.prefix || lower.startsWith(rule.prefix + " ")) &&
+        lower.includes(rule.token)) {
+      return rule
+    }
+  }
+  return null
+}
+
+function trustedPrefix(lower) {
+  for (const prefix of READ_ONLY_PREFIXES) {
+    const value = prefix.toLowerCase()
+    if (lower === value || lower.startsWith(value + " ")) return prefix
+  }
+  return ""
+}
+
+function scriptBlockVerdict(text, workspace) {
+  const match = text.match(/\{([\s\S]*)\}/)
+  if (!match) return null
+  const block = match[1].replace(/"[^"]*"|'[^']*'/g, "")
+  const hit = block.match(
+    /\b(Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item|Rename-Item|del|rm|mv|cp|tee|git\s+(?:add|commit|push|reset|clean|checkout|stash|merge|rebase)|Invoke-Expression|iex)\b/i,
+  )
+  if (!hit) return null
+  if (protectedPath(block)) {
+    return shellVerdict("deny", "protected EOS path inside a script block", [])
+  }
+  return shellVerdict("ask",
+    `script block contains ${hit[1]} and requires approval`, [])
+}
+
+function gitVerdict(args, workspace) {
+  const values = args.map(unquote)
+  const parts = positionals(values).map((value) => value.toLowerCase())
+  const sub = parts[0] || ""
+  const raw = values.join(" ")
+  if (SAFE_GIT.has(sub)) return shellVerdict("allow", `read-only git ${sub}`)
+  if (sub === "branch") {
+    if (values.some((value) => /^(-d|-D|--delete|-m|-M|--move)/.test(value))) {
+      return shellVerdict("deny", "deleting or moving a branch is not allowed")
+    }
+    return shellVerdict("allow", "read-only git branch")
+  }
+  if (sub === "remote") {
+    if (!values.length || values.some((value) =>
+      /^(-v|--verbose|show|get-url)$/i.test(value))) {
+      return shellVerdict("allow", "read-only git remote")
+    }
+    return shellVerdict("ask", "changing a git remote requires approval")
+  }
+  if (sub === "tag") {
+    if (!values.length || values.some((value) => /^(-l|--list|-n)/i.test(value))) {
+      return shellVerdict("allow", "read-only git tag")
+    }
+    if (values.some((value) => /^(-d|--delete)/i.test(value))) {
+      return shellVerdict("deny", "deleting a git tag is not allowed")
+    }
+    return shellVerdict("ask", "creating a git tag requires approval")
+  }
+  if (sub === "config") {
+    if (values.some((value) => /^(--get|--list|-l|--get-all|--show-origin)/i.test(value))) {
+      return shellVerdict("allow", "read-only git config")
+    }
+    return shellVerdict("ask", "changing git config requires approval")
+  }
+  if (sub === "stash" && ["list", "show"].includes(parts[1] || "")) {
+    return shellVerdict("allow", "read-only git stash")
+  }
+  if (sub === "push" && values.some((value) => /^(--force|-f)$/i.test(value))) {
+    return shellVerdict("deny", "force-push is not allowed")
+  }
+  if (RISKY_GIT.has(sub)) {
+    if (protectedPath(raw)) {
+      return shellVerdict("deny", "protected EOS path in a git command")
+    }
+    return shellVerdict("ask", `git ${sub} changes repository state; approval required`)
+  }
+  if (DENY_GIT.has(sub)) return shellVerdict("deny", `git ${sub} is destructive`)
+  return shellVerdict("ask", `git ${sub || "command"} requires approval`)
+}
+
+function pythonVerdict(args) {
+  const values = args.map(unquote)
+  if (!values.length) return shellVerdict("ask", "python without a script requires approval")
+  if (["--version", "-V"].includes(values[0])) return shellVerdict("allow", "python version")
+  if (values[0] === "-m" && ["pytest", "unittest"].includes((values[1] || "").toLowerCase())) {
+    return shellVerdict("allow", "python test runner")
+  }
+  if (values[0] === "-m" && (values[1] || "").toLowerCase() === "pip") {
+    return shellVerdict("ask", "package installation requires approval")
+  }
+  if (values[0] === "-c") return shellVerdict("deny", "inline code is not inspectable")
+  if (values[0] === "-") return shellVerdict("deny", "stdin code is not inspectable")
+  if (/\.py$/i.test(values[0])) {
+    return shellVerdict("ask", `python script requires approval: ${values[0]}`)
+  }
+  return shellVerdict("ask", "python invocation requires approval")
+}
+
+function nodeVerdict(args) {
+  const values = args.map(unquote)
+  if (!values.length) return shellVerdict("ask", "node without a script requires approval")
+  if (["--version", "-v"].includes(values[0])) return shellVerdict("allow", "node version")
+  if (values[0] === "--test") return shellVerdict("allow", "node test runner")
+  if (values[0] === "-e" || values[0] === "--eval") {
+    return shellVerdict("deny", "inline code is not inspectable")
+  }
+  return shellVerdict("ask", "node script requires approval")
+}
+
+function npmVerdict(args) {
+  const values = args.map(unquote)
+  const sub = (values[0] || "").toLowerCase()
+  if (!values.length || ["--version", "-v"].includes(sub)) {
+    return shellVerdict("allow", "npm version")
+  }
+  if (sub === "test") return shellVerdict("allow", "npm test")
+  if (sub === "run") {
+    const script = (values[1] || "").toLowerCase()
+    if (["test", "build", "lint", "check"].includes(script)) {
+      return shellVerdict("allow", `npm run ${script}`)
+    }
+    return shellVerdict("ask", `npm run ${script || "script"} requires approval`)
+  }
+  if (["install", "i", "ci", "uninstall", "update"].includes(sub)) {
+    return shellVerdict("ask", "package installation requires approval")
+  }
+  return shellVerdict("ask", `npm ${sub || "command"} requires approval`)
+}
+
+function cargoVerdict(args) {
+  const values = args.map(unquote)
+  const sub = (values[0] || "").toLowerCase()
+  if (!values.length) return shellVerdict("ask", "cargo command requires approval")
+  if (["test", "build", "check", "clippy"].includes(sub)) {
+    return shellVerdict("allow", `cargo ${sub}`)
+  }
+  if (["publish", "install", "login"].includes(sub)) {
+    return shellVerdict("deny", `cargo ${sub} is not allowed`)
+  }
+  return shellVerdict("ask", `cargo ${sub} requires approval`)
+}
+
+function goVerdict(args) {
+  const values = args.map(unquote)
+  const sub = (values[0] || "").toLowerCase()
+  if (["test", "build", "vet"].includes(sub)) return shellVerdict("allow", `go ${sub}`)
+  return shellVerdict("ask", `go ${sub || "command"} requires approval`)
+}
+
+function dotnetVerdict(args) {
+  const values = args.map(unquote)
+  const sub = (values[0] || "").toLowerCase()
+  if (["test", "build"].includes(sub)) return shellVerdict("allow", `dotnet ${sub}`)
+  return shellVerdict("ask", `dotnet ${sub || "command"} requires approval`)
+}
+
+function analyzeSegment(segment, workspace) {
+  const { text, opaque } = unwrapShell(segment)
+  if (opaque) return shellVerdict("deny", "encoded command is not inspectable")
+  if (!text) return shellVerdict("deny", "empty shell command")
+  const singleQuoted = text.replace(/'[^']*'/g, "''")
+  if (/`|\$\(/.test(singleQuoted)) {
+    return shellVerdict("deny", "command substitution is not inspectable")
   }
   const lower = text.toLowerCase()
-  for (const rule of DENIED_ARGS) {
-    if ((lower === rule.prefix || lower.startsWith(rule.prefix + " ")) && lower.includes(rule.token)) {
-      return { allow: false, reason: `forbidden argument ${rule.token} for ${rule.prefix}` }
-    }
+  if (/\b(runas|sudo|gsudo)\b/.test(lower) ||
+      /start-process[^;|]*\b-verb\s+runas\b/.test(lower)) {
+    return shellVerdict("ask", "privilege elevation requires explicit approval")
+  }
+  const redirect = findRedirection(text)
+  const words = splitTokens(text)
+  if (!words.length) return shellVerdict("deny", "empty shell command")
+  const rawHead = unquote(words[0])
+  const head = verbName(rawHead)
+  const args = words.slice(1)
+  const normalized = lower.replace(/\\/g, "/")
+  const denied = deniedArgument(normalized)
+  if (denied) {
+    return shellVerdict("deny",
+      `forbidden argument ${denied.token} for ${denied.prefix}`)
+  }
+  const trusted = trustedPrefix(normalized)
+  if (trusted) {
+    if (redirect) return targetVerdict([redirect], workspace, "redirection")
+    return shellVerdict("allow", `read-only prefix: ${trusted}`)
   }
   if (lower.startsWith("eos install") && lower.includes(".agents")) {
-    return { allow: true, reason: "trusted local installer into .agents" }
+    if (redirect) return targetVerdict([redirect], workspace, "redirection")
+    return shellVerdict("allow", "trusted local installer into .agents")
   }
-  for (const prefix of READ_ONLY_PREFIXES) {
-    if (lower === prefix.toLowerCase() || lower.startsWith(prefix.toLowerCase() + " ")) {
-      return { allow: true, reason: `read-only prefix: ${prefix}` }
+  if (lower.startsWith("eos install")) {
+    return shellVerdict("deny", "installer target must be .agents")
+  }
+  const block = scriptBlockVerdict(text, workspace)
+  if (block) return block
+  if (redirect) return targetVerdict([redirect], workspace, "redirection")
+  if (WRITE_VERBS.has(head)) {
+    return targetVerdict(targetsForVerb(head, args), workspace,
+      `${head} changes files`, DESTRUCTIVE_VERBS.has(head))
+  }
+  if (head === "git") return gitVerdict(args, workspace)
+  if (["python", "python3", "py"].includes(head)) return pythonVerdict(args)
+  if (head === "node") return nodeVerdict(args)
+  if (head === "npm") return npmVerdict(args)
+  if (head === "npx") return shellVerdict("ask", "npx can download and run an arbitrary package")
+  if (head === "cargo") return cargoVerdict(args)
+  if (head === "go") return goVerdict(args)
+  if (head === "dotnet") return dotnetVerdict(args)
+  if (["pip", "pip3"].includes(head)) {
+    return shellVerdict("ask", "package installation requires approval")
+  }
+  if (["pytest", "py.test"].includes(head)) return shellVerdict("allow", "test command")
+  if (head === "sed") {
+    if (args.some((value) => /^(-i|--in-place)/i.test(unquote(value)))) {
+      const target = positionals(args).slice(-1)[0] || ""
+      return targetVerdict([target], workspace, "in-place edit")
     }
+    return shellVerdict("allow", "sed read")
   }
-  return { allow: false, reason: "unclassified shell command (fail closed)" }
+  if (SAFE_READ_VERBS.has(head)) return shellVerdict("allow", `read-only command: ${head}`)
+  if (SAFE_PS_VERBS.has(head)) return shellVerdict("allow", `read-only command: ${head}`)
+  if (NETWORK_VERBS.has(head)) {
+    return shellVerdict("ask", `network command requires approval: ${head}`)
+  }
+  if (["start", "start-process", "invoke-item", "invoke-command", "start-job",
+    "measure-command"].includes(head)) {
+    return shellVerdict("ask", `process execution requires approval: ${head}`)
+  }
+  if (["invoke-expression", "iex"].includes(head)) {
+    return shellVerdict("deny", "dynamic code execution is not allowed")
+  }
+  if (["cmd", "powershell", "pwsh", "bash", "sh"].includes(head)) {
+    return shellVerdict("ask",
+      `${head} without an inspectable /c or -Command requires approval`)
+  }
+  if (EXECUTABLE_RE.test(rawHead)) {
+    return shellVerdict("ask", `unknown executable requires approval: ${rawHead}`)
+  }
+  return shellVerdict("ask", `unclassified shell command requires approval: ${head}`)
+}
+
+/**
+ * Classify a shell command into allow / ask / deny.
+ *
+ * Safe read-only commands and safe wrappers (`cmd /c echo`, `powershell
+ * -Command Get-ChildItem`) are allowed. File changes are tied to the existing
+ * write gate/EDR and otherwise ask. Unknown executables, elevation and opaque
+ * code ask or deny. Quoted arguments are not scanned for write words; the old
+ * scan blocked `rg "Set-Content"` and `echo "cmd /c echo"`.
+ */
+export function classifyShell(command, workspace = "") {
+  const text = String(command || "").trim()
+  if (!text) return shellVerdict("deny", "empty shell command")
+  const singleQuoted = text.replace(/'[^']*'/g, "''")
+  if (/`|\$\(/.test(singleQuoted)) {
+    return shellVerdict("deny", "command substitution is not inspectable")
+  }
+  const parts = splitShell(text)
+  if (!parts.length) return shellVerdict("deny", "empty shell command")
+  let effect = "allow"
+  const reasons = []
+  const targets = []
+  for (const part of parts) {
+    const verdict = analyzeSegment(part, workspace)
+    if (verdict.effect === "deny") return verdict
+    if (verdict.effect === "ask") effect = "ask"
+    reasons.push(verdict.reason)
+    targets.push(...(verdict.targets || []))
+  }
+  return shellVerdict(effect, reasons.join("; "), targets)
 }
 
 const WRITE_ACTIONS = new Set(["write", "edit", "patch", "multiedit", "apply_patch"])
@@ -505,30 +1032,40 @@ const SHELL_ACTIONS = new Set(["shell", "bash", "sh", "terminal"])
  *   { sessionID, agent, action: "shell",
  *     resources: ["Set-Content -Path x -Value OK"], effect: "allow" }
  *
- * `tool.execute.before` for shell receives an empty args object (measured on
- * OpenCode 2.2.5), so the command can only be judged here. `input.effect` is
- * the supported deny switch: setting it to "deny" blocks the call.
+ * `input.effect` accepts allow, ask and deny. The guard returns a matching
+ * effect and the permission hook applies it.
  */
-export function permissionDecision(input) {
+export function permissionDecision(input, workspace = "") {
   const action = String(input && input.action || "")
   const resources = Array.isArray(input && input.resources) ? input.resources.map(String) : []
   if (SHELL_ACTIONS.has(action)) {
     if (!resources.length) {
-      // A shell permission without the command text cannot be judged. Failing
-      // closed here is the only safe answer (0.3.4 allowed it; P5-A fixes it).
-      return { kind: "shell", allow: false, resource: "", reason: "shell permission carries no command" }
+      return { kind: "shell", ...shellVerdict("deny", "shell permission carries no command") }
     }
+    let effect = "allow"
+    const reasons = []
+    const targets = []
+    let resource = ""
     for (const command of resources) {
-      const verdict = classifyShell(command)
-      if (!verdict.allow) return { kind: "shell", allow: false, resource: command, reason: verdict.reason }
+      const verdict = classifyShell(command, workspace)
+      if (verdict.effect === "deny") {
+        return { kind: "shell", ...verdict, resource: command }
+      }
+      if (verdict.effect === "ask") effect = "ask"
+      reasons.push(verdict.reason)
+      targets.push(...(verdict.targets || []))
+      if (!resource && verdict.effect !== "allow") resource = command
     }
-    return { kind: "shell", allow: true, resource: resources.join(" && "), reason: "read-only" }
+    return {
+      kind: "shell", ...shellVerdict(effect, reasons.join("; "), targets),
+      resource: resource || resources.join(" && "),
+    }
   }
   if (WRITE_ACTIONS.has(action)) {
     return { kind: "write", allow: null, resource: resources[0] || "", reason: "needs decision lookup" }
   }
-  if (action === "read") return { kind: "read", allow: true, resource: resources.join(","), reason: "read" }
-  return { kind: action || "unknown", allow: true, resource: resources.join(","), reason: "not a write surface" }
+  if (action === "read") return { kind: "read", allow: true, effect: "allow", resource: resources.join(","), reason: "read" }
+  return { kind: action || "unknown", allow: true, effect: "allow", resource: resources.join(","), reason: "not a write surface" }
 }
 
 function evidencePath(workspace, sessionID) {
@@ -729,11 +1266,17 @@ async function install(ctx, options) {
         record(workspace, sessionID, { ...summary, verdict: "DENY", reason: "shell not inspectable" })
         throw new Error("EOS BLOCKED: shell command cannot be inspected and the permission hook is unavailable")
       }
-      const verdict = classifyShell(command)
-      if (!verdict.allow) {
+      const verdict = classifyShell(command, workspace)
+      if (verdict.effect === "deny") {
         record(workspace, sessionID, { ...summary, verdict: "DENY", reason: verdict.reason })
         throw new Error(`EOS BLOCKED: shell command refused (${verdict.reason}). ` +
           `Run it through an approved EOS tool, or ask the implementer to use an approved write path.`)
+      }
+      if (verdict.effect === "ask") {
+        if (permissionHookAvailable) return
+        record(workspace, sessionID, { ...summary, verdict: "DENY", reason: verdict.reason })
+        throw new Error(`EOS ASK: shell command requires approval (${verdict.reason}), ` +
+          `but the permission hook is unavailable.`)
       }
       record(workspace, sessionID, { ...summary, verdict: "ALLOW", reason: verdict.reason })
     }
@@ -741,19 +1284,61 @@ async function install(ctx, options) {
 
   const onPermission = async (input) => {
     if (!input || typeof input !== "object") return
-    const verdict = permissionDecision(input)
-    if (verdict.allow === true) {
+    const verdict = permissionDecision(input, workspace)
+    if (verdict.kind === "shell") {
+      if (verdict.effect === "deny") {
+        input.effect = "deny"
+        input.message = verdict.reason
+        record(workspace, input.sessionID, {
+          kind: "permission", action: "shell", resource: verdict.resource,
+          verdict: "DENY", reason: verdict.reason,
+        })
+        return
+      }
+      if (verdict.effect === "ask" && verdict.targets && verdict.targets.length) {
+        // A shell write is allowed only when an approved EDR already covers
+        // every target. No auto-created decision for shell writes.
+        let allAllowed = true
+        let decision = ""
+        for (const target of verdict.targets) {
+          const gate = await askWriteGate(engine, python, workspace, target,
+                                          input.sessionID)
+          if (!gate.allow) {
+            allAllowed = false
+            break
+          }
+          decision = gate.decision || decision
+        }
+        if (allAllowed) {
+          input.effect = "allow"
+          record(workspace, input.sessionID, {
+            kind: "permission", action: "shell", resource: verdict.resource,
+            verdict: "ALLOW", decision,
+            reason: "approved EDR covers the shell write target",
+          })
+          return
+        }
+      }
+      if (verdict.effect === "ask") {
+        input.effect = "ask"
+        input.message = verdict.reason
+        record(workspace, input.sessionID, {
+          kind: "permission", action: "shell", resource: verdict.resource,
+          verdict: "ASK", reason: verdict.reason,
+        })
+        return
+      }
+      input.effect = "allow"
       record(workspace, input.sessionID, {
-        kind: "permission", action: verdict.kind, resource: verdict.resource,
+        kind: "permission", action: "shell", resource: verdict.resource,
         verdict: "ALLOW", reason: verdict.reason,
       })
       return
     }
-    if (verdict.kind === "shell") {
-      input.effect = "deny"
+    if (verdict.allow === true) {
       record(workspace, input.sessionID, {
-        kind: "permission", action: "shell", resource: verdict.resource,
-        verdict: "DENY", reason: verdict.reason,
+        kind: "permission", action: verdict.kind, resource: verdict.resource,
+        verdict: "ALLOW", reason: verdict.reason,
       })
       return
     }

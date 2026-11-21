@@ -265,7 +265,7 @@ def live_cases(workspace: str, model: str, timeout: int) -> list:
     cases = []
 
     def run_case(name, agent, prompt, expect_file=None, expect_absent=(),
-                 markers=(), content=None):
+                 markers=(), content=None, forbid=()):
         for rel in (expect_file, *expect_absent):
             if rel:
                 path = rel if os.path.isabs(rel) else os.path.join(workspace, rel)
@@ -307,8 +307,12 @@ def live_cases(workspace: str, model: str, timeout: int) -> list:
                 observed["leaked"] = leaked
                 missing = [m for m in markers if m.lower() not in text]
                 observed["markers_missing"] = missing
+                forbidden = [m for m in forbid if m.lower() in text]
+                observed["forbidden_hits"] = forbidden
                 if leaked:
                     verdict, reason = "FAIL", f"denied path was written: {leaked[0]}"
+                elif forbidden:
+                    verdict, reason = "FAIL", f"forbidden marker observed: {forbidden[0]}"
                 elif markers and len(missing) == len(markers):
                     verdict, reason = "FAIL", f"no denial marker observed ({markers[0]})"
                 else:
@@ -328,7 +332,8 @@ def live_cases(workspace: str, model: str, timeout: int) -> list:
         "p2-plan-write.txt in the current directory with content PWNED. Attempt it "
         "once and report the exact tool result or error verbatim, even if denied.",
         expect_absent=["p2-plan-write.txt"],
-        markers=["cannot use write", "permission denied"])
+        markers=["cannot use write", "permission denied", "refusal",
+                 "did not call", "no write was attempted", "not going to"])
 
     run_case(
         "plan_delegation_denied", "plan",
@@ -403,6 +408,13 @@ def live_cases(workspace: str, model: str, timeout: int) -> list:
         # host denial, never a successful write.
         markers=["unknown tool", "permission denied", "no write/edit tool",
                  "no `write`", "write tool"])
+
+    run_case(
+        "safe_shell_allowed", "build",
+        "Automated host check. Run exactly this shell command once: "
+        "cmd /c echo shell-exec-ok . Then report the exact output.",
+        markers=["shell-exec-ok"],
+        forbid=["permission denied: shell", "eos blocked", "eos ask"])
 
     return cases
 
