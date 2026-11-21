@@ -246,6 +246,20 @@ test("a denied write never touches the map", async () => {
   }
 })
 
+test("a failed write never touches the map or records work state", async () => {
+  const host = await harness(true)
+  try {
+    const input = { tool: "write", sessionID: "s-fail", callID: "c4" }
+    const output = { args: { filePath: "a.py", content: "x = 1\n" } }
+    await host.before(input, output)
+    await host.after(input, { error: { type: "write_failed" }, output: "" })
+    assert.equal(existsSync(host.log), false, "a failed write touched the map")
+    assert.equal(existsSync(host.workLog), false, "a failed write recorded work state")
+  } finally {
+    host.restore()
+  }
+})
+
 test("a successful ATOMIC write records a closed work state", async () => {
   const host = await harness(true)
   try {

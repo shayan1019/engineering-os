@@ -439,6 +439,15 @@ function recordAtomic(engine, python, workspace, pending, touched, session,
   })
 }
 
+function toolFailed(output) {
+  // The host may report a failed tool either as an object or as text. A write
+  // that did not succeed must not touch the map or create a closed work state.
+  const value = output || {}
+  if (value.error) return true
+  const text = typeof value.output === "string" ? value.output.trim() : ""
+  return /^(error\b|failed\b|permission\.rejected\b)/i.test(text)
+}
+
 function writeTarget(tool, args) {
   const value = args || {}
   const candidate = value.filePath ?? value.file_path ?? value.path ?? value.file ??
@@ -819,7 +828,12 @@ async function install(ctx, options) {
           ? takeWrite(input && input.sessionID, summary, callIDOf(input))
           : null
         let touched = null
-        if (pending) {
+        if (pending && toolFailed(output)) {
+          record(workspace, input && input.sessionID, {
+            kind: "tool-failed", path: pending.path,
+            verdict: "NO_WORK_STATE", reason: "the write tool did not succeed",
+          })
+        } else if (pending) {
           touched = await touchWrite(engine, python, workspace, pending.path,
                                      input && input.sessionID)
           record(workspace, input && input.sessionID, {
