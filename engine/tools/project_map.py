@@ -456,6 +456,25 @@ def parse_entry(root: str, rel: str):
 
 
 def update_files(project: str, workspace: str, files: list) -> dict:
+    """Serialise incremental writers on one map. Without the lock two
+    post-writes read the same base and the second silently drops the first
+    change (lost update)."""
+    path = store_path(workspace, project)
+    try:
+        handle = ep.acquire_file_lock(path + ".lock", timeout=15)
+    except TimeoutError:
+        return {"ok": False, "reason": "map is locked by another writer"}
+    try:
+        return _update_files(project, workspace, files)
+    finally:
+        ep.unlock_handle(handle)
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+
+
+def _update_files(project: str, workspace: str, files: list) -> dict:
     """File-level incremental update. Only the changed files are parsed; import
     edges are recomputed from the stored module table."""
     path = store_path(workspace, project)
@@ -589,6 +608,23 @@ def update_files(project: str, workspace: str, files: list) -> dict:
 
 
 def mark_dirty(project: str, workspace: str, files: list) -> dict:
+    """Serialise dirty marking on the same map lock as the incremental update."""
+    path = store_path(workspace, project)
+    try:
+        handle = ep.acquire_file_lock(path + ".lock", timeout=15)
+    except TimeoutError:
+        return {"ok": False, "reason": "map is locked by another writer"}
+    try:
+        return _mark_dirty(project, workspace, files)
+    finally:
+        ep.unlock_handle(handle)
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+
+
+def _mark_dirty(project: str, workspace: str, files: list) -> dict:
     """Mark changed files without a full rebuild. The next preflight/write gate
     sees a non-empty dirty set and refreshes before a risky write."""
     path = store_path(workspace, project)
@@ -808,6 +844,75 @@ def selftest() -> int:
         assert result["state"] == "STALE", result
         assert any("git branch changed" in reason for reason in result["reasons"]), result
         return "branch invalidated"
+
+    @case("a held map lock serialises a second writer")
+    def _():
+        import subprocess
+        import time as clock
+
+        root = fixture()
+        assert cmd_create(argparse.Namespace(project="demo", workspace=root,
+                                             force=False)) == 0
+        map_file = store_path(root, "demo")
+        handle = ep.acquire_file_lock(map_file + ".lock", timeout=5)
+        tools = os.path.dirname(os.path.abspath(__file__))
+        script = (
+            "import sys, time;"
+            f"sys.path.insert(0, r'{tools}');"
+            "import project_map as pm;"
+            "t = time.time();"
+            f"r = pm.update_files('demo', r'{root}', ['proj/a.py']);"
+            "print('%.2f' % (time.time() - t), r.get('ok'))"
+        )
+        child = subprocess.Popen([sys.executable, "-c", script],
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True)
+        clock.sleep(1.2)
+        ep.unlock_handle(handle)
+        os.close(handle)
+        out = child.communicate(timeout=120)[0]
+        assert child.returncode == 0, out
+        elapsed = float(out.split()[0])
+        assert elapsed >= 1.0, out
+        return "lock honoured"
+
+    @case("two real writers do not lose each other's update")
+    def _():
+        import subprocess
+
+        root = fixture()
+        assert cmd_create(argparse.Namespace(project="demo", workspace=root,
+                                             force=False)) == 0
+        for index in range(10):
+            with open(os.path.join(root, "proj", f"f{index}.py"), "w",
+                      encoding="utf-8", newline="\n") as handle:
+                handle.write(f"x = {index}\n")
+        tools = os.path.dirname(os.path.abspath(__file__))
+
+        def run(indices):
+            files = ",".join(f"'proj/f{index}.py'" for index in indices)
+            script = (
+                "import sys;"
+                f"sys.path.insert(0, r'{tools}');"
+                "import project_map as pm;"
+                f"files = [{files}];"
+                f"results = [pm.update_files('demo', r'{root}', [item]) for item in files];"
+                "print(all(item.get('ok') for item in results))"
+            )
+            return subprocess.Popen([sys.executable, "-c", script],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True)
+
+        first = run(range(0, 5))
+        second = run(range(5, 10))
+        outputs = [first.communicate(timeout=120)[0], second.communicate(timeout=120)[0]]
+        assert first.returncode == 0 and second.returncode == 0, outputs
+        value = read_json(store_path(root, "demo"))
+        names = set(value["sources"]["files"])
+        missing = [f"f{index}.py" for index in range(10)
+                   if f"f{index}.py" not in names]
+        assert not missing, missing
+        return "no lost update"
 
     @case("an unregistered project is mapped from an explicit path")
     def _():

@@ -24,9 +24,80 @@ break verification, so the legacy location wins when it exists.
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional
 
 ENGINE_TOKEN = "%ENGINE%"
+
+
+def lock_handle(fd: int) -> None:
+    """Take a non-blocking exclusive OS lock on one byte of `fd`.
+
+    The OS releases it when the process exits, so a crash cannot leave a lock
+    that a later session must guess about. `-1` byte from the current position
+    is not portable; locking byte 0 is.
+    """
+    if os.name == "nt":
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def unlock_handle(fd: int) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+def acquire_file_lock(path: str, timeout: float = 15.0) -> int:
+    """Open `path` and hold an exclusive OS lock. Returns the file descriptor.
+
+    The lock file is never deleted: deleting a lock path that another process
+    has already opened would let a third process create and lock a new file at
+    the same time.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    deadline = time.time() + max(0.0, float(timeout))
+    while True:
+        try:
+            lock_handle(fd)
+            return fd
+        except OSError:
+            if time.time() >= deadline:
+                os.close(fd)
+                raise TimeoutError(f"lock is held: {path}")
+            time.sleep(0.05)
+
+
+def is_control_plane(rel: str) -> bool:
+    """True when the path is EOS control-plane state, at any depth.
+
+    A workspace can contain independent projects; `engineering-os/.agents/evidence`
+    is as much control-plane state as `.agents/evidence` at the workspace root.
+    Matching by segment also covers Windows separators and `./` prefixes.
+    """
+    parts = [part for part in str(rel or "").replace("\\", "/").split("/")
+             if part and part != "."]
+    for index, part in enumerate(parts):
+        following = parts[index + 1] if index + 1 < len(parts) else ""
+        if part == ".agents" and following in ("evidence", "state"):
+            return True
+        if part == ".opencode" and following == "plugin":
+            return True
+        if part == ".eos":
+            return True
+    return False
 
 
 def _abs(path: str) -> str:

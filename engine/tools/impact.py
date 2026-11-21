@@ -72,10 +72,19 @@ def read_json(path: str):
         return json.load(handle)
 
 
+def profiles_path(workspace: str) -> str:
+    """A workspace registry wins, exactly like project_map. Otherwise impact
+    would refuse a project that the map already knows (found by the P5 math
+    and cross-process fixtures)."""
+    local = os.path.join(workspace, ".agents", "registry", "PROJECT_PROFILES.json")
+    return local if os.path.isfile(local) else PROFILES
+
+
 def project_root(project: str, workspace: str) -> tuple:
-    if not os.path.isfile(PROFILES):
-        raise SystemExit(f"BLOCKED: project registry missing: {PROFILES}")
-    data = read_json(PROFILES)
+    path = profiles_path(workspace)
+    if not os.path.isfile(path):
+        raise SystemExit(f"BLOCKED: project registry missing: {path}")
+    data = read_json(path)
     for item in data.get("profiles", []):
         if item.get("id") == project:
             rel = item.get("path") or ""

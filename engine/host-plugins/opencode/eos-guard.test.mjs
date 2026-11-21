@@ -7,7 +7,7 @@ import assert from "node:assert/strict"
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import guard, { classifyShell, summaryOf, permissionDecision } from "./eos-guard.js"
+import guard, { classifyShell, summaryOf, permissionDecision, createWriteQueue } from "./eos-guard.js"
 
 test("read-only shell commands are allowed", () => {
   for (const command of [
@@ -129,6 +129,31 @@ test("permission write is deferred to the decision engine", () => {
 test("permission read is never denied by the guard", () => {
   const verdict = permissionDecision({ action: "read", resources: ["a.py"] })
   assert.equal(verdict.allow, true)
+})
+
+test("a shell permission with no command is denied", () => {
+  for (const resources of [[], undefined, null]) {
+    const verdict = permissionDecision({ action: "shell", effect: "allow", resources })
+    assert.equal(verdict.allow, false, JSON.stringify(resources))
+  }
+})
+
+test("the post-write queue pairs a tool call id exactly once", () => {
+  const queue = createWriteQueue()
+  queue.note("a.py", "s1", "call-1")
+  queue.note("a.py", "s1", "call-2")
+  const first = queue.take("s1", { path: "a.py" }, "call-2")
+  assert.equal(first.callID, "call-2")
+  const second = queue.take("s1", { path: "a.py" })
+  assert.equal(second.callID, "call-1")
+  assert.equal(queue.take("s1", { path: "a.py" }), null)
+})
+
+test("a call id is never matched across sessions", () => {
+  const queue = createWriteQueue()
+  queue.note("a.py", "s1", "call-9")
+  assert.equal(queue.take("s2", { path: "a.py" }, "call-9"), null)
+  assert.equal(queue.take("s1", { path: "a.py" }, "call-9").callID, "call-9")
 })
 
 async function harness(gateAllow) {

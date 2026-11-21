@@ -53,9 +53,6 @@ def policy(map_state: str, decision: dict | None) -> dict:
     return {"allow": True, "needs_decision": False, "reason": "map current; decision valid"}
 
 
-PROTECTED = (".agents/evidence/", ".agents/state/", ".opencode/plugin/", ".eos/")
-
-
 def check(workspace: str, path: str, session: str = "", project: str = "") -> dict:
     absolute = os.path.realpath(os.path.abspath(path))
     workspace_real = os.path.realpath(os.path.abspath(workspace))
@@ -64,7 +61,7 @@ def check(workspace: str, path: str, session: str = "", project: str = "") -> di
                 "project": project or "", "map_state": "BLOCKED",
                 "reasons": ["path is outside the workspace (real path)"]}
     rel = ep.store_path(absolute, workspace).replace("\\", "/")
-    if any(rel == prefix.rstrip("/") or rel.startswith(prefix) for prefix in PROTECTED):
+    if ep.is_control_plane(rel):
         return {"schema": SCHEMA, "allow": False, "needs_decision": False,
                 "project": project or "", "map_state": "PROTECTED",
                 "reasons": [f"{rel} is control-plane evidence; use the owning EOS tool, "
@@ -220,6 +217,16 @@ def selftest() -> int:
         assert result["allow"] is False, result
         assert any("corrupt" in reason for reason in result["reasons"]), result
         return "corrupt blocked"
+
+    @case("a nested project's control plane is refused")
+    def _():
+        root = tempfile.mkdtemp(prefix="eos-gate-n-")
+        nested = os.path.join(root, "proj", "sub", ".agents", "evidence")
+        os.makedirs(nested)
+        result = check(root, os.path.join(nested, "x.json"), "s1", "sub")
+        assert result["allow"] is False, result
+        assert result["map_state"] == "PROTECTED", result
+        return "nested protected"
 
     passed = failed = 0
     for name, fn in cases:

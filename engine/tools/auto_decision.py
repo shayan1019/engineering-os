@@ -65,9 +65,6 @@ def classify(task: str, scope: list, impact: dict | None, impact_required: bool 
     return "STANDARD", [f"{len(scope)} files"]
 
 
-PROTECTED_SCOPE = (".agents/evidence/", ".agents/state/", ".opencode/plugin/", ".eos/")
-
-
 def safe_scope(workspace: str, values: list) -> tuple:
     scope, problems = [], []
     workspace_real = os.path.realpath(os.path.abspath(workspace))
@@ -78,7 +75,7 @@ def safe_scope(workspace: str, values: list) -> tuple:
             problems.append(f"outside the workspace (real path): {raw}")
             continue
         rel = ep.store_path(absolute, workspace_real).replace("\\", "/")
-        if any(rel == prefix.rstrip("/") or rel.startswith(prefix) for prefix in PROTECTED_SCOPE):
+        if ep.is_control_plane(rel):
             problems.append(f"control-plane evidence is append-only, use the owning EOS tool: {rel}")
             continue
         if rel not in scope:
@@ -298,6 +295,14 @@ def selftest() -> int:
                          approve=True, use_impact=False)
         assert result["verdict"] == "BLOCKED", result
         return "protected"
+
+    @case("a nested project's control plane cannot be an edit scope")
+    def _():
+        root = fixture()
+        scope, problems = safe_scope(root, ["proj/sub/.agents/evidence/x.json"])
+        assert scope == [], scope
+        assert problems, "a nested control-plane path was accepted"
+        return "nested protected"
 
     @case("an outside path is BLOCKED")
     def _():

@@ -29,6 +29,7 @@ import os
 import sys
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -70,43 +71,44 @@ def lock_path(workspace: str, project: str) -> str:
 
 
 def acquire_lock(workspace: str, project: str, session: str, owner: str,
-                 ttl_seconds: int = 120):
-    """A short-lived writer lease. A second session cannot mutate the state
-    while a live lease exists; an old lease can be reclaimed."""
+                 timeout: float | None = None):
+    """An exclusive writer lease backed by an OS file lock.
+
+    The lock is exclusive across processes even when two calls carry the same
+    session id: a session is not a process, and a host can run concurrent tool
+    calls inside one session. The OS releases it when the holder exits, so
+    there is no TTL to steal and no lock file to delete.
+    """
     path = lock_path(workspace, project)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    for attempt in (1, 2):
-        try:
-            handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(handle, json.dumps({"pid": os.getpid(), "session": session,
-                                         "owner": owner, "ts": time.time()}).encode("utf-8"))
-            return handle, path
-        except FileExistsError:
-            try:
-                data = read_json(path)
-            except (OSError, json.JSONDecodeError):
-                data = {}
-            age = time.time() - float(data.get("ts") or 0)
-            if data.get("session") == session or age > ttl_seconds:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-                if attempt == 2:
-                    raise SystemExit(f"BLOCKED: work state is locked by {data.get('session')}")
-                continue
-            raise SystemExit(f"BLOCKED: work state is locked by session {data.get('session')} "
-                             f"({age:.0f}s)")
-    raise SystemExit("BLOCKED: work state lock could not be acquired")
+    if timeout is None:
+        timeout = float(os.environ.get("EOS_LOCK_TIMEOUT", "15"))
+    try:
+        handle = ep.acquire_file_lock(path, timeout)
+    except TimeoutError:
+        raise SystemExit(
+            f"BLOCKED: work state is locked by another process (waited {timeout:.0f}s)")
+    token = uuid.uuid4().hex
+    os.lseek(handle, 0, os.SEEK_SET)
+    os.ftruncate(handle, 0)
+    os.write(handle, json.dumps({
+        "pid": os.getpid(), "session": session, "owner": owner,
+        "token": token, "ts": time.time()}).encode("utf-8"))
+    os.fsync(handle)
+    return handle, path, token
 
 
-def release_lock(handle, path: str) -> None:
+def release_lock(handle, path: str, token: str) -> None:
+    """Release only when this handle still owns the metadata it wrote. The lock
+    file is kept: deleting it would race a process that already opened it."""
+    try:
+        os.lseek(handle, 0, os.SEEK_SET)
+        data = json.loads(os.read(handle, 8192).decode("utf-8") or "{}")
+    except (OSError, ValueError):
+        data = {}
+    if data.get("token") == token:
+        ep.unlock_handle(handle)
     try:
         os.close(handle)
-    except OSError:
-        pass
-    try:
-        os.remove(path)
     except OSError:
         pass
 
@@ -207,12 +209,12 @@ def guard_owner(state: dict, session: str, takeover: bool, reason: str) -> bool:
 
 def cmd_start(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
-    handle, path = acquire_lock(workspace, args.project, args.session,
-                                args.owner or args.session)
+    handle, path, token = acquire_lock(workspace, args.project, args.session,
+                                       args.owner or args.session)
     try:
         return _start(args, workspace)
     finally:
-        release_lock(handle, path)
+        release_lock(handle, path, token)
 
 
 def _start(args, workspace: str) -> int:
@@ -243,12 +245,12 @@ def _start(args, workspace: str) -> int:
 
 def cmd_update(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
-    handle, path = acquire_lock(workspace, args.project, args.session,
-                                args.owner or args.session)
+    handle, path, token = acquire_lock(workspace, args.project, args.session,
+                                       args.owner or args.session)
     try:
         return _update(args, workspace)
     finally:
-        release_lock(handle, path)
+        release_lock(handle, path, token)
 
 
 def _update(args, workspace: str) -> int:
@@ -298,12 +300,12 @@ def _update(args, workspace: str) -> int:
 
 def cmd_close(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
-    handle, path = acquire_lock(workspace, args.project, args.session,
-                                args.owner or args.session)
+    handle, path, token = acquire_lock(workspace, args.project, args.session,
+                                       args.owner or args.session)
     try:
         return _close(args, workspace)
     finally:
-        release_lock(handle, path)
+        release_lock(handle, path, token)
 
 
 def _close(args, workspace: str) -> int:
@@ -479,24 +481,53 @@ def selftest() -> int:
         assert load_state(root, "demo")["task"] == "new"
         return "supersede guarded"
 
-    @case("a live lease blocks another session and a stale lease is reclaimed")
+    @case("a live lease blocks a real process even with the same session")
     def _():
+        import subprocess
         root = workspace()
-        handle, path = acquire_lock(root, "demo", "s1", "a")
+        handle, path, token = acquire_lock(root, "demo", "s1", "a")
         try:
-            try:
-                acquire_lock(root, "demo", "s2", "b")
-            except SystemExit:
-                pass
-            else:
-                raise AssertionError("a live lease was ignored")
+            child = subprocess.run(
+                [sys.executable, os.path.abspath(__file__), "start",
+                 "--project", "demo", "--task", "x", "--session", "s1",
+                 "--owner", "a", "--new", "--workspace", root],
+                capture_output=True, text=True, timeout=120,
+                env={**os.environ, "EOS_LOCK_TIMEOUT": "1"})
+            assert child.returncode != 0, child.stdout
+            assert "BLOCKED" in (child.stdout + child.stderr), child.stdout
         finally:
-            release_lock(handle, path)
+            release_lock(handle, path, token)
+        return "same-session process blocked"
+
+    @case("an ancient timestamp on disk does not let another process steal a live lease")
+    def _():
+        import subprocess
+        root = workspace()
+        os.makedirs(os.path.dirname(lock_path(root, "demo")), exist_ok=True)
         with open(lock_path(root, "demo"), "w", encoding="utf-8", newline="\n") as handle_file:
             json.dump({"pid": 1, "session": "old", "owner": "x", "ts": 0}, handle_file)
-        handle, path = acquire_lock(root, "demo", "s2", "b")
-        release_lock(handle, path)
-        return "lease"
+        handle, path, token = acquire_lock(root, "demo", "s1", "a")
+        try:
+            child = subprocess.run(
+                [sys.executable, os.path.abspath(__file__), "start",
+                 "--project", "demo", "--task", "x", "--session", "s2",
+                 "--owner", "b", "--new", "--workspace", root],
+                capture_output=True, text=True, timeout=120,
+                env={**os.environ, "EOS_LOCK_TIMEOUT": "1"})
+            assert child.returncode != 0, child.stdout
+            assert "BLOCKED" in (child.stdout + child.stderr), child.stdout
+        finally:
+            release_lock(handle, path, token)
+        return "no TTL steal"
+
+    @case("the lease is exclusive and released")
+    def _():
+        root = workspace()
+        handle, path, token = acquire_lock(root, "demo", "s1", "a", timeout=1)
+        release_lock(handle, path, token)
+        handle, path, token = acquire_lock(root, "demo", "s2", "b", timeout=1)
+        release_lock(handle, path, token)
+        return "released"
 
     @case("two real processes cannot both become the writer")
     def _():

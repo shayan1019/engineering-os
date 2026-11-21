@@ -436,6 +436,11 @@ export function permissionDecision(input) {
   const action = String(input && input.action || "")
   const resources = Array.isArray(input && input.resources) ? input.resources.map(String) : []
   if (SHELL_ACTIONS.has(action)) {
+    if (!resources.length) {
+      // A shell permission without the command text cannot be judged. Failing
+      // closed here is the only safe answer (0.3.4 allowed it; P5-A fixes it).
+      return { kind: "shell", allow: false, resource: "", reason: "shell permission carries no command" }
+    }
     for (const command of resources) {
       const verdict = classifyShell(command)
       if (!verdict.allow) return { kind: "shell", allow: false, resource: command, reason: verdict.reason }
@@ -465,6 +470,11 @@ function record(workspace, sessionID, entry) {
   }
 }
 
+export function callIDOf(input) {
+  const value = input || {}
+  return String(value.callID || value.callId || value.id || value.toolCallID || "")
+}
+
 export function summaryOf(tool, args) {
   const value = args || {}
   const keys = Object.keys(value).sort()
@@ -482,17 +492,32 @@ export function createWriteQueue(ttlMs = 5 * 60 * 1000, limit = 64) {
   // A write is queued when the guard allows it and dequeued only after the host
   // reports that it executed. Marking the map before the write is a lie when
   // the write fails; that was the 0.3.3 defect this queue removes.
+  //
+  // Matching uses the host tool-call id when it is available. Same session and
+  // same path can legitimately occur twice at once; without the id the second
+  // completion would consume the first entry twice and leave a stale one.
   const items = []
   const fresh = (item) => Date.now() - item.at < ttlMs
   return {
-    note(path, session) {
-      items.push({ path, session, at: Date.now() })
+    note(path, session, callID) {
+      items.push({ path, session, callID: String(callID || ""), at: Date.now() })
       while (items.length > limit) items.shift()
     },
-    take(session, summary) {
-      for (let index = items.length - 1; index >= 0; index -= 1) {
+    take(session, summary, callID) {
+      const wanted = String(callID || "")
+      if (wanted) {
+        const exact = items.findIndex((item) => fresh(item) &&
+          item.callID === wanted && item.session === session)
+        if (exact >= 0) {
+          const [found] = items.splice(exact, 1)
+          return found
+        }
+        return null
+      }
+      // Oldest-first: every completion consumes exactly one queued write.
+      for (let index = 0; index < items.length; index += 1) {
         const item = items[index]
-        if (!fresh(item)) { items.splice(index, 1); continue }
+        if (!fresh(item)) { items.splice(index, 1); index -= 1; continue }
         if (item.session !== session) continue
         if (summary && summary.path && item.path !== summary.path) continue
         items.splice(index, 1)
@@ -574,7 +599,7 @@ async function install(ctx, options) {
           `Reasons: ${(gate.reasons || []).join("; ").slice(0, MAX_REASON)}`)
       }
       if (gate.allow) {
-        noteWrite(path, sessionID)
+        noteWrite(path, sessionID, callIDOf(input))
         record(workspace, sessionID, { ...summary, verdict: "ALLOW",
           decision: gate.decision || "", reason: `write gate: map=${gate.map_state}` })
         return
@@ -583,7 +608,7 @@ async function install(ctx, options) {
       if (!decision.ok) {
         const auto = await allowAtomic(sessionID, path)
         if (auto.ok) {
-          noteWrite(path, sessionID)
+          noteWrite(path, sessionID, callIDOf(input))
           record(workspace, sessionID, { ...summary, verdict: "ALLOW",
             decision: auto.decision, reason: "auto ATOMIC decision" })
           return
@@ -656,7 +681,7 @@ async function install(ctx, options) {
         return
       }
       if (gate.allow) {
-        noteWrite(path, input.sessionID)
+        noteWrite(path, input.sessionID, callIDOf(input))
         record(workspace, input.sessionID, {
           kind: "permission", action: "write", resource: path,
           verdict: "ALLOW", decision: gate.decision || "",
@@ -668,7 +693,7 @@ async function install(ctx, options) {
       if (!decision.ok) {
         const auto = await allowAtomic(input.sessionID, path)
         if (auto.ok) {
-          noteWrite(path, input.sessionID)
+          noteWrite(path, input.sessionID, callIDOf(input))
           record(workspace, input.sessionID, {
             kind: "permission", action: "write", resource: path,
             verdict: "ALLOW", decision: auto.decision, reason: "auto ATOMIC decision",
@@ -682,7 +707,7 @@ async function install(ctx, options) {
         })
         return
       }
-      noteWrite(path, input.sessionID)
+      noteWrite(path, input.sessionID, callIDOf(input))
       record(workspace, input.sessionID, {
         kind: "permission", action: "write", resource: path,
         verdict: "ALLOW", decision: decision.decision,
@@ -697,7 +722,7 @@ async function install(ctx, options) {
         const tool = String(input && input.tool || "")
         const summary = summaryOf(tool, input && input.args)
         const pending = WRITE_TOOLS.has(tool)
-          ? takeWrite(input && input.sessionID, summary)
+          ? takeWrite(input && input.sessionID, summary, callIDOf(input))
           : null
         let touched = null
         if (pending) {

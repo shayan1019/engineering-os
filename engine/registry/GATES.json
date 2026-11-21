@@ -129,7 +129,15 @@
             {"name": "scope_install_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/scope_install.py", "selftest"], "required": true},
             {"name": "guard_contract_test", "cmd": ["node", "--test", "%WORKSPACE%/engineering-os/engine/host-plugins/opencode/eos-guard.test.mjs"], "required": true},
             {"name": "activation_contract_test", "cmd": ["node", "--test", "%WORKSPACE%/engineering-os/engine/host-plugins/opencode/eos-activation.test.mjs"], "required": true},
-            {"name": "router_tests", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/router/route_tests.py"], "required": true}
+            {"name": "router_tests", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/router/route_tests.py"], "required": true},
+            {"name": "p5_benchmark", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p5_benchmark.py", "run", "--workspace", "%WORKSPACE%"], "required": true}
+          ]
+        },
+        "p5": {
+          "description": "P5 mechanical benchmark over real fixture projects: web, backend, python, desktop, security, math, cross-process, new project, multi-project and concurrent writers. No model calls; a model benchmark is a separate conditional stage.",
+          "timeout_seconds": 600,
+          "commands": [
+            {"name": "p5_benchmark", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p5_benchmark.py", "run", "--workspace", "%WORKSPACE%"], "required": true}
           ]
         },
         "security": {
