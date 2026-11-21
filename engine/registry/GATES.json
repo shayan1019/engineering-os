@@ -144,6 +144,7 @@
           "description": "Read-only P6 metrics over the gate and P5 artifacts. No gate changes, no model calls.",
           "timeout_seconds": 300,
           "commands": [
+            {"name": "p6_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p6_metrics.py", "selftest"], "required": true},
             {"name": "p6_metrics", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p6_metrics.py", "report", "--workspace", "%WORKSPACE%", "--project", "eos"], "required": true}
           ]
         },
