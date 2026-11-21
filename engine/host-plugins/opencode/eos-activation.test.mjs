@@ -11,7 +11,7 @@
  *   2. the block is injected into the system prompt and nothing else changes,
  *   3. one user turn activates EOS once, not once per model step,
  *   4. a resumed session (no prompt hook) still activates from its transcript,
- *   5. a missing engine and an empty turn inject nothing and break nothing.
+ *   5. a missing engine is visible as UNAVAILABLE; an empty turn injects nothing.
  *
  * Run: node engine/host-plugins/opencode/eos-activation.test.mjs
  */
@@ -210,7 +210,10 @@ async function main() {
     rmSync(dir, { recursive: true, force: true })
 
     check("a missing engine does not break the session", !threw)
-    check("a missing engine injects nothing", event.system.length === 1, JSON.stringify(event.system))
+    check("a missing engine is visible, not silent", event.system.length === 2,
+          JSON.stringify(event.system))
+    check("the failure block says UNAVAILABLE",
+          JSON.stringify(event.system).includes("UNAVAILABLE"))
   }
 
   // 5. an empty turn carries no task -> nothing is injected, nothing is run

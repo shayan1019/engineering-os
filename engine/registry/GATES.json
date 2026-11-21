@@ -128,6 +128,7 @@
             {"name": "ship_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/ship.py", "selftest"], "required": true},
             {"name": "scope_install_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/scope_install.py", "selftest"], "required": true},
             {"name": "guard_contract_test", "cmd": ["node", "--test", "%WORKSPACE%/engineering-os/engine/host-plugins/opencode/eos-guard.test.mjs"], "required": true},
+            {"name": "activation_contract_test", "cmd": ["node", "--test", "%WORKSPACE%/engineering-os/engine/host-plugins/opencode/eos-activation.test.mjs"], "required": true},
             {"name": "router_tests", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/router/route_tests.py"], "required": true}
           ]
         },
