@@ -113,6 +113,8 @@ def resolve_root(project: str, workspace: str, explicit_path: str = "") -> tuple
                 root = os.path.normpath(os.path.join(workspace, item.get("path", "")))
                 if os.path.isdir(root):
                     return root, item
+    if project.startswith("auto-") and os.path.isdir(workspace):
+        return os.path.abspath(workspace), {"id": project, "path": ".", "discovered": True}
     raise SystemExit(f"BLOCKED: unknown project '{project}' (not registered or discovered)")
 
 
@@ -868,12 +870,11 @@ def selftest() -> int:
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True)
         clock.sleep(1.2)
+        assert child.poll() is None, "the second writer finished while the lock was held"
         ep.unlock_handle(handle)
         os.close(handle)
         out = child.communicate(timeout=120)[0]
         assert child.returncode == 0, out
-        elapsed = float(out.split()[0])
-        assert elapsed >= 1.0, out
         return "lock honoured"
 
     @case("two real writers do not lose each other's update")

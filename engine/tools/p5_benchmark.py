@@ -23,11 +23,13 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _eos_paths as ep  # noqa: E402
 import auto_decision as ad  # noqa: E402
+import decision as edr  # noqa: E402
 import impact as im  # noqa: E402
 import project_map as pm  # noqa: E402
 import secret_scan as ss  # noqa: E402
@@ -146,18 +148,22 @@ def scenario_new_project_healthy() -> dict:
 
 def scenario_new_project_unregistered() -> dict:
     root = make_workspace([])
+    write_file(root, "package.json", "{}\n")
     write_file(root, "proj/app.py", "x = 1\n")
-    created = create_map(root, "discovered", os.path.join(root, "proj"))
-    value = map_value(root, "discovered")
+    discovered = edr.infer_project(root, os.path.join(root, "proj", "app.py"))
+    created = create_map(root, discovered)
+    value = map_value(root, discovered)
     result = wg.check(root, os.path.join(root, "proj", "app.py"), "p5")
     reasons = " ".join(result.get("reasons") or [])
-    return {"ok": created == 0 and value.get("sources", {}).get("count", 0) >= 1
-                  and result["allow"] is False and "inferred" in reasons,
+    return {"ok": discovered.startswith("auto-") and created == 0
+                  and value.get("sources", {}).get("count", 0) >= 1
+                  and result["allow"] is False and "decision" in reasons,
             "want_map": "CURRENT", "kind": "negative",
-            "expected": "an unregistered project is mapped by path but never silently gated",
-            "observed": {"created": created, "sources": value.get("sources", {}).get("count"),
+            "expected": "an unregistered folder is discovered from a marker and never silently gated",
+            "observed": {"discovered": discovered, "created": created,
+                         "sources": value.get("sources", {}).get("count"),
                          "allow": result["allow"], "reasons": result.get("reasons"),
-                         "map_state": pm.verify("discovered", root)["state"]}}
+                         "map_state": pm.verify(discovered, root)["state"]}}
 
 
 def scenario_missing_decision_negative() -> dict:
@@ -481,7 +487,10 @@ def run() -> dict:
 
     value = {
         "schema": SCHEMA, "kind": KIND, "created_at": utc_now(),
+        "run_id": uuid.uuid4().hex,
         "scenario_version": SCENARIO_VERSION,
+        "provenance": {"signed": False, "signer": "",
+                       "note": "unsigned; P6 reports content-matched, never trusted provenance"},
         "source": source_meta(),
         "host": {"platform": platform.platform(),
                  "python": platform.python_version()},

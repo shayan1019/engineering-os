@@ -145,6 +145,12 @@ def resolve_workspace(explicit: str | None) -> str:
     return os.getcwd()
 
 
+DISCOVERY_FILES = ("pyproject.toml", "setup.py", "package.json", "Cargo.toml",
+                   "go.mod", "pom.xml", "build.gradle", "composer.json",
+                   "Gemfile", "mix.exs", "requirements.txt", "Makefile")
+DISCOVERY_EXT = (".csproj", ".sln")
+
+
 def safe_project(project: str) -> str:
     if not project or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", project):
         raise DecisionError(f"invalid project id: {project!r}")
@@ -158,6 +164,8 @@ def infer_project(workspace: str, path: str) -> str:
     The workspace root's `.eos/project.json` is the *workspace* identity, not a
     project identity: it must never swallow every child project. A marker below
     the root wins; registered profile paths come before the workspace fallback.
+    A workspace with no identity and a real project marker is discovered as
+    `auto-<folder>` so a brand-new folder works without a command.
     """
     absolute = os.path.abspath(path)
     current = absolute if os.path.isdir(absolute) else os.path.dirname(absolute)
@@ -193,6 +201,18 @@ def infer_project(workspace: str, path: str) -> str:
             root = os.path.abspath(os.path.join(workspace, profile.get("path", "")))
             if absolute == root or absolute.startswith(root + os.sep):
                 return str(profile.get("id") or "")
+    if not workspace_id:
+        try:
+            names = set(os.listdir(workspace_abs))
+        except OSError:
+            names = set()
+        marker = any(name in names for name in DISCOVERY_FILES) or any(
+            name.lower().endswith(DISCOVERY_EXT) for name in names)
+        if marker:
+            slug = re.sub(r"[^A-Za-z0-9._-]+", "-",
+                          os.path.basename(workspace_abs)).strip("-._")
+            if slug:
+                return ("auto-" + slug)[:64]
     return workspace_id
 
 
@@ -1264,6 +1284,22 @@ def selftest() -> int:
         assert infer_project(root, os.path.join(root, "proj", "x.py")) == "child"
         assert infer_project(root, os.path.join(root, "other.py")) == "workspace-root"
         return "child wins"
+
+    @case("an unregistered folder with a project marker is discovered")
+    def _():
+        root = workspace()
+        with open(os.path.join(root, "package.json"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            handle.write("{}\n")
+        project = infer_project(root, os.path.join(root, "src", "app.js"))
+        assert project.startswith("auto-"), project
+        return project
+
+    @case("an empty unregistered folder is not invented as a project")
+    def _():
+        root = workspace()
+        assert infer_project(root, os.path.join(root, "x.py")) == ""
+        return "empty"
 
     @case("unregistered path is denied")
     def _():
