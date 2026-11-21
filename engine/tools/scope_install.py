@@ -112,10 +112,52 @@ def backup(path: str) -> str:
     return target
 
 
-def plugin_target(root: str, host: str) -> str:
-    if host == "opencode":
-        return os.path.join(root, ".opencode", "plugin")
-    return ""
+def global_root() -> str:
+    """The directory OpenCode actually loads global plugins from on this OS.
+
+    Explicit OPENCODE_CONFIG_DIR wins; otherwise the standard user config path
+    is used. Never a path relative to the current working directory.
+    """
+    explicit = os.environ.get("OPENCODE_CONFIG_DIR")
+    if explicit:
+        return os.path.abspath(explicit)
+    return os.path.join(os.path.expanduser("~"), ".config", "opencode")
+
+
+def product_version() -> str:
+    path = os.path.join(os.path.dirname(ep.ENGINE_ROOT), "VERSION")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip() or "0.0.0-unknown"
+    except OSError:
+        return "0.0.0-unknown"
+
+
+def engine_commit() -> str:
+    import subprocess
+    try:
+        return subprocess.run(["git", "-C", os.path.dirname(ep.ENGINE_ROOT),
+                               "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=15).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def plugin_target(root: str, host: str, mode: str = "workspace") -> str:
+    if host != "opencode":
+        return ""
+    if mode == "global":
+        return os.path.join(root, "plugins")
+    return os.path.join(root, ".opencode", "plugins")
+
+
+def legacy_plugin_target(root: str, host: str, mode: str = "workspace") -> str:
+    """V1 loaded `plugin/` (singular). Keep it working for existing installs."""
+    if host != "opencode":
+        return ""
+    if mode == "global":
+        return os.path.join(root, "plugin")
+    return os.path.join(root, ".opencode", "plugin")
 
 
 def adapter_path(root: str, host: str) -> str:
@@ -183,10 +225,16 @@ def plan(mode: str, root: str, hosts: list) -> dict:
             if not source:
                 problems.append("host-plugins/opencode is not present in this engine")
             else:
-                for name in ("eos-activation.js", "eos-guard.js"):
-                    actions.append({"host": host, "action": "copy_plugin",
-                                    "source": os.path.join(source, name),
-                                    "target": os.path.join(plugin_target(root, host), name)})
+                targets = []
+                for directory in (plugin_target(root, host, mode),
+                                  legacy_plugin_target(root, host, mode)):
+                    if directory and directory not in targets:
+                        targets.append(directory)
+                for directory in targets:
+                    for name in ("eos-activation.js", "eos-guard.js"):
+                        actions.append({"host": host, "action": "copy_plugin",
+                                        "source": os.path.join(source, name),
+                                        "target": os.path.join(directory, name)})
         else:
             actions.append({"host": host, "action": "upsert_block",
                             "target": adapter_path(root, host), "status": capability["status"]})
@@ -204,7 +252,8 @@ def apply_plan(value: dict, force: bool = False) -> int:
     scope = {
         "schema": SCHEMA, "mode": value["mode"],
         "root": real(value["root"]) if value["mode"] == "workspace" else "",
-        "hosts": value["hosts"], "created_at": utc_now(), "version": "0.3.0",
+        "hosts": value["hosts"], "created_at": utc_now(),
+        "version": product_version(), "engine_commit": engine_commit(),
         "engine": ep.ENGINE_ROOT,
     }
     path = value["scope_file"]
@@ -238,8 +287,9 @@ def apply_plan(value: dict, force: bool = False) -> int:
 
 
 def cmd_install(args) -> int:
-    value = plan(args.mode, os.path.abspath(args.root) if args.root else "",
-                 list(args.host or ["opencode"]))
+    root = os.path.abspath(args.root) if args.root else (
+        global_root() if args.mode == "global" else "")
+    value = plan(args.mode, root, list(args.host or ["opencode"]))
     if args.json:
         print(json.dumps(value, ensure_ascii=True))
         return 0 if not value["problems"] else 1
@@ -288,12 +338,20 @@ def cmd_uninstall(args) -> int:
     removed = []
     for host in args.host or ["opencode"]:
         if host == "opencode":
-            for name in ("eos-activation.js", "eos-guard.js"):
-                target = os.path.join(plugin_target(root, host), name)
-                if os.path.isfile(target):
-                    if args.apply:
-                        os.remove(target)
-                    removed.append(target)
+            directories = []
+            for directory in (plugin_target(root, host, "workspace"),
+                              legacy_plugin_target(root, host, "workspace"),
+                              plugin_target(root, host, "global"),
+                              legacy_plugin_target(root, host, "global")):
+                if directory and directory not in directories:
+                    directories.append(directory)
+            for directory in directories:
+                for name in ("eos-activation.js", "eos-guard.js"):
+                    target = os.path.join(directory, name)
+                    if os.path.isfile(target):
+                        if args.apply:
+                            os.remove(target)
+                        removed.append(target)
         elif host in ("codex", "claude-code"):
             target = adapter_path(root, host)
             if os.path.isfile(target) and MARKER_BEGIN in open(target, encoding="utf-8",
