@@ -149,7 +149,7 @@ def rules_files(workspace: str) -> list:
     return found
 
 
-def build(task: str, project: str, host: str, max_skills: int) -> dict:
+def build(task: str, project: str, host: str, max_skills: int, session: str = "") -> dict:
     workspace = ep.resolve_workspace()
     routed = route(task)
     resolved = routed.get("resolved") or {}
@@ -187,7 +187,7 @@ def build(task: str, project: str, host: str, max_skills: int) -> dict:
         import preflight as pf
         project_path = resolved.get("path") or ""
         cwd = os.path.join(workspace, project_path) if project_path else workspace
-        preflight_ctx = pf.run(task, workspace, resolved_project, cwd, "", use_route=False)
+        preflight_ctx = pf.run(task, workspace, resolved_project, cwd, session, use_route=False)
     except Exception as exc:  # noqa: BLE001 - activation must not crash the host
         preflight_ctx = {"verdict": "UNKNOWN",
                          "error": f"{type(exc).__name__}: {exc}"}
@@ -302,6 +302,7 @@ def main() -> int:
                          "task with quotes or shell characters never reaches a command line)")
     ap.add_argument("--project", default="")
     ap.add_argument("--host", default="opencode")
+    ap.add_argument("--session", default="")
     ap.add_argument("--max-skills", type=int, default=6)
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
@@ -319,7 +320,7 @@ def main() -> int:
     if not task:
         print("BLOCKED: empty task")
         return 1
-    ctx = build(task, args.project, args.host, max(1, args.max_skills))
+    ctx = build(task, args.project, args.host, max(1, args.max_skills), args.session)
     if args.json:
         print(json.dumps(ctx, indent=2, ensure_ascii=False))
     else:

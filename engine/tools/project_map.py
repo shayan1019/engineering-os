@@ -85,15 +85,38 @@ def registry_dir(workspace: str) -> str:
     return local if os.path.isdir(local) else ep.REGISTRY
 
 
-def project_root(project: str, workspace: str) -> tuple:
+def resolve_root(project: str, workspace: str, explicit_path: str = "") -> tuple:
+    """Find a project root for registered and discovered projects alike."""
+    if explicit_path:
+        root = os.path.normpath(os.path.join(workspace, explicit_path))
+        if os.path.isdir(root):
+            return root, {"id": project, "path": explicit_path}
+        raise SystemExit(f"BLOCKED: project path does not exist: {root}")
     path = os.path.join(registry_dir(workspace), "PROJECT_PROFILES.json")
-    if not os.path.isfile(path):
-        raise SystemExit(f"BLOCKED: project registry missing: {path}")
-    data = read_json(path)
-    for profile in data.get("profiles", []):
-        if profile.get("id") == project:
-            return os.path.normpath(os.path.join(workspace, profile.get("path", ""))), profile
-    raise SystemExit(f"BLOCKED: unknown project '{project}'")
+    if os.path.isfile(path):
+        data = read_json(path)
+        for profile in data.get("profiles", []):
+            if profile.get("id") == project:
+                return os.path.normpath(os.path.join(workspace, profile.get("path", ""))), profile
+    for candidate in (os.path.join(workspace, ".agents", "registry", "PROJECTS.local.json"),
+                      os.path.join(workspace, ".eos", "projects.json")):
+        if not os.path.isfile(candidate):
+            continue
+        try:
+            data = read_json(candidate)
+        except (OSError, json.JSONDecodeError):
+            continue
+        projects = data.get("projects") if isinstance(data, dict) else data
+        for item in projects or []:
+            if item.get("id") == project:
+                root = os.path.normpath(os.path.join(workspace, item.get("path", "")))
+                if os.path.isdir(root):
+                    return root, item
+    raise SystemExit(f"BLOCKED: unknown project '{project}' (not registered or discovered)")
+
+
+def project_root(project: str, workspace: str, explicit_path: str = "") -> tuple:
+    return resolve_root(project, workspace, explicit_path)
 
 
 def store_path(workspace: str, project: str) -> str:
@@ -126,8 +149,55 @@ def source_files(root: str) -> list:
     return sorted(found)
 
 
-def build(project: str, workspace: str, previous: dict | None = None) -> dict:
-    root, profile = project_root(project, workspace)
+JS_IMPORT_RE = re.compile(r"""(?:from\s+|require\s*\(\s*)["']([^"']+)["']""")
+JS_DEF_RE = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?(?:function|class|const|let)\s+([A-Za-z_$][\w$]*)", re.M)
+MQL_INCLUDE_RE = re.compile(r'^\s*#include\s+[<"]([^>"]+)[>"]', re.M)
+MQL_DEF_RE = re.compile(r"^\s*(?:void|int|uint|long|ulong|double|float|bool|string|datetime)\s+"
+                        r"([A-Za-z_]\w*)\s*\(", re.M)
+
+
+def js_index(root: str, files: list) -> dict:
+    index = {}
+    for rel in files:
+        if not rel.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")):
+            continue
+        text = impact_tool.read_text(os.path.join(root, rel))
+        imports = [{"module": spec, "names": []} for spec in sorted(set(JS_IMPORT_RE.findall(text)))]
+        defs = [{"name": name, "kind": "symbol"} for name in sorted(set(JS_DEF_RE.findall(text)))]
+        index[rel] = {"module": rel, "parse": "OK" if text else "EMPTY",
+                      "imports": imports, "defs": defs,
+                      "dynamic": "import(" in text or "require(" in text}
+    return index
+
+
+def mql_index(root: str, files: list) -> dict:
+    index = {}
+    for rel in files:
+        if not rel.lower().endswith((".mq4", ".mq5", ".mqh")):
+            continue
+        text = impact_tool.read_text(os.path.join(root, rel))
+        includes = [{"module": item, "names": []} for item in sorted(set(MQL_INCLUDE_RE.findall(text)))]
+        defs = [{"name": name, "kind": "function"} for name in sorted(set(MQL_DEF_RE.findall(text)))]
+        index[rel] = {"module": rel, "parse": "PARTIAL", "imports": includes, "defs": defs,
+                      "dynamic": False}
+    return index
+
+
+def resolve_js(root: str, from_rel: str, spec: str) -> str:
+    if not spec.startswith("."):
+        return ""
+    base = os.path.dirname(from_rel)
+    target = os.path.normpath(os.path.join(base, spec)).replace("\\", "/")
+    for ext in ("", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", "/index.ts", "/index.js"):
+        candidate = target + ext
+        if os.path.isfile(os.path.join(root, candidate)):
+            return candidate
+    return ""
+
+
+def build(project: str, workspace: str, previous: dict | None = None,
+          project_path: str = "") -> dict:
+    root, profile = project_root(project, workspace, project_path)
     if not os.path.isdir(root):
         raise SystemExit(f"BLOCKED: project path does not exist: {root}")
     files = source_files(root)
@@ -140,24 +210,32 @@ def build(project: str, workspace: str, previous: dict | None = None) -> dict:
             hashes[rel] = {"sha256": "", "bytes": 0}
 
     py = impact_tool.python_index(root)
+    js = js_index(root, files)
+    mql = mql_index(root, files)
+    index = {**py, **js, **mql}
     modules = []
     module_to_file = {}
-    for rel, info in py.items():
-        module_to_file[info.get("module", "")] = rel
+    for rel, info in index.items():
+        module_to_file[info.get("module", rel)] = rel
     edges = []
     unknowns = []
     tests = []
     contracts = []
-    for rel, info in sorted(py.items()):
+    for rel, info in sorted(index.items()):
         module = info.get("module", "")
+        parser = ("python-ast" if rel in py else
+                  "js-regex-v1" if rel in js else
+                  "mql-lexical-v1" if rel in mql else "none")
         modules.append({
-            "path": rel, "module": module, "parse": info.get("parse"),
+            "path": rel, "module": module, "parser": parser, "parse": info.get("parse"),
             "imports": [{"module": item.get("module"), "names": item.get("names") or []}
                         for item in (info.get("imports") or [])],
             "defs": [{"name": item.get("name"), "kind": item.get("kind")}
                      for item in (info.get("defs") or [])],
         })
-        if info.get("parse") != "OK":
+        if info.get("parse") == "PARTIAL":
+            unknowns.append(f"lexical/partial parser only: {rel}")
+        elif info.get("parse") not in ("OK", "EMPTY"):
             unknowns.append(f"parse failed: {rel}")
         if info.get("dynamic"):
             unknowns.append(f"dynamic import/getattr: {rel}")
@@ -165,8 +243,10 @@ def build(project: str, workspace: str, previous: dict | None = None) -> dict:
         for imp in info.get("imports") or []:
             target = imp.get("module") or ""
             target_file = module_to_file.get(target)
+            if not target_file and target.startswith("."):
+                target_file = resolve_js(root, rel, target)
             if not target_file and target:
-                target_tail = target.rsplit(".", 1)[-1]
+                target_tail = target.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[-1]
                 for candidate, candidate_file in module_to_file.items():
                     if candidate.endswith("." + target_tail) or candidate == target_tail:
                         target_file = candidate_file
@@ -197,10 +277,22 @@ def build(project: str, workspace: str, previous: dict | None = None) -> dict:
 
     coverage = {
         "ast": "FULL" if py else "NONE",
+        "js": "PARTIAL" if js else "NONE",
+        "mql": "PARTIAL" if mql else "NONE",
         "lexical": "PARTIAL",
         "topology": "DECLARED" if topology else "MISSING",
         "graphify": "MISSING (provider not installed)",
     }
+    supported = set(py) | set(js) | set(mql)
+    unsupported = [rel for rel in files if rel not in supported]
+    if unsupported:
+        unknowns.append(f"{len(unsupported)} source file(s) have no parser adapter")
+    if not files:
+        coverage_state = "NONE"
+    elif not unsupported and not unknowns and topology:
+        coverage_state = "FULL"
+    else:
+        coverage_state = "PARTIAL"
     if len(files) >= MAX_FILES:
         unknowns.append(f"source file list truncated at {MAX_FILES}")
 
@@ -217,8 +309,15 @@ def build(project: str, workspace: str, previous: dict | None = None) -> dict:
         "tests": tests,
         "contracts": contracts,
         "components": components,
+        "parsers": {
+            "python-ast": len(py), "js-regex-v1": len(js), "mql-lexical-v1": len(mql),
+            "unsupported": len(unsupported),
+        },
         "coverage": coverage,
+        "coverage_state": coverage_state,
         "unknowns": unknowns,
+        "dirty_files": [],
+        "dirty_at": "",
         "topology": {"used": bool(topology),
                      "path": ep.store_path(topology_used, workspace) if topology else ""},
     }
@@ -247,7 +346,7 @@ def verify(project: str, workspace: str) -> dict:
     if map_hash(value) != value.get("map_sha256"):
         return {"state": "INVALID", "project": project, "path": path,
                 "reasons": ["map hash mismatch (edited outside this tool)"]}
-    root, _ = project_root(project, workspace)
+    root, _ = project_root(project, workspace, value.get("project_path", ""))
     try:
         current_git = git_state(root)
     except (OSError, SystemExit) as exc:
@@ -259,7 +358,18 @@ def verify(project: str, workspace: str) -> dict:
         reasons.append("git HEAD changed")
     if bool(recorded_git.get("dirty")) != bool(current_git.get("dirty")):
         reasons.append("worktree dirty state changed")
-    changed = []
+    if value.get("dirty_files"):
+        reasons.append(f"post-write dirty files: {', '.join(value['dirty_files'][:10])}")
+    recorded_files = set((value.get("sources") or {}).get("files", {}))
+    current_files = set(source_files(root))
+    new_files = sorted(current_files - recorded_files)
+    missing_files = sorted(recorded_files - current_files)
+    if new_files:
+        reasons.append(f"new files since the map: {', '.join(new_files[:10])}")
+    if missing_files:
+        reasons.append(f"deleted/renamed files since the map: {', '.join(missing_files[:10])}")
+    changed = [f"new: {rel}" for rel in new_files[:20]] + \
+              [f"missing: {rel}" for rel in missing_files[:20]]
     for rel, meta in (value.get("sources") or {}).get("files", {}).items():
         full = os.path.join(root, rel)
         if not os.path.isfile(full):
@@ -302,6 +412,66 @@ def excerpt(project: str, workspace: str, max_lines: int = 30) -> str:
     return "\n".join(lines[:max_lines])
 
 
+def mark_dirty(project: str, workspace: str, files: list) -> dict:
+    """Mark changed files without a full rebuild. The next preflight/write gate
+    sees a non-empty dirty set and refreshes before a risky write."""
+    path = store_path(workspace, project)
+    if not os.path.isfile(path):
+        return {"ok": False, "reason": "map missing"}
+    value = read_json(path)
+    if map_hash(value) != value.get("map_sha256"):
+        return {"ok": False, "reason": "map corrupt"}
+    root, _ = project_root(project, workspace, value.get("project_path", ""))
+    dirty = set(value.get("dirty_files") or [])
+    for raw in files:
+        absolute = os.path.realpath(os.path.abspath(os.path.join(workspace, raw)))
+        if not (absolute == os.path.realpath(root) or
+                absolute.startswith(os.path.realpath(root) + os.sep)):
+            continue
+        dirty.add(os.path.relpath(absolute, root).replace("\\", "/"))
+    value["dirty_files"] = sorted(dirty)
+    value["dirty_at"] = utc_now()
+    value["map_sha256"] = map_hash(value)
+    write_json(path, value)
+    epoch = os.path.join(workspace, ".agents", "state", "context.epoch")
+    os.makedirs(os.path.dirname(epoch), exist_ok=True)
+    with open(epoch, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(utc_now() + " " + str(len(value["dirty_files"])) + "\n")
+    return {"ok": True, "dirty_files": value["dirty_files"]}
+
+
+def ensure(project: str, workspace: str, project_path: str = "") -> dict:
+    result = verify(project, workspace)
+    if result["state"] == "MISSING":
+        value = build(project, workspace, None, project_path)
+        write_json(store_path(workspace, project), value)
+        result = verify(project, workspace)
+    elif result["state"] == "STALE":
+        value = build(project, workspace, result.get("map"), project_path)
+        write_json(store_path(workspace, project), value)
+        result = verify(project, workspace)
+    return result
+
+
+def cmd_ensure(args) -> int:
+    workspace = ep.resolve_workspace(args.workspace)
+    result = ensure(args.project, workspace, args.project_path)
+    print(f"{result['state']}: {args.project} ({result.get('path')})")
+    for reason in result.get("reasons", [])[:10]:
+        print(f"  - {reason}")
+    return 0 if result["state"] == "CURRENT" else 1
+
+
+def cmd_touch(args) -> int:
+    workspace = ep.resolve_workspace(args.workspace)
+    result = mark_dirty(args.project, workspace, args.file or [])
+    if not result.get("ok"):
+        print(f"BLOCKED: {result.get('reason')}")
+        return 1
+    print(f"DIRTY: {args.project} ({len(result['dirty_files'])} file(s))")
+    return 0
+
+
 def cmd_create(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
     path = store_path(workspace, args.project)
@@ -311,7 +481,7 @@ def cmd_create(args) -> int:
         for reason in result.get("reasons", [])[:5]:
             print(f"  - {reason}")
         return 0 if result["state"] == "CURRENT" else 1
-    value = build(args.project, workspace)
+    value = build(args.project, workspace, None, getattr(args, "project_path", ""))
     write_json(path, value)
     print(f"MAP: {args.project} {value['mode']} ({value['sources']['count']} sources, "
           f"{len(value['edges'])} edges, {len(value['unknowns'])} unknowns)")
@@ -332,7 +502,7 @@ def cmd_update(args) -> int:
         except (OSError, json.JSONDecodeError):
             print("BLOCKED: existing map is unreadable; use create --force")
             return 1
-    value = build(args.project, workspace, previous)
+    value = build(args.project, workspace, previous, getattr(args, "project_path", ""))
     write_json(path, value)
     print(f"MAP: {args.project} updated ({value['mode']})")
     return 0
@@ -423,6 +593,39 @@ def selftest() -> int:
         assert verify("demo", root)["state"] == "CURRENT"
         return "current"
 
+    @case("an unregistered project is mapped from an explicit path")
+    def _():
+        root = fixture()
+        assert cmd_create(argparse.Namespace(project="newproj", workspace=root, force=False,
+                                            project_path="proj")) == 0
+        result = verify("newproj", root)
+        assert result["state"] == "CURRENT", result
+        assert result["map"]["project_path"] == "proj"
+        return "discovered"
+
+    @case("a new file in a dirty tree makes the map STALE")
+    def _():
+        root = fixture()
+        cmd_create(argparse.Namespace(project="demo", workspace=root, force=False,
+                                      project_path=""))
+        with open(os.path.join(root, "proj", "c.py"), "w", encoding="utf-8") as handle:
+            handle.write("def new_one():\n    return 1\n")
+        result = verify("demo", root)
+        assert result["state"] == "STALE", result
+        assert any("new files" in reason for reason in result["reasons"]), result["reasons"]
+        return "new file"
+
+    @case("post-write touch marks dirty and blocks CURRENT")
+    def _():
+        root = fixture()
+        cmd_create(argparse.Namespace(project="demo", workspace=root, force=False,
+                                      project_path=""))
+        assert mark_dirty("demo", root, ["proj/a.py"])["ok"] is True
+        result = verify("demo", root)
+        assert result["state"] == "STALE", result
+        assert any("dirty" in reason for reason in result["reasons"]), result["reasons"]
+        return "dirty"
+
     @case("a tampered map is INVALID")
     def _():
         root = fixture()
@@ -463,11 +666,21 @@ def main() -> int:
     common.add_argument("--workspace")
     p = sub.add_parser("create", parents=[common])
     p.add_argument("--project", required=True)
+    p.add_argument("--project-path", default="")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_create)
     p = sub.add_parser("update", parents=[common])
     p.add_argument("--project", required=True)
+    p.add_argument("--project-path", default="")
     p.set_defaults(func=cmd_update)
+    p = sub.add_parser("ensure", parents=[common])
+    p.add_argument("--project", required=True)
+    p.add_argument("--project-path", default="")
+    p.set_defaults(func=cmd_ensure)
+    p = sub.add_parser("touch", parents=[common])
+    p.add_argument("--project", required=True)
+    p.add_argument("--file", action="append", default=[])
+    p.set_defaults(func=cmd_touch)
     p = sub.add_parser("verify", parents=[common])
     p.add_argument("--project", required=True)
     p.add_argument("--json", action="store_true")

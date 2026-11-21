@@ -33,11 +33,11 @@
 // provide.
 
 import { spawn } from "node:child_process"
-import { mkdtempSync, writeFileSync, rmSync, readdirSync } from "node:fs"
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname, resolve } from "node:path"
 
-const MAX_BLOCK_CHARS = 2400
+const MAX_BLOCK_CHARS = 6000
 const MAX_TASK_CHARS = 4000
 const TIMEOUT_MS = 20000
 const CACHE_LIMIT = 32
@@ -132,7 +132,7 @@ function debug(error) {
   console.error("EOS activation error:", error && error.stack ? error.stack : error)
 }
 
-async function activateBlock(task, cwd) {
+async function activateBlock(task, cwd, session) {
   let taskFile = null
   try {
     // The task is handed over in a file, never on a command line: a task may
@@ -141,18 +141,36 @@ async function activateBlock(task, cwd) {
     const dir = mkdtempSync(join(tmpdir(), "eos-task-"))
     taskFile = join(dir, "task.txt")
     writeFileSync(taskFile, task, "utf8")
-    const block = await run([...activateCommand(), "--task-file", taskFile], cwd)
-    if (!block) return ""
+    const args = [...activateCommand(), "--task-file", taskFile]
+    if (session) args.push("--session", String(session))
+    const block = await run(args, cwd)
+    if (!block) return unavailableBlock("the engine returned no context")
     return block.length > MAX_BLOCK_CHARS ? block.slice(0, MAX_BLOCK_CHARS) : block
   } catch (error) {
     debug(error)
-    return ""
+    return unavailableBlock(error && error.message ? error.message : "unknown error")
   } finally {
     if (taskFile) {
       try {
         rmSync(dirname(taskFile), { recursive: true, force: true })
       } catch {}
     }
+  }
+}
+
+function unavailableBlock(reason) {
+  const text = String(reason || "unknown").slice(0, 300)
+  return "<eos-context status=\"UNAVAILABLE\">EOS activation failed: " + text +
+    ". Do not assume EOS is active. The write guard still enforces decisions.</eos-context>"
+}
+
+function contextEpoch(cwd) {
+  try {
+    const path = join(cwd, ".agents", "state", "context.epoch")
+    if (!existsSync(path)) return "0"
+    return String(statSync(path).mtimeMs) + ":" + readFileSync(path, "utf8").trim()
+  } catch {
+    return "0"
   }
 }
 
@@ -167,12 +185,13 @@ async function activateBlock(task, cwd) {
  */
 const activations = new Map()
 
-function activationFor(key, task, cwd) {
+function activationFor(key, task, cwd, session) {
+  const epoch = contextEpoch(cwd)
   const known = activations.get(key)
-  if (known && known.task === task) return known.block
-  const block = activateBlock(task, cwd)
+  if (known && known.task === task && known.epoch === epoch) return known.block
+  const block = activateBlock(task, cwd, session || key)
   activations.delete(key)
-  activations.set(key, { task, block })
+  activations.set(key, { task, epoch, block })
   while (activations.size > CACHE_LIMIT) {
     const oldest = activations.keys().next().value
     if (oldest === undefined) break
@@ -249,7 +268,7 @@ async function resolveBlock(event, cwd) {
   // task comes from the messages when they are readable and from the entry the
   // prompt hook warmed otherwise.
   const task = taskText(event && event.prompt && event.prompt.text) || latestUserTask(event && event.messages)
-  if (task) return await activationFor(key, task, cwd)
+  if (task) return await activationFor(key, task, cwd, key)
   const known = activations.get(key)
   return known ? await known.block : ""
 }
@@ -271,7 +290,7 @@ async function install(ctx) {
         return
       }
       const known = activations.get(key)
-      if (!known || known.task !== task) activationFor(key, task, cwd)
+      if (!known || known.task !== task) activationFor(key, task, cwd, key)
     } catch (error) {
       debug(error)
     }
@@ -286,13 +305,25 @@ async function install(ctx) {
       debug(error)
     }
   })
+
+  // A compacted session must re-read the current map and work state instead of
+  // reusing the block that was valid before compaction.
+  try {
+    if (typeof ctx.session.hook === "function") {
+      await ctx.session.hook("compaction", (event) => {
+        activations.delete(sessionKey(event))
+      })
+    }
+  } catch {
+    // The host may not expose compaction; context epoch still invalidates.
+  }
 }
 
 async function serveV1(input, output, cwd) {
   try {
     const task = taskText(lastUserText(input))
     if (!task) return
-    const block = await activationFor(sessionKey(input), task, cwd)
+    const block = await activationFor(sessionKey(input), task, cwd, sessionKey(input))
     if (!block) return
     if (Array.isArray(output?.system)) output.system.push(block)
     else if (typeof output?.system === "string") output.system = output.system + "\n" + block

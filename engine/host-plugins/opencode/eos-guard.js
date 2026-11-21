@@ -66,6 +66,10 @@ const READ_ONLY_PREFIXES = [
   "python .agents/tools/project_map.py",
   "python .agents/tools/work_state.py",
   "python .agents/tools/preflight.py",
+  "python .agents/tools/post_write.py",
+  "python .agents/tools/write_gate.py",
+  "python .agents/tools/plugin_install.py",
+  "python engineering-os/engine/tools/plugin_install.py",
   "python .agents/tools/challenge.py",
   "python .agents/tools/quality_gate.py",
   "python .agents/tools/impact.py",
@@ -144,9 +148,11 @@ function engineFor(workspace) {
   return { engine: join(home, "engine"), python: process.env.EOS_PYTHON || "python" }
 }
 
-function pythonArgs(engine, workspace) {
-  return [join(engine, "tools", "decision.py"), "require-edit", "--json",
+function pythonArgs(engine, workspace, session) {
+  const args = [join(engine, "tools", "decision.py"), "require-edit", "--json",
     "--workspace", workspace]
+  if (session) args.push("--session", String(session))
+  return args
 }
 
 /**
@@ -154,7 +160,7 @@ function pythonArgs(engine, workspace) {
  * A missing engine, a crash or a timeout is DENY, never ALLOW: the guard must
  * fail closed.
  */
-function askEngine(engine, python, workspace, path, timeoutMs = TIMEOUT_MS) {
+function askEngine(engine, python, workspace, path, session, timeoutMs = TIMEOUT_MS) {
   return new Promise((resolvePromise) => {
     let settled = false
     const done = (value) => {
@@ -165,7 +171,7 @@ function askEngine(engine, python, workspace, path, timeoutMs = TIMEOUT_MS) {
     }
     let child
     try {
-      child = spawn(python, [...pythonArgs(engine, workspace), "--path", path], {
+      child = spawn(python, [...pythonArgs(engine, workspace, session), "--path", path], {
         cwd: workspace, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
       })
     } catch (error) {
@@ -213,7 +219,7 @@ function sessionKey(input) {
  * Only ATOMIC is auto-approved by the engine; STANDARD returns approved=false
  * and CRITICAL always requires a human. The guard never invents an approval.
  */
-function askAutoDecision(engine, python, workspace, task, path, timeoutMs = 12000) {
+function askAutoDecision(engine, python, workspace, task, path, session, timeoutMs = 12000) {
   return new Promise((resolvePromise) => {
     let settled = false
     const done = (value) => {
@@ -227,7 +233,7 @@ function askAutoDecision(engine, python, workspace, task, path, timeoutMs = 1200
       child = spawn(python, [
         join(engine, "tools", "auto_decision.py"), "prepare",
         "--workspace", workspace, "--task", String(task).slice(0, 4000),
-        "--scope", path, "--approve", "--json",
+        "--scope", path, "--session", String(session || ""), "--approve", "--json",
       ], { cwd: workspace, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
     } catch (error) {
       done({ ok: false, reasons: [`auto decision spawn failed: ${error.message}`] })
@@ -264,6 +270,71 @@ function askAutoDecision(engine, python, workspace, task, path, timeoutMs = 1200
       done({ ok: false, reasons: [`auto decision produced no JSON ${err}`.slice(0, MAX_REASON)] })
     })
   })
+}
+
+function askWriteGate(engine, python, workspace, path, session, timeoutMs = 12000) {
+  return new Promise((resolvePromise) => {
+    let settled = false
+    const done = (value) => {
+      if (!settled) {
+        settled = true
+        resolvePromise(value)
+      }
+    }
+    let child
+    try {
+      child = spawn(python, [
+        join(engine, "tools", "write_gate.py"), "check",
+        "--workspace", workspace, "--path", path,
+        "--session", String(session || ""), "--json",
+      ], { cwd: workspace, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    } catch (error) {
+      done({ allow: false, needs_decision: false, reasons: [`write gate spawn failed: ${error.message}`] })
+      return
+    }
+    let out = ""
+    let err = ""
+    const timer = setTimeout(() => {
+      try { child.kill() } catch {}
+      done({ allow: false, needs_decision: false, reasons: ["write gate timed out"] })
+    }, timeoutMs)
+    child.stdout.on("data", (chunk) => { if (out.length < 100000) out += chunk.toString() })
+    child.stderr.on("data", (chunk) => { if (err.length < 4000) err += chunk.toString() })
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      done({ allow: false, needs_decision: false, reasons: [`write gate error: ${error.message}`] })
+    })
+    child.on("close", () => {
+      clearTimeout(timer)
+      const lines = out.trim().split(/\r?\n/).filter(Boolean)
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        try {
+          const parsed = JSON.parse(lines[index])
+          if (parsed && typeof parsed.allow === "boolean") {
+            done({ ...parsed, reasons: parsed.reasons || [] })
+            return
+          }
+        } catch {
+          // not the JSON line
+        }
+      }
+      done({ allow: false, needs_decision: false,
+             reasons: [`write gate produced no JSON ${err}`.slice(0, MAX_REASON)] })
+    })
+  })
+}
+
+function touchWrite(engine, python, workspace, path, session) {
+  try {
+    const child = spawn(python, [
+      join(engine, "tools", "post_write.py"), "touch",
+      "--workspace", workspace, "--path", path, "--session", String(session || ""),
+    ], { cwd: workspace, windowsHide: true, stdio: "ignore" })
+    child.on("error", () => {})
+  } catch {
+    // A failed touch cannot turn an allowed write into a denial; the next
+    // preflight will still see a changed source hash.
+  }
 }
 
 function writeTarget(tool, args) {
@@ -386,7 +457,7 @@ async function install(ctx, options) {
   const allowAtomic = async (sessionID, path) => {
     const task = taskFor(sessionID)
     if (!task) return { ok: false, reasons: ["no task text captured for this session"] }
-    return askAutoDecision(engine, python, workspace, task, path)
+    return askAutoDecision(engine, python, workspace, task, path, sessionID)
   }
 
   try {
@@ -402,11 +473,11 @@ async function install(ctx, options) {
     // guard cannot auto-create an ATOMIC decision and will deny instead.
   }
 
-  const decide = async (path) => {
-    const key = `${path}`
+  const decide = async (path, session) => {
+    const key = `${path}|${session || ""}`
     const cached = cache.get(key)
     if (cached && Date.now() - cached.at < CACHE_MS) return cached.value
-    const value = await askEngine(engine, python, workspace, path)
+    const value = await askEngine(engine, python, workspace, path, session)
     cache.set(key, { at: Date.now(), value })
     while (cache.size > 200) cache.delete(cache.keys().next().value)
     return value
@@ -428,10 +499,23 @@ async function install(ctx, options) {
         record(workspace, sessionID, { ...summary, verdict: "DENY", reason: "write path not inspectable" })
         throw new Error("EOS BLOCKED: write tool path cannot be inspected and the permission hook is unavailable")
       }
-      const decision = await decide(path)
+      const gate = await askWriteGate(engine, python, workspace, path, sessionID)
+      if (!gate.allow && !gate.needs_decision) {
+        record(workspace, sessionID, { ...summary, verdict: "DENY", reason: gate.reasons || [] })
+        throw new Error(`EOS BLOCKED: ${path} (map=${gate.map_state || "UNKNOWN"}). ` +
+          `Reasons: ${(gate.reasons || []).join("; ").slice(0, MAX_REASON)}`)
+      }
+      if (gate.allow) {
+        touchWrite(engine, python, workspace, path, sessionID)
+        record(workspace, sessionID, { ...summary, verdict: "ALLOW",
+          decision: gate.decision || "", reason: `write gate: map=${gate.map_state}` })
+        return
+      }
+      const decision = await decide(path, sessionID)
       if (!decision.ok) {
         const auto = await allowAtomic(sessionID, path)
         if (auto.ok) {
+          touchWrite(engine, python, workspace, path, sessionID)
           record(workspace, sessionID, { ...summary, verdict: "ALLOW",
             decision: auto.decision, reason: "auto ATOMIC decision" })
           return
@@ -442,6 +526,7 @@ async function install(ctx, options) {
           `EOS tried to prepare one automatically: ${(auto.reasons || []).join("; ").slice(0, MAX_REASON)}. ` +
           `Next: ${auto.next || "open a decision with auto_decision.py prepare"}`)
       }
+      touchWrite(engine, python, workspace, path, sessionID)
       record(workspace, sessionID, { ...summary, verdict: "ALLOW", decision: decision.decision })
       return
     }
@@ -493,10 +578,29 @@ async function install(ctx, options) {
         })
         return
       }
-      const decision = await decide(path)
+      const gate = await askWriteGate(engine, python, workspace, path, input.sessionID)
+      if (!gate.allow && !gate.needs_decision) {
+        input.effect = "deny"
+        record(workspace, input.sessionID, {
+          kind: "permission", action: "write", resource: path,
+          verdict: "DENY", reason: gate.reasons || [],
+        })
+        return
+      }
+      if (gate.allow) {
+        touchWrite(engine, python, workspace, path, input.sessionID)
+        record(workspace, input.sessionID, {
+          kind: "permission", action: "write", resource: path,
+          verdict: "ALLOW", decision: gate.decision || "",
+          reason: `write gate: map=${gate.map_state}`,
+        })
+        return
+      }
+      const decision = await decide(path, input.sessionID)
       if (!decision.ok) {
         const auto = await allowAtomic(input.sessionID, path)
         if (auto.ok) {
+          touchWrite(engine, python, workspace, path, input.sessionID)
           record(workspace, input.sessionID, {
             kind: "permission", action: "write", resource: path,
             verdict: "ALLOW", decision: auto.decision, reason: "auto ATOMIC decision",
@@ -510,6 +614,7 @@ async function install(ctx, options) {
         })
         return
       }
+      touchWrite(engine, python, workspace, path, input.sessionID)
       record(workspace, input.sessionID, {
         kind: "permission", action: "write", resource: path,
         verdict: "ALLOW", decision: decision.decision,

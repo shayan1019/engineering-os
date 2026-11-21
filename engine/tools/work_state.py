@@ -172,6 +172,13 @@ def cmd_start(args) -> int:
         print(f"  next: {existing.get('next_action') or 'UNKNOWN'}")
         print(f"  state: {state_path(workspace, args.project)}")
         return 0
+    if existing and existing.get("status") != "closed" and args.new:
+        if not guard_owner(existing, args.session, args.takeover, args.reason):
+            print(f"BLOCKED: active task is owned by session {existing.get('session_id')}; "
+                  f"use --takeover with a reason")
+            return 1
+        append_event(workspace, args.project, "supersede", existing,
+                     {"reason": args.reason or "new task", "by": args.session})
     state = new_state(args.project, args.task, args.session, args.owner or args.session)
     save_state(workspace, args.project, state, "start")
     print(f"START: {args.project} {state['status']} ({state['session_id']})")
@@ -382,6 +389,22 @@ def selftest() -> int:
         assert state["decision"] == "edr-1"
         return "taken"
 
+    @case("start --new cannot replace another session's task")
+    def _():
+        root = workspace()
+        cmd_start(argparse.Namespace(project="demo", task="fix a", session="s1",
+                                     owner="agent1", new=False, workspace=root))
+        blocked = cmd_start(argparse.Namespace(project="demo", task="new", session="s2",
+                                               owner="agent2", new=True, takeover=False,
+                                               reason="", workspace=root))
+        assert blocked == 1
+        allowed = cmd_start(argparse.Namespace(project="demo", task="new", session="s2",
+                                               owner="agent2", new=True, takeover=True,
+                                               reason="owner gone", workspace=root))
+        assert allowed == 0
+        assert load_state(root, "demo")["task"] == "new"
+        return "supersede guarded"
+
     @case("a corrupt state is refused and recover restores the event state")
     def _():
         root = workspace()
@@ -427,6 +450,8 @@ def main() -> int:
     p.add_argument("--session", required=True)
     p.add_argument("--owner", default="")
     p.add_argument("--new", action="store_true")
+    p.add_argument("--takeover", action="store_true")
+    p.add_argument("--reason", default="")
     p.set_defaults(func=cmd_start)
 
     p = sub.add_parser("update", parents=[common])

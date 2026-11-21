@@ -162,6 +162,9 @@ def infer_project(workspace: str, path: str) -> str:
     absolute = os.path.abspath(path)
     current = absolute if os.path.isdir(absolute) else os.path.dirname(absolute)
     workspace_abs = os.path.abspath(workspace)
+    control = os.path.join(workspace_abs, ".agents")
+    if absolute == control or absolute.startswith(control + os.sep):
+        return "eos"
     workspace_id = ""
     while current == workspace_abs or current.startswith(workspace_abs + os.sep):
         marker = os.path.join(current, ".eos", "project.json")
@@ -391,6 +394,7 @@ def cmd_open(args) -> int:
         "updated_at": utc_now(),
         "workspace": ep.store_path(workspace, workspace),
         "base_commit": base_commit,
+        "session_id": getattr(args, "session", "") or "",
         "fields": {},
         "approval": None,
         "gate": None,
@@ -789,7 +793,7 @@ def latest_decisions(workspace: str, project: str | None = None) -> list:
 
 
 def check_edit(workspace: str, project: str | None, path: str,
-               max_age_hours: float = 24.0) -> dict:
+               max_age_hours: float = 24.0, session: str = "") -> dict:
     rel = ep.store_path(path, workspace)
     if project is None:
         project = infer_project(workspace, path) or None
@@ -803,6 +807,10 @@ def check_edit(workspace: str, project: str | None, path: str,
             continue
         if not covers(scope_list(record), rel):
             continue
+        owner = str(record.get("session_id") or "")
+        if owner and session and owner != session:
+            reasons.append(f"{record.get('id')}: owned by session {owner}")
+            continue
         updated = parse_time(record.get("updated_at", ""))
         if max_age_hours and updated:
             age_h = (datetime.now(timezone.utc) - updated).total_seconds() / 3600
@@ -810,7 +818,8 @@ def check_edit(workspace: str, project: str | None, path: str,
                 reasons.append(f"{record['id']}: decision is {age_h:.1f}h old (limit {max_age_hours}h)")
                 continue
         return {"ok": True, "decision": record["id"], "project": record["project"],
-                "state": record["state"], "path": rel, "reasons": []}
+                "state": record["state"], "path": rel, "reasons": [],
+                "risk": record.get("risk"), "session_id": owner}
     if not reasons:
         reasons.append("no APPROVED_FOR_EDIT decision covers this path")
     return {"ok": False, "decision": None, "path": rel, "reasons": reasons}
@@ -824,7 +833,8 @@ def cmd_require_edit(args) -> int:
         result = {"ok": False, "path": args.path,
                   "reasons": ["path is outside the workspace"]}
     else:
-        result = check_edit(workspace, args.project, absolute, args.max_age_hours)
+        result = check_edit(workspace, args.project, absolute, args.max_age_hours,
+                            getattr(args, "session", ""))
     if args.json:
         print(json.dumps(result, ensure_ascii=True))
     elif result["ok"]:
@@ -1290,6 +1300,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scope", action="append", default=[])
     p.add_argument("--suite", default="")
     p.add_argument("--actor", default="")
+    p.add_argument("--session", default="")
     p.add_argument("--approve", action="store_true")
     p.set_defaults(func=cmd_open)
 
@@ -1348,6 +1359,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--path", required=True)
     p.add_argument("--json", action="store_true")
     p.add_argument("--max-age-hours", type=float, default=24.0)
+    p.add_argument("--session", default="")
     p.set_defaults(func=cmd_require_edit)
 
     p = sub.add_parser("status", parents=[common])

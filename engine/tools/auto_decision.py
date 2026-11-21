@@ -81,7 +81,7 @@ def safe_scope(workspace: str, values: list) -> tuple:
 
 
 def prepare(workspace: str, project: str, task: str, scope_values: list,
-            approve: bool = False, use_impact: bool = True) -> dict:
+            approve: bool = False, use_impact: bool = True, session: str = "") -> dict:
     scope, problems = safe_scope(workspace, scope_values)
     if not scope:
         return {"verdict": "BLOCKED", "problems": problems or ["no scope"],
@@ -92,7 +92,8 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
 
     reused = None
     for rel in scope:
-        check = edr.check_edit(workspace, None, os.path.join(os.path.realpath(workspace), rel))
+        check = edr.check_edit(workspace, None, os.path.join(os.path.realpath(workspace), rel),
+                               session=session)
         if not check.get("ok"):
             reused = None
             break
@@ -102,8 +103,16 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
             reused = None
             break
     if reused:
+        try:
+            reused_record = edr.load(workspace, reused.get("project"), reused["decision"])
+            if not all(edr.covers(edr.scope_list(reused_record), rel) for rel in scope):
+                reused = None
+        except edr.DecisionError:
+            reused = None
+    if reused:
         return {"verdict": "READY", "decision": reused["decision"],
-                "risk": "UNKNOWN", "reasons": ["an approved decision covers every scope path"],
+                "risk": reused.get("risk") or "UNKNOWN",
+                "reasons": ["an approved decision covers every scope path"],
                 "project": reused.get("project"), "scope": scope,
                 "state": reused.get("state"), "approved": True, "impact": "reused",
                 "missing": [], "next": "write inside the scope",
@@ -127,11 +136,14 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
 
     args = argparse.Namespace(project=project, task=task, risk=risk, scope=scope,
                               suite="", actor="eos.auto", approve=False,
-                              workspace=workspace)
+                              session=session, workspace=workspace)
     # cmd_open prints; suppress its prose by calling the same primitives is not
     # worth a second implementation. The JSON result below is the contract.
+    before = {item.get("id") for item in edr.latest_decisions(workspace, project)}
     assert edr.cmd_open(args) == 0
-    record = edr.latest_decisions(workspace, project)[0]
+    after = [item for item in edr.latest_decisions(workspace, project)
+             if item.get("id") not in before]
+    record = after[0] if after else edr.latest_decisions(workspace, project)[0]
     decision_id = record["id"]
 
     edges = (impact or {}).get("edges") or []
@@ -303,6 +315,7 @@ def main() -> int:
     p.add_argument("--scope", action="append", default=[])
     p.add_argument("--approve", action="store_true")
     p.add_argument("--no-impact", action="store_true")
+    p.add_argument("--session", default="")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=lambda args: _cmd_prepare(args))
     p = sub.add_parser("selftest")
@@ -314,7 +327,7 @@ def main() -> int:
 def _cmd_prepare(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
     result = prepare(workspace, args.project, args.task, list(args.scope or []),
-                     args.approve, not args.no_impact)
+                     args.approve, not args.no_impact, args.session)
     if args.json:
         print(json.dumps(result, ensure_ascii=True))
     else:

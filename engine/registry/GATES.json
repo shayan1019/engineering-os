@@ -120,6 +120,8 @@
             {"name": "project_map_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/project_map.py", "selftest"], "required": true},
             {"name": "work_state_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/work_state.py", "selftest"], "required": true},
             {"name": "preflight_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/preflight.py", "selftest"], "required": true},
+            {"name": "post_write_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/post_write.py", "selftest"], "required": true},
+            {"name": "write_gate_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/write_gate.py", "selftest"], "required": true},
             {"name": "auto_decision_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/auto_decision.py", "selftest"], "required": true},
             {"name": "tool_evidence_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/tool_evidence.py", "selftest"], "required": true},
             {"name": "completion_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/completion.py", "selftest"], "required": true},
