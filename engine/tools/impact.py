@@ -89,6 +89,11 @@ def project_root(project: str, workspace: str) -> tuple:
         if item.get("id") == project:
             rel = item.get("path") or ""
             return os.path.normpath(os.path.join(workspace, rel)), item
+    # A project discovered from a marker (`auto-<folder>`) is not registered.
+    # project_map already resolves it to the workspace root; impact must agree,
+    # or a new folder is writable by the map and blocked by the decision engine.
+    if project.startswith("auto-") and os.path.isdir(workspace):
+        return os.path.abspath(workspace), {"id": project, "path": ".", "discovered": True}
     raise SystemExit(f"BLOCKED: unknown project '{project}' (not in PROJECT_PROFILES.json)")
 
 

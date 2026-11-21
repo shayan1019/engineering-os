@@ -15,7 +15,7 @@
  *
  * Run: node engine/host-plugins/opencode/eos-activation.test.mjs
  */
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -236,7 +236,43 @@ async function main() {
     rmSync(dir, { recursive: true, force: true })
   }
 
-  // 6. a V1 host still gets a working chat.params hook
+  // 6. a post-write epoch change invalidates the cached block
+  //
+  // `post_write` bumps `.agents/state/context.epoch`. If the plugin ignores it,
+  // the next model step keeps the context that predates the write. This was a
+  // real defect: a missing `existsSync` import made `contextEpoch` throw and
+  // return "0" for every call, so the cache never invalidated.
+  {
+    const dir = mkdtempSync(join(tmpdir(), "eos-plugin-epoch-"))
+    const engine = fakeEngine(dir, "<eos-context>epoch</eos-context>")
+    process.env.EOS_ACTIVATE_COMMAND = JSON.stringify(engine.command)
+    const plugin = await loadPlugin()
+    const host = fakeHost(dir)
+    await plugin.setup(host.ctx)
+
+    const state = join(dir, ".agents", "state")
+    mkdirSync(state, { recursive: true })
+    writeFileSync(join(state, "context.epoch"), "1\n", "utf8")
+
+    await host.hooks.prompt(promptEvent("epoch test"))
+    await host.hooks.context(contextEvent([], [userMessage("epoch test")]))
+    check("the first context request runs the engine once", engine.runs() === 1,
+          `runs=${engine.runs()}`)
+
+    await host.hooks.context(contextEvent([], [userMessage("epoch test")]))
+    check("an unchanged epoch keeps the cached block", engine.runs() === 1,
+          `runs=${engine.runs()}`)
+
+    writeFileSync(join(state, "context.epoch"), "2\n", "utf8")
+    await host.hooks.context(contextEvent([], [userMessage("epoch test")]))
+    check("a changed epoch invalidates the cached block", engine.runs() === 2,
+          `runs=${engine.runs()}`)
+
+    delete process.env.EOS_ACTIVATE_COMMAND
+    rmSync(dir, { recursive: true, force: true })
+  }
+
+  // 7. a V1 host still gets a working chat.params hook
   {
     const dir = mkdtempSync(join(tmpdir(), "eos-plugin-v1-"))
     process.env.EOS_ACTIVATE_COMMAND = JSON.stringify(fakeEngine(dir, "<eos-context>v1</eos-context>").command)
@@ -250,6 +286,47 @@ async function main() {
 
     check("the V1 hook injects the block", output.system.some((s) => s.includes("eos-context")))
     check("the V1 hook preserves the system prompt", output.system[0] === "existing system prompt")
+  }
+
+  // 8. a workspace-local .agents engine wins over EOS_HOME
+  //
+  // The guard resolves `<workspace>/.agents` first. Activation must resolve the
+  // same engine, or one session can be governed by two different EOS versions.
+  {
+    const dir = mkdtempSync(join(tmpdir(), "eos-plugin-local-engine-"))
+    const tools = join(dir, ".agents", "tools")
+    mkdirSync(tools, { recursive: true })
+    writeFileSync(
+      join(tools, "eos_activate.py"),
+      'print("<eos-context>local-engine</eos-context>")\n',
+      "utf8",
+    )
+    const originalPython = process.env.EOS_PYTHON
+    const originalHome = process.env.EOS_HOME
+    const originalOverride = process.env.EOS_ACTIVATE_COMMAND
+    process.env.EOS_PYTHON = "python"
+    process.env.EOS_HOME = join(dir, "no-global-home")
+    delete process.env.EOS_ACTIVATE_COMMAND
+    const plugin = await loadPlugin()
+    const host = fakeHost(dir)
+    await plugin.setup(host.ctx)
+
+    const event = contextEvent([], [userMessage("local engine test")])
+    await host.hooks.context(event)
+    check(
+      "a local .agents engine is preferred over EOS_HOME",
+      event.system.some((part) => typeof part.text === "string" &&
+        part.text.includes("local-engine")),
+      JSON.stringify(event.system),
+    )
+
+    if (originalPython === undefined) delete process.env.EOS_PYTHON
+    else process.env.EOS_PYTHON = originalPython
+    if (originalHome === undefined) delete process.env.EOS_HOME
+    else process.env.EOS_HOME = originalHome
+    if (originalOverride === undefined) delete process.env.EOS_ACTIVATE_COMMAND
+    else process.env.EOS_ACTIVATE_COMMAND = originalOverride
+    rmSync(dir, { recursive: true, force: true })
   }
 
   process.env.EOS_ACTIVATE_COMMAND = originalCommand

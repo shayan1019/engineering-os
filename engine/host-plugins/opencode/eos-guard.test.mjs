@@ -156,6 +156,17 @@ test("a call id is never matched across sessions", () => {
   assert.equal(queue.take("s1", { path: "a.py" }, "call-9").callID, "call-9")
 })
 
+test("an execute.after call id pairs with a permission entry that had none", () => {
+  // OpenCode 2.3.2: the permission event carries the path but no call id; the
+  // execute.after event carries a call id but no args. Without this fallback the
+  // write is allowed and the post-write refresh is silently skipped.
+  const queue = createWriteQueue()
+  queue.note("a.py", "s1", "")
+  const taken = queue.take("s1", { path: "" }, "call-after")
+  assert.equal(taken.path, "a.py")
+  assert.equal(queue.take("s1", { path: "" }, "call-after"), null)
+})
+
 async function harness(gateAllow) {
   const workspace = mkdtempSync(join(tmpdir(), "eos-guard-"))
   const tools = join(workspace, ".agents", "tools")
@@ -165,15 +176,22 @@ async function harness(gateAllow) {
     `console.log(JSON.stringify({ok:true,allow:true,decision:"edr-test",reasons:[]}))\n`)
   writeFileSync(join(tools, "write_gate.py"),
     `console.log(JSON.stringify({allow:${gateAllow},needs_decision:false,` +
-    `map_state:"CURRENT",decision:"edr-test",reasons:[]}))\n`)
+    `map_state:"CURRENT",decision:"edr-test",risk:"ATOMIC",project:"demo",reasons:[]}))\n`)
   writeFileSync(join(tools, "post_write.py"),
     `require("fs").appendFileSync(process.env.EOS_TOUCH_LOG,` +
     `process.argv.slice(2).join(" ")+"\\n");` +
-    `console.log(JSON.stringify({ok:true}))\n`)
+    `console.log(JSON.stringify({ok:true,project:"demo",map_state:"CURRENT"}))\n`)
+  writeFileSync(join(tools, "work_state.py"),
+    `require("fs").appendFileSync(process.env.EOS_WORK_LOG,` +
+    `process.argv.slice(2).join(" ")+"\\n");` +
+    `console.log(JSON.stringify({ok:true,status:"recorded",record_id:"rid-test"}))\n`)
   const previousPython = process.env.EOS_PYTHON
   const previousLog = process.env.EOS_TOUCH_LOG
+  const previousWorkLog = process.env.EOS_WORK_LOG
+  const workLog = join(workspace, "work.log")
   process.env.EOS_PYTHON = process.execPath
   process.env.EOS_TOUCH_LOG = log
+  process.env.EOS_WORK_LOG = workLog
   const handlers = {}
   await guard.setup({
     location: { directory: workspace },
@@ -183,6 +201,7 @@ async function harness(gateAllow) {
   })
   return {
     log,
+    workLog,
     before: (input, output) => handlers["execute.before"](input, output),
     after: (input, output) => handlers["execute.after"](input, output),
     restore: () => {
@@ -190,6 +209,8 @@ async function harness(gateAllow) {
       else process.env.EOS_PYTHON = previousPython
       if (previousLog === undefined) delete process.env.EOS_TOUCH_LOG
       else process.env.EOS_TOUCH_LOG = previousLog
+      if (previousWorkLog === undefined) delete process.env.EOS_WORK_LOG
+      else process.env.EOS_WORK_LOG = previousWorkLog
     },
   }
 }
@@ -219,6 +240,24 @@ test("a denied write never touches the map", async () => {
     await assert.rejects(() => host.before(input, output), /EOS BLOCKED/)
     await host.after(input, { output: "" })
     assert.equal(existsSync(host.log), false, "a denied write touched the map")
+    assert.equal(existsSync(host.workLog), false, "a denied write recorded work state")
+  } finally {
+    host.restore()
+  }
+})
+
+test("a successful ATOMIC write records a closed work state", async () => {
+  const host = await harness(true)
+  try {
+    const input = { tool: "write", sessionID: "s-work", callID: "c3" }
+    const output = { args: { filePath: "a.py", content: "x = 1\n" } }
+    await host.before(input, output)
+    await host.after(input, { output: "ok" })
+    const text = readFileSync(host.workLog, "utf8")
+    assert.match(text, /record-atomic/)
+    assert.match(text, /--decision edr-test/)
+    assert.match(text, /--file a\.py/)
+    assert.match(text, /--map-state CURRENT/)
   } finally {
     host.restore()
   }

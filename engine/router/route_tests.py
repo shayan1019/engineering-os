@@ -378,6 +378,39 @@ def main():
     if not prec_ok:
         fails.append("registry_precedence")
 
+    # discovered project id: a marker folder must use the same auto- id that
+    # decision.infer_project, project_map, impact and the guard resolve. A second
+    # scheme (`discovered-`) made activation report PROJECT_UNRESOLVED for a
+    # folder the write gate could map.
+    disc_ok = True
+    disc_detail = []
+    try:
+        mod = router_module()
+        tmp_proj = tempfile.mkdtemp(prefix="eos_disc_")
+        try:
+            with open(os.path.join(tmp_proj, "package.json"), "w",
+                      encoding="utf-8", newline="\n") as handle:
+                handle.write('{"name": "discovered-fixture"}\n')
+            prof, source = mod.resolve_project("create a file", tmp_proj, tmp_proj)
+            expected = "auto-" + re.sub(
+                r"[^a-z0-9]+", "-", os.path.basename(tmp_proj).lower()
+            ).strip("-")[:30]
+            if not prof or source != "discovered":
+                disc_ok = False
+                disc_detail.append(f"project={prof} source={source}")
+            elif prof.get("id") != expected:
+                disc_ok = False
+                disc_detail.append(f"id={prof.get('id')} != {expected}")
+        finally:
+            shutil.rmtree(tmp_proj, ignore_errors=True)
+    except Exception as exc:  # pragma: no cover - defensive
+        disc_ok = False
+        disc_detail.append(f"discovered project check raised: {exc}")
+    results.append({"case": "discovered_project_id", "pass": disc_ok, "details": disc_detail})
+    print(f"{'PASS' if disc_ok else 'FAIL'} discovered_project_id {disc_detail}")
+    if not disc_ok:
+        fails.append("discovered_project_id")
+
     # one skill file, one index entry
     dup_problems = []
     dup_ok = True

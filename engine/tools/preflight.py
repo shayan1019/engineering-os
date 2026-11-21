@@ -118,7 +118,8 @@ def run(task: str, workspace: str, project: str = "", cwd: str = "", session: st
     continuation = "new"
     if state:
         work = {k: state.get(k) for k in ("task", "status", "session_id", "owner",
-                                          "decision", "challenge", "next_action")}
+                                          "decision", "challenge", "next_action",
+                                          "files", "record_id", "closed_at")}
         work["state"] = state.get("status")
         if state.get("status") != "closed":
             continuation = "resume" if state.get("session_id") == session or not session else "owned"
@@ -259,6 +260,22 @@ def selftest() -> int:
                      use_route=False)
         assert result["continuation"] == "resume", result["continuation"]
         return "resume"
+
+    @case("a closed atomic record is visible to the next session")
+    def _():
+        workspace = fixture()
+        run("fix", workspace, "demo", os.path.join(workspace, "proj"), "s1", use_route=False)
+        assert ws.cmd_record_atomic(argparse.Namespace(
+            project="demo", task="create a", session="s1", decision="edr-1",
+            file=["proj/a.py"], map_state="CURRENT", map_sha="", owner="eos.atomic",
+            json=True, workspace=workspace)) == 0
+        result = run("write another", workspace, "demo",
+                     os.path.join(workspace, "proj"), "s2", use_route=False)
+        assert result["work"]["state"] == "closed", result["work"]
+        assert result["work"]["decision"] == "edr-1", result["work"]
+        assert result["work"]["files"] == [os.path.normpath("proj/a.py")], result["work"]
+        assert result["continuation"] == "new", result["continuation"]
+        return "history visible"
 
     passed = failed = 0
     for name, fn in cases:

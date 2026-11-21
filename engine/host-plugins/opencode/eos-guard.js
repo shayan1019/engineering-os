@@ -371,6 +371,74 @@ function touchWrite(engine, python, workspace, path, session, timeoutMs = TIMEOU
   })
 }
 
+/**
+ * Record a completed ATOMIC write as closed work-state history.
+ *
+ * This runs only after `post_write` succeeded. It never starts an open task, so
+ * a second session is not locked out; work_state.py owns the OS lock and the
+ * idempotency check. A failure here is evidence, not a failed write.
+ */
+function recordAtomic(engine, python, workspace, pending, touched, session,
+                      timeoutMs = 8000) {
+  if (!pending || !pending.decision || pending.risk !== "ATOMIC") {
+    return Promise.resolve({ ok: true, status: "skipped",
+                             reason: "not an ATOMIC decision" })
+  }
+  if (!touched || !touched.ok || !touched.project) {
+    return Promise.resolve({ ok: false, status: "failed",
+                             reason: "post-write did not produce a project" })
+  }
+  return new Promise((resolvePromise) => {
+    let settled = false
+    let child
+    const done = (value) => {
+      if (!settled) { settled = true; resolvePromise(value) }
+    }
+    try {
+      child = spawn(python, [
+        join(engine, "tools", "work_state.py"), "record-atomic", "--json",
+        "--workspace", workspace, "--project", touched.project,
+        "--task", String(pending.task || "").slice(0, 4000),
+        "--session", String(session || ""), "--decision", String(pending.decision),
+        "--file", String(pending.path || ""),
+        "--map-state", String(touched.map_state || ""),
+      ], { cwd: workspace, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    } catch (error) {
+      done({ ok: false, status: "failed", reason: `work-state spawn failed: ${error.message}` })
+      return
+    }
+    let out = ""
+    let err = ""
+    const timer = setTimeout(() => {
+      try { child.kill() } catch {}
+      done({ ok: false, status: "failed", reason: "work-state record timed out" })
+    }, timeoutMs)
+    child.stdout.on("data", (chunk) => { if (out.length < 100000) out += chunk.toString() })
+    child.stderr.on("data", (chunk) => { if (err.length < 4000) err += chunk.toString() })
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      done({ ok: false, status: "failed", reason: `work-state error: ${error.message}` })
+    })
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      const lines = out.trim().split(/\r?\n/).filter(Boolean)
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        try {
+          const parsed = JSON.parse(lines[index])
+          if (parsed && typeof parsed.ok === "boolean") {
+            done({ ...parsed, ok: code === 0 && parsed.ok === true })
+            return
+          }
+        } catch {
+          // not the JSON line
+        }
+      }
+      done({ ok: false, status: "failed",
+             reason: `work-state produced no JSON (rc=${code}) ${err}`.slice(0, MAX_REASON) })
+    })
+  })
+}
+
 function writeTarget(tool, args) {
   const value = args || {}
   const candidate = value.filePath ?? value.file_path ?? value.path ?? value.file ??
@@ -499,8 +567,9 @@ export function createWriteQueue(ttlMs = 5 * 60 * 1000, limit = 64) {
   const items = []
   const fresh = (item) => Date.now() - item.at < ttlMs
   return {
-    note(path, session, callID) {
-      items.push({ path, session, callID: String(callID || ""), at: Date.now() })
+    note(path, session, callID, meta) {
+      items.push({ path, session, callID: String(callID || ""), ...(meta || {}),
+                   at: Date.now() })
       while (items.length > limit) items.shift()
     },
     take(session, summary, callID) {
@@ -510,6 +579,16 @@ export function createWriteQueue(ttlMs = 5 * 60 * 1000, limit = 64) {
           item.callID === wanted && item.session === session)
         if (exact >= 0) {
           const [found] = items.splice(exact, 1)
+          return found
+        }
+        // OpenCode 2.3.2: the permission event carries the path but no call id;
+        // the execute.after event carries a call id but no args. Pair the
+        // anonymous entry in this session so the post-write refresh still runs.
+        // The entry is consumed once and never crosses sessions.
+        const anonymous = items.findIndex((item) => fresh(item) &&
+          item.session === session && !item.callID)
+        if (anonymous >= 0) {
+          const [found] = items.splice(anonymous, 1)
           return found
         }
         return null
@@ -599,7 +678,10 @@ async function install(ctx, options) {
           `Reasons: ${(gate.reasons || []).join("; ").slice(0, MAX_REASON)}`)
       }
       if (gate.allow) {
-        noteWrite(path, sessionID, callIDOf(input))
+        noteWrite(path, sessionID, callIDOf(input), {
+          decision: gate.decision || "", risk: gate.risk || "",
+          task: taskFor(sessionID),
+        })
         record(workspace, sessionID, { ...summary, verdict: "ALLOW",
           decision: gate.decision || "", reason: `write gate: map=${gate.map_state}` })
         return
@@ -608,7 +690,9 @@ async function install(ctx, options) {
       if (!decision.ok) {
         const auto = await allowAtomic(sessionID, path)
         if (auto.ok) {
-          noteWrite(path, sessionID, callIDOf(input))
+          noteWrite(path, sessionID, callIDOf(input), {
+            decision: auto.decision, risk: auto.risk, task: taskFor(sessionID),
+          })
           record(workspace, sessionID, { ...summary, verdict: "ALLOW",
             decision: auto.decision, reason: "auto ATOMIC decision" })
           return
@@ -619,7 +703,9 @@ async function install(ctx, options) {
           `EOS tried to prepare one automatically: ${(auto.reasons || []).join("; ").slice(0, MAX_REASON)}. ` +
           `Next: ${auto.next || "open a decision with auto_decision.py prepare"}`)
       }
-      noteWrite(path, sessionID)
+      noteWrite(path, sessionID, callIDOf(input), {
+        decision: decision.decision, risk: decision.risk, task: taskFor(sessionID),
+      })
       record(workspace, sessionID, { ...summary, verdict: "ALLOW", decision: decision.decision })
       return
     }
@@ -681,7 +767,10 @@ async function install(ctx, options) {
         return
       }
       if (gate.allow) {
-        noteWrite(path, input.sessionID, callIDOf(input))
+        noteWrite(path, input.sessionID, callIDOf(input), {
+          decision: gate.decision || "", risk: gate.risk || "",
+          task: taskFor(input.sessionID),
+        })
         record(workspace, input.sessionID, {
           kind: "permission", action: "write", resource: path,
           verdict: "ALLOW", decision: gate.decision || "",
@@ -693,7 +782,9 @@ async function install(ctx, options) {
       if (!decision.ok) {
         const auto = await allowAtomic(input.sessionID, path)
         if (auto.ok) {
-          noteWrite(path, input.sessionID, callIDOf(input))
+          noteWrite(path, input.sessionID, callIDOf(input), {
+            decision: auto.decision, risk: auto.risk, task: taskFor(input.sessionID),
+          })
           record(workspace, input.sessionID, {
             kind: "permission", action: "write", resource: path,
             verdict: "ALLOW", decision: auto.decision, reason: "auto ATOMIC decision",
@@ -707,7 +798,10 @@ async function install(ctx, options) {
         })
         return
       }
-      noteWrite(path, input.sessionID, callIDOf(input))
+      noteWrite(path, input.sessionID, callIDOf(input), {
+        decision: decision.decision, risk: decision.risk,
+        task: taskFor(input.sessionID),
+      })
       record(workspace, input.sessionID, {
         kind: "permission", action: "write", resource: path,
         verdict: "ALLOW", decision: decision.decision,
@@ -734,6 +828,18 @@ async function install(ctx, options) {
             map_state: touched.map_state || "",
             reason: touched.reason || "",
           })
+          if (touched.ok) {
+            const atomic = await recordAtomic(engine, python, workspace, pending,
+                                              touched, input && input.sessionID)
+            const status = String(atomic.status ||
+              (atomic.ok ? "skipped" : "failed")).toUpperCase()
+            record(workspace, input && input.sessionID, {
+              kind: "work-state", path: pending.path,
+              decision: pending.decision || "",
+              verdict: status === "RECORDED" ? "CLOSED" : status,
+              reason: atomic.reason || (atomic.record_id ? `record=${atomic.record_id}` : ""),
+            })
+          }
         }
         record(workspace, input && input.sessionID, {
           ...summary,

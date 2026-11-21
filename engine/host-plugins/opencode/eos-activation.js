@@ -33,7 +33,7 @@
 // provide.
 
 import { spawn } from "node:child_process"
-import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync, statSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname, resolve } from "node:path"
 
@@ -50,7 +50,7 @@ const CACHE_LIMIT = 32
  * of them may reach a command interpreter. `EOS_ACTIVATE_COMMAND` (a JSON
  * array) exists so the test can substitute a fake engine.
  */
-function activateCommand() {
+function activateCommand(cwd) {
   const override = process.env.EOS_ACTIVATE_COMMAND
   if (override) {
     try {
@@ -58,6 +58,16 @@ function activateCommand() {
       if (Array.isArray(parsed) && parsed.length) return parsed.map(String)
     } catch {
       // A broken override is ignored; the normal resolution continues.
+    }
+  }
+  // A workspace-local install wins. eos-guard.js resolves the same tree, so
+  // activation and enforcement must not disagree about which engine is live.
+  if (cwd) {
+    const local = join(cwd, ".agents", "tools", "eos_activate.py")
+    if (existsSync(local)) {
+      const python = process.env.EOS_PYTHON ||
+        (process.platform === "win32" ? "python" : "python3")
+      return [python, local]
     }
   }
   const home = process.env.EOS_HOME || (process.env.USERPROFILE || process.env.HOME || "") + "/.eos"
@@ -141,7 +151,7 @@ async function activateBlock(task, cwd, session) {
     const dir = mkdtempSync(join(tmpdir(), "eos-task-"))
     taskFile = join(dir, "task.txt")
     writeFileSync(taskFile, task, "utf8")
-    const args = [...activateCommand(), "--task-file", taskFile]
+    const args = [...activateCommand(cwd), "--task-file", taskFile]
     if (session) args.push("--session", String(session))
     const block = await run(args, cwd)
     if (!block) return unavailableBlock("the engine returned no context")

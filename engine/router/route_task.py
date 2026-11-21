@@ -170,8 +170,12 @@ def discover_project(cwd, root):
                         if domain not in domains:
                             domains.append(domain)
                 return {
-                    "id": "discovered-" + re.sub(r"[^a-z0-9]+", "-",
-                                                 os.path.basename(candidate).lower()).strip("-")[:30],
+                    # The same id decision.infer_project, project_map, impact and
+                    # the write guard use for a marker-discovered project. A
+                    # second scheme (`discovered-`) made activation report
+                    # PROJECT_UNRESOLVED for a folder the guard could map.
+                    "id": "auto-" + re.sub(r"[^a-z0-9]+", "-",
+                                           os.path.basename(candidate).lower()).strip("-")[:30],
                     "display": os.path.basename(candidate) + " (discovered)",
                     "path": rel,
                     "domains": domains,

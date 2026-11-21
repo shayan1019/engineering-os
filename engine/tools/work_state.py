@@ -327,6 +327,79 @@ def _close(args, workspace: str) -> int:
     return 0
 
 
+def cmd_record_atomic(args) -> int:
+    """Record a completed ATOMIC post-write as closed history.
+
+    This is intentionally not a task start: it never creates an open ownership
+    lease, so a second session can still write. The record is written under the
+    same OS lock as every other work-state transition and is idempotent by
+    decision + session + files.
+    """
+    workspace = ep.resolve_workspace(args.workspace)
+    handle, path, token = acquire_lock(workspace, args.project, args.session,
+                                       args.owner or "eos.atomic")
+    try:
+        result = _record_atomic(args, workspace)
+    finally:
+        release_lock(handle, path, token)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=True))
+    else:
+        print(f"{str(result.get('status', 'blocked')).upper()}: {args.project} "
+              f"{result.get('record_id', '')}".rstrip())
+    return 0 if result.get("ok") else 1
+
+
+def _record_atomic(args, workspace: str) -> dict:
+    try:
+        existing = load_state(workspace, args.project)
+    except SystemExit as exc:
+        return {"ok": False, "status": "blocked", "reason": str(exc)}
+
+    files = [os.path.normpath(item) for item in (args.file or []) if item]
+    # Deliberately exclude map_state: a retry after a refresh must still be the
+    # same atomic completion, not a second history record.
+    record_id = digest({"project": args.project, "session": args.session,
+                        "decision": args.decision, "files": sorted(files)})
+    history = os.path.join(root(workspace, args.project), "history", record_id + ".json")
+    if os.path.isfile(history):
+        return {"ok": True, "status": "duplicate", "record_id": record_id}
+
+    atomic = {
+        "record_id": record_id, "task": args.task, "session": args.session,
+        "decision": args.decision, "files": files,
+        "map_state": args.map_state, "at": utc_now(),
+    }
+
+    if existing and existing.get("status") != "closed":
+        # An open STANDARD/CRITICAL task owns the state. Record the completed
+        # ATOMIC write in the hash-chained event log, never by closing or
+        # rewriting the open task or stealing its session.
+        append_event(workspace, args.project, "atomic_complete", existing,
+                     {"atomic": atomic, "atomic_session": args.session})
+        return {"ok": True, "status": "recorded_event_only", "record_id": record_id,
+                "open_task": existing.get("task"),
+                "open_session": existing.get("session_id")}
+
+    state = new_state(args.project,
+                      args.task or f"atomic write: {', '.join(files) or 'unknown'}",
+                      args.session, args.owner or "eos.atomic")
+    state["status"] = "closed"
+    state["decision"] = args.decision
+    state["files"] = files
+    state["map_state"] = args.map_state
+    state["map_sha256"] = args.map_sha or ""
+    state["next_action"] = ""
+    state["closed_at"] = utc_now()
+    state["record_id"] = record_id
+    state["completion"] = "atomic_post_write"
+    save_state(workspace, args.project, state, "atomic_complete", {"atomic": atomic})
+    os.makedirs(os.path.dirname(history), exist_ok=True)
+    write_json(history, state)
+    return {"ok": True, "status": "recorded", "record_id": record_id,
+            "state": state_path(workspace, args.project)}
+
+
 def cmd_resume(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
     try:
@@ -551,6 +624,105 @@ def selftest() -> int:
         assert state["session_id"] == winner, (state, codes)
         return "exactly one writer"
 
+    def atomic_args(root, session="s1", decision="edr-1", file="a.py"):
+        return argparse.Namespace(project="demo", task="create a", session=session,
+                                  decision=decision, file=[file],
+                                  map_state="CURRENT", map_sha="", owner="eos.atomic",
+                                  json=True, workspace=root)
+
+    @case("an atomic completion is recorded closed with a verifiable event")
+    def _():
+        root = workspace()
+        assert cmd_record_atomic(atomic_args(root)) == 0
+        state = load_state(root, "demo")
+        assert state["status"] == "closed", state
+        assert state["decision"] == "edr-1", state
+        assert state["files"] == ["a.py"], state
+        assert state["map_state"] == "CURRENT", state
+        assert state["completion"] == "atomic_post_write", state
+        event = last_event(root, "demo")
+        assert event["action"] == "atomic_complete", event
+        assert event["event_sha256"] == digest({k: v for k, v in event.items()
+                                                if k != "event_sha256"})
+        return "closed"
+
+    @case("the same atomic completion is idempotent")
+    def _():
+        root = workspace()
+        assert cmd_record_atomic(atomic_args(root)) == 0
+        before = len(open(events_path(root, "demo"), encoding="utf-8").readlines())
+        assert cmd_record_atomic(atomic_args(root)) == 0
+        after = len(open(events_path(root, "demo"), encoding="utf-8").readlines())
+        assert before == after, (before, after)
+        history = os.path.join(root, ".agents", "evidence", "work", "demo", "history")
+        assert len(os.listdir(history)) == 1, os.listdir(history)
+        return "duplicate skipped"
+
+    @case("an open task is never closed or overwritten by an atomic completion")
+    def _():
+        root = workspace()
+        cmd_start(argparse.Namespace(project="demo", task="standard task", session="s1",
+                                     owner="agent1", new=False, workspace=root))
+        assert cmd_record_atomic(atomic_args(root, session="s2", decision="edr-atomic",
+                                             file="b.py")) == 0
+        state = load_state(root, "demo")
+        assert state["status"] == "planned", state
+        assert state["session_id"] == "s1", state
+        assert state["task"] == "standard task", state
+        event = last_event(root, "demo")
+        assert event["action"] == "atomic_complete", event
+        assert event["atomic"]["decision"] == "edr-atomic", event
+        assert event["atomic_session"] == "s2", event
+        return "open task preserved"
+
+    @case("a new session replaces a closed record but keeps both histories")
+    def _():
+        root = workspace()
+        assert cmd_record_atomic(atomic_args(root, session="s1", decision="edr-1",
+                                             file="a.py")) == 0
+        assert cmd_record_atomic(atomic_args(root, session="s2", decision="edr-2",
+                                             file="b.py")) == 0
+        state = load_state(root, "demo")
+        assert state["decision"] == "edr-2", state
+        assert state["files"] == ["b.py"], state
+        history = os.path.join(root, ".agents", "evidence", "work", "demo", "history")
+        assert len(os.listdir(history)) == 2, os.listdir(history)
+        actions = [json.loads(line)["action"]
+                   for line in open(events_path(root, "demo"), encoding="utf-8")
+                   if line.strip()]
+        assert actions.count("atomic_complete") == 2, actions
+        return "two sessions"
+
+    @case("concurrent atomic records serialise under the OS lock")
+    def _():
+        import subprocess
+        root = workspace()
+        script = os.path.abspath(__file__)
+        children = []
+        for session, decision, file in (("s1", "edr-a", "a.py"),
+                                        ("s2", "edr-b", "b.py")):
+            children.append(subprocess.Popen(
+                [sys.executable, script, "record-atomic", "--project", "demo",
+                 "--task", "atomic", "--session", session, "--decision", decision,
+                 "--file", file, "--map-state", "CURRENT", "--json",
+                 "--workspace", root],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
+        outputs = [child.communicate(timeout=120)[0] for child in children]
+        codes = [child.returncode for child in children]
+        assert codes == [0, 0], (codes, outputs)
+        events = [json.loads(line) for line in open(events_path(root, "demo"),
+                                                    encoding="utf-8") if line.strip()]
+        assert [event["action"] for event in events].count("atomic_complete") == 2, events
+        previous = ""
+        for event in events:
+            assert event["prev_sha256"] == previous, event
+            assert event["event_sha256"] == digest({k: v for k, v in event.items()
+                                                    if k != "event_sha256"}), event
+            previous = event["event_sha256"]
+        history = os.path.join(root, ".agents", "evidence", "work", "demo", "history")
+        assert len(os.listdir(history)) == 2, os.listdir(history)
+        return "serialised"
+
     @case("a corrupt state is refused and recover restores the event state")
     def _():
         root = workspace()
@@ -623,6 +795,17 @@ def main() -> int:
     p.add_argument("--takeover", action="store_true")
     p.add_argument("--reason", default="")
     p.set_defaults(func=cmd_close)
+
+    p = sub.add_parser("record-atomic", parents=[common])
+    p.add_argument("--task", default="")
+    p.add_argument("--session", default="")
+    p.add_argument("--decision", required=True)
+    p.add_argument("--file", action="append", default=[])
+    p.add_argument("--map-state", default="")
+    p.add_argument("--map-sha", default="")
+    p.add_argument("--owner", default="")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_record_atomic)
 
     p = sub.add_parser("resume", parents=[common])
     p.add_argument("--json", action="store_true")

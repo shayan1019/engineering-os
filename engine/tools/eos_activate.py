@@ -62,10 +62,12 @@ def route(task: str) -> dict:
     router = os.path.join(ep.ENGINE_ROOT, "router", "route_task.py")
     if not os.path.isfile(router):
         return {}
+    workspace = ep.resolve_workspace()
     try:
         proc = subprocess.run(
-            [sys.executable, router, "--task", task, "--root", ep.resolve_workspace()],
-            capture_output=True, text=True, timeout=120, cwd=ep.resolve_workspace(),
+            [sys.executable, router, "--task", task,
+             "--root", workspace, "--cwd", workspace],
+            capture_output=True, text=True, timeout=120, cwd=workspace,
         )
     except (OSError, subprocess.SubprocessError):
         return {}

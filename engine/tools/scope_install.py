@@ -225,16 +225,22 @@ def plan(mode: str, root: str, hosts: list) -> dict:
             if not source:
                 problems.append("host-plugins/opencode is not present in this engine")
             else:
-                targets = []
-                for directory in (plugin_target(root, host, mode),
-                                  legacy_plugin_target(root, host, mode)):
-                    if directory and directory not in targets:
-                        targets.append(directory)
-                for directory in targets:
+                # Only the canonical directory is a live host surface. Copying
+                # the same plugin into both `plugins/` and `plugin/` lets a host
+                # that scans both register two guards and two activations.
+                canonical = plugin_target(root, host, mode)
+                for name in ("eos-activation.js", "eos-guard.js"):
+                    actions.append({"host": host, "action": "copy_plugin",
+                                    "source": os.path.join(source, name),
+                                    "target": os.path.join(canonical, name)})
+                legacy = legacy_plugin_target(root, host, mode)
+                if legacy and legacy != canonical:
                     for name in ("eos-activation.js", "eos-guard.js"):
-                        actions.append({"host": host, "action": "copy_plugin",
-                                        "source": os.path.join(source, name),
-                                        "target": os.path.join(directory, name)})
+                        target = os.path.join(legacy, name)
+                        if os.path.isfile(target):
+                            actions.append({"host": host, "action": "retire_legacy_plugin",
+                                            "target": target,
+                                            "source": os.path.join(source, name)})
         else:
             actions.append({"host": host, "action": "upsert_block",
                             "target": adapter_path(root, host), "status": capability["status"]})
@@ -275,9 +281,34 @@ def apply_plan(value: dict, force: bool = False) -> int:
             target_dir = os.path.dirname(action["target"])
             os.makedirs(target_dir, exist_ok=True)
             if os.path.isfile(action["target"]):
-                backup(action["target"])
+                # The host loads every .js file in this directory. A backup must
+                # live outside it or the replacement would be a second plugin.
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                backup_root = os.path.join(value["root"], ".eos", "backups",
+                                           f"plugins-{stamp}")
+                os.makedirs(backup_root, exist_ok=True)
+                shutil.copyfile(action["target"],
+                                os.path.join(backup_root,
+                                             os.path.basename(action["target"])))
             shutil.copyfile(action["source"], action["target"])
             print(f"  plugin: {action['target']}")
+        elif action["action"] == "retire_legacy_plugin":
+            target = action["target"]
+            if not os.path.isfile(target):
+                continue
+            # A backup inside the scanned plugin directory would itself be
+            # loaded as a second plugin. Move it to scope-owned user data.
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_root = os.path.join(value["root"], ".eos", "backups",
+                                       f"legacy-plugins-{stamp}")
+            os.makedirs(backup_root, exist_ok=True)
+            destination = os.path.join(backup_root, os.path.basename(target))
+            shutil.move(target, destination)
+            try:
+                os.rmdir(os.path.dirname(target))
+            except OSError:
+                pass
+            print(f"  legacy: {target} -> {destination}")
         elif action["action"] == "upsert_block":
             changed = upsert_block(action["target"])
             print(f"  adapter: {action['target']} ({'updated' if changed else 'current'})")
@@ -334,15 +365,18 @@ def cmd_hosts(args) -> int:
 
 
 def cmd_uninstall(args) -> int:
-    root = os.path.abspath(args.root) if args.root else ep.resolve_workspace(args.workspace)
+    workspace_root = os.path.abspath(args.root) if args.root else ep.resolve_workspace(args.workspace)
+    # The global scope lives under the host's config directory, never under the
+    # workspace the command happens to run in.
+    config_root = global_root()
     removed = []
     for host in args.host or ["opencode"]:
         if host == "opencode":
             directories = []
-            for directory in (plugin_target(root, host, "workspace"),
-                              legacy_plugin_target(root, host, "workspace"),
-                              plugin_target(root, host, "global"),
-                              legacy_plugin_target(root, host, "global")):
+            for directory in (plugin_target(workspace_root, host, "workspace"),
+                              legacy_plugin_target(workspace_root, host, "workspace"),
+                              plugin_target(config_root, host, "global"),
+                              legacy_plugin_target(config_root, host, "global")):
                 if directory and directory not in directories:
                     directories.append(directory)
             for directory in directories:
@@ -353,7 +387,7 @@ def cmd_uninstall(args) -> int:
                             os.remove(target)
                         removed.append(target)
         elif host in ("codex", "claude-code"):
-            target = adapter_path(root, host)
+            target = adapter_path(workspace_root, host)
             if os.path.isfile(target) and MARKER_BEGIN in open(target, encoding="utf-8",
                                                                errors="replace").read():
                 if args.apply:
@@ -369,6 +403,9 @@ def cmd_uninstall(args) -> int:
 
 def selftest() -> int:
     cases = []
+    config_home = tempfile.mkdtemp(prefix="eos-opencode-config-")
+    previous_config = os.environ.get("OPENCODE_CONFIG_DIR")
+    os.environ["OPENCODE_CONFIG_DIR"] = config_home
 
     def case(name):
         def wrap(fn):
@@ -380,16 +417,30 @@ def selftest() -> int:
         root = tempfile.mkdtemp(prefix="eos-inst-")
         with open(os.path.join(root, "AGENTS.md"), "w", encoding="utf-8", newline="\n") as handle:
             handle.write("# Existing project rules\n")
+        # A real project marker. Without one the guard cannot infer a project
+        # and a downstream live host session is blocked for the wrong reason.
+        with open(os.path.join(root, "package.json"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            handle.write('{"name": "eos-install-fixture", "version": "1.0.0"}\n')
         return root
 
-    @case("workspace install writes a scope, plugins and managed blocks")
+    def legacy_backups(root: str) -> list:
+        base = os.path.join(root, ".eos", "backups")
+        found = []
+        for current, _dirs, files in os.walk(base):
+            for name in files:
+                found.append(os.path.join(current, name))
+        return found
+
+    @case("workspace install writes a scope, canonical plugins and managed blocks")
     def _():
         root = fixture()
         value = plan("workspace", root, ["opencode", "codex"])
         assert not value["problems"], value["problems"]
         assert apply_plan(value) == 0
         assert os.path.isfile(os.path.join(root, ".eos", "scope.json"))
-        assert os.path.isfile(os.path.join(root, ".opencode", "plugin", "eos-guard.js"))
+        assert os.path.isfile(os.path.join(root, ".opencode", "plugins", "eos-guard.js"))
+        assert not os.path.isdir(os.path.join(root, ".opencode", "plugin"))
         text = open(os.path.join(root, "AGENTS.md"), encoding="utf-8").read()
         assert text.count(MARKER_BEGIN) == 1
         assert "Existing project rules" in text
@@ -403,7 +454,28 @@ def selftest() -> int:
         apply_plan(value, force=True)
         text = open(os.path.join(root, "AGENTS.md"), encoding="utf-8").read()
         assert text.count(MARKER_BEGIN) == 1
+        # The host loads every .js file in this directory. A replacement backup
+        # left here would be a second guard/activation, not a backup.
+        assert sorted(os.listdir(os.path.join(root, ".opencode", "plugins"))) == [
+            "eos-activation.js", "eos-guard.js"]
         return "idempotent"
+
+    @case("install migrates the legacy plugin directory instead of duplicating it")
+    def _():
+        root = fixture()
+        legacy = os.path.join(root, ".opencode", "plugin")
+        os.makedirs(legacy)
+        with open(os.path.join(legacy, "eos-guard.js"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            handle.write("// previous version\n")
+        value = plan("workspace", root, ["opencode"])
+        assert not value["problems"], value["problems"]
+        assert any(action["action"] == "retire_legacy_plugin" for action in value["actions"])
+        assert apply_plan(value) == 0
+        assert os.path.isfile(os.path.join(root, ".opencode", "plugins", "eos-guard.js"))
+        assert not os.path.isfile(os.path.join(legacy, "eos-guard.js"))
+        assert any(path.endswith("eos-guard.js") for path in legacy_backups(root))
+        return "migrated"
 
     @case("uninstall removes only the managed block and EOS plugins")
     def _():
@@ -415,7 +487,7 @@ def selftest() -> int:
         text = open(os.path.join(root, "AGENTS.md"), encoding="utf-8").read()
         assert MARKER_BEGIN not in text
         assert "Existing project rules" in text
-        assert not os.path.isfile(os.path.join(root, ".opencode", "plugin", "eos-guard.js"))
+        assert not os.path.isfile(os.path.join(root, ".opencode", "plugins", "eos-guard.js"))
         return "clean"
 
     @case("an unknown host is ADAPTER_ONLY, not a fake success")
@@ -425,22 +497,51 @@ def selftest() -> int:
         assert value["actions"][0]["status"] == "ADAPTER_ONLY"
         return "adapter only"
 
+    @case("global install writes the host config and uninstall clears it")
+    def _():
+        root = fixture()
+        home = tempfile.mkdtemp(prefix="eos-home-")
+        previous_home = ep.EOS_HOME
+        ep.EOS_HOME = home
+        try:
+            value = plan("global", global_root(), ["opencode"])
+            assert not value["problems"], value["problems"]
+            assert value["scope_file"] == os.path.join(home, "scope.json"), value["scope_file"]
+            assert apply_plan(value) == 0
+            installed = os.path.join(config_home, "plugins", "eos-guard.js")
+            assert os.path.isfile(installed)
+            assert not os.path.isdir(os.path.join(config_home, "plugin"))
+            assert cmd_uninstall(argparse.Namespace(root=root, workspace="",
+                                                    host=["opencode"], apply=True)) == 0
+            assert not os.path.isfile(installed)
+        finally:
+            ep.EOS_HOME = previous_home
+            shutil.rmtree(home, ignore_errors=True)
+        return "global clean"
+
     @case("global install does not claim filesystem-wide permission")
     def _():
-        value = plan("global", "", ["opencode"])
+        value = plan("global", global_root(), ["opencode"])
         assert not value["problems"], value["problems"]
         assert value["scope_file"].endswith("scope.json")
         return "global plan"
 
     passed = failed = 0
-    for name, fn in cases:
-        try:
-            detail = fn()
-            passed += 1
-            print(f"PASS  {name}  [{detail}]")
-        except Exception as exc:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL  {name}: {type(exc).__name__}: {exc}")
+    try:
+        for name, fn in cases:
+            try:
+                detail = fn()
+                passed += 1
+                print(f"PASS  {name}  [{detail}]")
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                print(f"FAIL  {name}: {type(exc).__name__}: {exc}")
+    finally:
+        if previous_config is None:
+            os.environ.pop("OPENCODE_CONFIG_DIR", None)
+        else:
+            os.environ["OPENCODE_CONFIG_DIR"] = previous_config
+        shutil.rmtree(config_home, ignore_errors=True)
     print(f"\n{passed}/{len(cases)} cases passed")
     return 0 if failed == 0 else 1
 
