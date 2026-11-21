@@ -140,6 +140,13 @@
             {"name": "p5_benchmark", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p5_benchmark.py", "run", "--workspace", "%WORKSPACE%"], "required": true}
           ]
         },
+        "p6": {
+          "description": "Read-only P6 metrics over the gate and P5 artifacts. No gate changes, no model calls.",
+          "timeout_seconds": 300,
+          "commands": [
+            {"name": "p6_metrics", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p6_metrics.py", "report", "--workspace", "%WORKSPACE%", "--project", "eos"], "required": true}
+          ]
+        },
         "security": {
           "description": "Real secret scan over the engine. Fails if a credential-shaped string is committed in the product.",
           "timeout_seconds": 300,
