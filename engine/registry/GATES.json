@@ -148,6 +148,13 @@
             {"name": "p6_metrics", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p6_metrics.py", "report", "--workspace", "%WORKSPACE%", "--project", "eos"], "required": true}
           ]
         },
+        "p5c": {
+          "description": "Executable P5-C runner, mechanical half: isolated fixtures, hidden oracle, broken/fixed controls, timeout and cancellation. Model execution stays BLOCKED without a provider.",
+          "timeout_seconds": 300,
+          "commands": [
+            {"name": "p5c_validate", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p5c_runner.py", "validate", "--workspace", "%WORKSPACE%"], "required": true}
+          ]
+        },
         "security": {
           "description": "Real secret scan over the engine. Fails if a credential-shaped string is committed in the product.",
           "timeout_seconds": 300,

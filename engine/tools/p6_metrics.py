@@ -107,6 +107,8 @@ def verify_gate(workspace: str, value: dict) -> tuple:
         return "unverifiable", "log header is not parseable"
     if header["suite"] != str(value.get("suite")):
         return "content_mismatch", "log suite differs from the artifact"
+    if header["project"] != str(value.get("project")):
+        return "content_mismatch", "log project differs from the artifact"
     if header["verdict"] != str(value.get("verdict")):
         return "content_mismatch", "log verdict differs from the artifact"
     commands = value.get("commands") or []
@@ -173,7 +175,7 @@ def gates(workspace: str, project: str, limit: int) -> dict:
     details = []
     suites = {}
     failures = {}
-    latest_at = ""
+    suite_last = {}
     valid = 0
     for path in paths:
         value, state = read_json(path)
@@ -187,7 +189,6 @@ def gates(workspace: str, project: str, limit: int) -> dict:
         valid += 1
         suite = str(value.get("suite") or "unknown")
         created = str(value.get("created_at") or "")
-        latest_at = max(latest_at, created)
         item = suites.setdefault(suite, {"runs": 0, "verdicts": Counter(),
                                          "durations": [], "last_at": ""})
         item["runs"] += 1
@@ -195,13 +196,14 @@ def gates(workspace: str, project: str, limit: int) -> dict:
         item["durations"].append(sum(float(command.get("duration_seconds") or 0)
                                      for command in value.get("commands") or []))
         item["last_at"] = max(item["last_at"], created)
+        suite_last[suite] = max(suite_last.get(suite, ""), created)
+        baseline = str((value.get("baseline") or {}).get("label") or "")
         for name in value.get("failures") or []:
-            entry = failures.setdefault(str(name), {
-                "count": 0, "last_at": "", "suites": set(), "baselines": set()})
+            key = (suite, str(name), baseline)
+            entry = failures.setdefault(key, {
+                "count": 0, "last_at": "", "suite": suite, "baseline": baseline})
             entry["count"] += 1
             entry["last_at"] = max(entry["last_at"], created)
-            entry["suites"].add(suite)
-            entry["baselines"].add(str((value.get("baseline") or {}).get("label") or ""))
     for item in suites.values():
         runs = item["runs"]
         item["pass_rate"] = round(item["verdicts"].get("PASS", 0) / runs, 3) if runs else 0.0
@@ -209,14 +211,14 @@ def gates(workspace: str, project: str, limit: int) -> dict:
         item["verdicts"] = dict(item["verdicts"])
         item.pop("durations", None)
     repeated = []
-    for name, entry in sorted(failures.items(), key=lambda pair: (-pair[1]["count"],
-                                                                   pair[0])):
-        active = bool(latest_at) and entry["last_at"] >= latest_at
+    for (suite, name, baseline), entry in sorted(
+            failures.items(), key=lambda pair: (-pair[1]["count"], pair[0])):
+        active = bool(suite_last.get(suite)) and entry["last_at"] >= suite_last[suite]
         repeated.append({
             "commands": [name], "count": entry["count"],
             "last_seen": entry["last_at"], "still_active": active,
-            "affected_suites": sorted(entry["suites"]),
-            "affected_baselines": sorted(item for item in entry["baselines"] if item),
+            "affected_suites": [suite],
+            "affected_baselines": [baseline] if baseline else [],
             "category": classify(name),
         })
     return {"artifacts": len(paths), "valid": valid,
@@ -248,8 +250,9 @@ def p5_metrics(workspace: str, limit: int) -> dict:
         latest = max(valid, key=lambda item: str(item.get("created_at") or ""))
         current_version = str(latest.get("scenario_version"))
     current = []
-    seen_runs = set()
+    seen_runs = {}
     copies = 0
+    conflicts = 0
     historical = 0
     for value in valid:
         if str(value.get("scenario_version")) != current_version:
@@ -258,18 +261,25 @@ def p5_metrics(workspace: str, limit: int) -> dict:
         run_id = str(value.get("run_id") or "")
         if not run_id:
             run_id = "artifact:" + str(value.get("artifact_sha256"))
+        content = str(value.get("content_sha256") or "")
         if run_id in seen_runs:
-            copies += 1
+            if seen_runs[run_id] != content:
+                conflicts += 1
+            else:
+                copies += 1
             continue
-        seen_runs.add(run_id)
+        seen_runs[run_id] = content
         current.append(value)
     current.sort(key=lambda item: str(item.get("created_at") or ""))
-    comparable = len(versions) <= 1
+    comparable = True
     report = {"artifacts": len(paths), "valid": len(valid),
               "states": dict(states), "details": details,
               "versions": versions, "scenario_version": current_version,
+              "historical_versions": [item for item in versions
+                                      if item != current_version],
               "comparable": comparable, "historical": historical,
-              "copies_ignored": copies, "runs": len(current),
+              "copies_ignored": copies, "conflicts": conflicts,
+              "runs": len(current),
               "latest": {}, "previous": {}, "delta": {}}
     if not current:
         report["note"] = ("no verified P5 artifact for the current scenario version"
@@ -346,8 +356,11 @@ def verdict_of(gates_value: dict, p5_value: dict) -> str:
         return UNVERIFIED
     gate_states = gates_value.get("states") or {}
     p5_states = p5_value.get("states") or {}
-    if any(state in ("tampered", "content_mismatch")
-           for state in list(gate_states) + list(p5_states)):
+    bad = {"tampered", "content_mismatch", "corrupt", "wrong_schema",
+           "unsealed", "unverifiable"}
+    if any(state in bad for state in list(gate_states) + list(p5_states)):
+        return PARTIAL
+    if p5_value.get("conflicts", 0):
         return PARTIAL
     if p5_value.get("artifacts", 0) and p5_value.get("runs", 0) == 0:
         return PARTIAL
@@ -455,20 +468,21 @@ def selftest() -> int:
             failed += 1
             print(f"FAIL  {name}: {detail}")
 
-    def gate_file(name, verdict, failed_name="", created="2026-01-01T00:00:00Z"):
+    def gate_file(name, verdict, failed_name="", created="2026-01-01T00:00:00Z",
+                  suite="unit"):
         argv = ["python", "x.py"]
         rc = 0 if verdict == "PASS" else 1
         commands = [{"name": failed_name or "ok", "argv": argv, "exit_code": rc,
                      "timed_out": False, "duration_seconds": 1.0, "required": True}]
         failures = [failed_name] if verdict == "FAIL" else []
         log_name = f"{name}.log"
-        log_text = (f"# EOS gate eos/unit {verdict}\n# baseline x\n\n"
+        log_text = (f"# EOS gate eos/{suite} {verdict}\n# baseline x\n\n"
                     f"$ python x.py  -> rc={rc} timeout=False 1.0s\nout\n")
         log_path = os.path.join(gates_dir, log_name)
         with open(log_path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(log_text)
         value = {"schema": 1, "kind": "quality_gate", "created_at": created,
-                 "project": "eos", "suite": "unit", "verdict": verdict,
+                 "project": "eos", "suite": suite, "verdict": verdict,
                  "commands": commands, "failures": failures,
                  "log": {"path": f".agents/evidence/gates/eos/{log_name}",
                          "sha256": sha256_file(log_path)}}
@@ -544,8 +558,11 @@ def selftest() -> int:
          value["p5"]["states"].get("legacy") == 1, value["p5"]["states"])
     case("the older scenario version is historical",
          value["p5"]["historical"] == 1, value["p5"]["historical"])
-    case("different versions are not compared", value["p5"]["comparable"] is False,
-         value["p5"]["comparable"])
+    case("historical versions are listed and do not block current runs",
+         value["p5"]["historical_versions"] == ["v0"]
+         and value["p5"]["comparable"] is True,
+         {"historical_versions": value["p5"]["historical_versions"],
+          "comparable": value["p5"]["comparable"]})
     case("an old failure is not shown as active",
          all(item["still_active"] is False for item in value["gates"]["historical_failures"]),
          value["gates"]["historical_failures"])
@@ -553,6 +570,50 @@ def selftest() -> int:
          value["evidence"]["provenance"])
     case("VERIFIED never claims trusted provenance",
          value["evidence"]["trusted_provenance"] is False, "trusted")
+
+    # Regression audit (these cases must fail before the fix).
+    mixed = verdict_of({"artifacts": 1, "valid": 1, "invalid": 0,
+                        "states": {"ok": 1}},
+                       {"artifacts": 2, "valid": 1, "runs": 1,
+                        "states": {"ok": 1, "corrupt": 1}})
+    case("a corrupt P5 artifact prevents VERIFIED", mixed != VERIFIED, mixed)
+
+    gate_file("gate-alpha-fail", "FAIL", "unit_test", "2026-01-03T00:00:00Z",
+              suite="alpha")
+    gate_file("gate-beta-pass", "PASS", "", "2026-01-04T00:00:00Z", suite="beta")
+    recency = report(root, "eos")
+    alpha = [item for item in recency["gates"]["repeated_failures"]
+             if "unit_test" in item["commands"]]
+    case("a suite failure stays active against its own suite",
+         bool(alpha) and alpha[0]["still_active"] is True,
+         alpha)
+
+    gate_tamper = gate_file("gate-project", "PASS", "", "2026-01-05T00:00:00Z")
+    gate_tamper["project"] = "other"
+    _write(os.path.join(gates_dir, "gate-project.json"), gate_tamper)
+    project_check = report(root, "eos")
+    case("a changed project field is caught",
+         any(item["file"] == "gate-project.json" and item["state"] == "content_mismatch"
+             for item in project_check["gates"]["details"]),
+         [item for item in project_check["gates"]["details"]
+          if item["file"] == "gate-project.json"])
+
+    p5_file("p5-conflict-a", "run-conflict", "2026-01-06T00:00:00Z", 0)
+    p5_file("p5-conflict-b", "run-conflict", "2026-01-06T01:00:00Z", 1)
+    conflict = report(root, "eos")
+    case("a run_id conflict is reported",
+         conflict["p5"].get("conflicts", 0) >= 1, conflict["p5"].get("conflicts"))
+
+    delta = report(root, "eos")
+    case("historical versions do not block a current delta",
+         delta["p5"]["comparable"] is True and bool(delta["p5"]["delta"]),
+         {"comparable": delta["p5"]["comparable"], "delta": delta["p5"]["delta"]})
+
+    for name in ("gate-alpha-fail", "gate-beta-pass", "gate-project"):
+        os.remove(os.path.join(gates_dir, f"{name}.json"))
+        os.remove(os.path.join(gates_dir, f"{name}.log"))
+    for name in ("p5-conflict-a", "p5-conflict-b"):
+        os.remove(os.path.join(p5_dir, f"{name}.json"))
 
     for name in ("gate-tampered", "gate-log-broken", "gate-corrupt"):
         os.remove(os.path.join(gates_dir, f"{name}.json"))
