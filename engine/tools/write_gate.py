@@ -10,13 +10,14 @@ one place:
 Policy:
 
   map INVALID                  BLOCKED
-  map MISSING/STALE + ATOMIC   allowed, but recorded as dirty
-  map MISSING/STALE + STANDARD/CRITICAL
-                               BLOCKED until preflight/refresh
+  map MISSING/STALE            BLOCKED for every tier until a successful
+                               post-write refresh (0.3.4)
   map CURRENT + EDR            allowed
   map CURRENT + no EDR         needs_decision (the guard prepares an EDR)
   another session's EDR        BLOCKED
   another session's work task  BLOCKED
+  corrupt work state           BLOCKED
+  control-plane evidence path  BLOCKED (use the owning EOS tool)
 
 Commands:
   check --path <file> [--project <id>] [--session <id>] [--json]
@@ -43,20 +44,16 @@ def policy(map_state: str, decision: dict | None) -> dict:
     if map_state == "INVALID":
         return {"allow": False, "needs_decision": False,
                 "reason": "project map is INVALID; repair with project_map create --force"}
+    if map_state in ("MISSING", "STALE"):
+        return {"allow": False, "needs_decision": False,
+                "reason": f"project map is {map_state}; a successful post-write refresh is required"}
     if not decision:
-        if map_state in ("MISSING", "STALE"):
-            return {"allow": False, "needs_decision": True,
-                    "reason": f"project map is {map_state}; preflight must refresh it before a write"}
         return {"allow": False, "needs_decision": True,
                 "reason": "no approved decision covers this path"}
-    risk = str(decision.get("risk") or "UNKNOWN")
-    if map_state == "CURRENT":
-        return {"allow": True, "needs_decision": False, "reason": "map current; decision valid"}
-    if risk == "ATOMIC":
-        return {"allow": True, "needs_decision": False,
-                "reason": f"map {map_state}; ATOMIC change allowed and marked dirty"}
-    return {"allow": False, "needs_decision": False,
-            "reason": f"map {map_state}; {risk} change requires a refreshed map"}
+    return {"allow": True, "needs_decision": False, "reason": "map current; decision valid"}
+
+
+PROTECTED = (".agents/evidence/", ".agents/state/", ".opencode/plugin/", ".eos/")
 
 
 def check(workspace: str, path: str, session: str = "", project: str = "") -> dict:
@@ -66,6 +63,12 @@ def check(workspace: str, path: str, session: str = "", project: str = "") -> di
         return {"schema": SCHEMA, "allow": False, "needs_decision": False,
                 "project": project or "", "map_state": "BLOCKED",
                 "reasons": ["path is outside the workspace (real path)"]}
+    rel = ep.store_path(absolute, workspace).replace("\\", "/")
+    if any(rel == prefix.rstrip("/") or rel.startswith(prefix) for prefix in PROTECTED):
+        return {"schema": SCHEMA, "allow": False, "needs_decision": False,
+                "project": project or "", "map_state": "PROTECTED",
+                "reasons": [f"{rel} is control-plane evidence; use the owning EOS tool, "
+                            f"not a direct write"]}
     if not project:
         project = edr.infer_project(workspace, absolute) or ""
     if not project:
@@ -84,13 +87,18 @@ def check(workspace: str, path: str, session: str = "", project: str = "") -> di
     owner = ""
     try:
         state = ws.load_state(workspace, project)
-        if state and state.get("status") != "closed":
-            owner = str(state.get("session_id") or "")
-            if owner and session and owner != session:
-                verdict = {"allow": False, "needs_decision": False,
-                           "reason": f"work task is owned by session {owner}"}
-    except SystemExit:
-        pass
+    except (SystemExit, ValueError, OSError) as exc:
+        return {"schema": SCHEMA, "allow": False, "needs_decision": False,
+                "project": project, "path": rel, "session": session,
+                "map_state": map_state, "map_coverage": map_value.get("coverage_state", "UNKNOWN"),
+                "map_dirty_files": map_value.get("dirty_files") or [],
+                "decision": "", "risk": "", "owner": "",
+                "reasons": [f"work state is corrupt: {exc}"]}
+    if state and state.get("status") != "closed":
+        owner = str(state.get("session_id") or "")
+        if owner and session and owner != session:
+            verdict = {"allow": False, "needs_decision": False,
+                       "reason": f"work task is owned by session {owner}"}
 
     reasons = [verdict["reason"]]
     if decision.get("reasons"):
@@ -118,13 +126,21 @@ def selftest() -> int:
             return fn
         return wrap
 
-    @case("policy allows ATOMIC on a dirty map and blocks STANDARD")
+    @case("policy blocks every tier on a stale map")
     def _():
         atomic = policy("STALE", {"risk": "ATOMIC"})
-        assert atomic["allow"] is True, atomic
+        assert atomic["allow"] is False, atomic
         standard = policy("STALE", {"risk": "STANDARD"})
         assert standard["allow"] is False, standard
-        return "tiered"
+        missing = policy("MISSING", {"risk": "ATOMIC"})
+        assert missing["allow"] is False, missing
+        return "fail closed"
+
+    @case("policy allows an ATOMIC decision only on a CURRENT map")
+    def _():
+        current = policy("CURRENT", {"risk": "ATOMIC"})
+        assert current["allow"] is True, current
+        return "current only"
 
     @case("policy blocks an invalid map and asks for a decision on CURRENT")
     def _():
@@ -174,6 +190,36 @@ def selftest() -> int:
         assert result["allow"] is False, result
         assert any("work task" in reason for reason in result["reasons"]), result
         return "owner isolated"
+
+    @case("control-plane evidence paths are refused")
+    def _():
+        root = tempfile.mkdtemp(prefix="eos-gate-p-")
+        os.makedirs(os.path.join(root, ".agents", "evidence"))
+        result = check(root, os.path.join(root, ".agents", "evidence", "x.json"), "s1")
+        assert result["allow"] is False, result
+        assert result["map_state"] == "PROTECTED", result
+        return "protected"
+
+    @case("a corrupt work state blocks instead of being swallowed")
+    def _():
+        root = tempfile.mkdtemp(prefix="eos-gate-c-")
+        registry = os.path.join(root, ".agents", "registry")
+        os.makedirs(registry)
+        with open(os.path.join(registry, "PROJECT_PROFILES.json"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            json.dump({"profiles": [{"id": "demo", "path": "proj"}]}, handle)
+        os.makedirs(os.path.join(root, "proj"))
+        open(os.path.join(root, "proj", "a.py"), "w").write("x = 1\n")
+        assert pm.cmd_create(argparse.Namespace(project="demo", workspace=root,
+                                                force=False, project_path="")) == 0
+        state_path = ws.state_path(root, "demo")
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("{not json")
+        result = check(root, os.path.join(root, "proj", "a.py"), "s1", "demo")
+        assert result["allow"] is False, result
+        assert any("corrupt" in reason for reason in result["reasons"]), result
+        return "corrupt blocked"
 
     passed = failed = 0
     for name, fn in cases:

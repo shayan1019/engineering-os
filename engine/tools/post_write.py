@@ -34,12 +34,20 @@ def touch(workspace: str, paths: list, project: str = "", session: str = "") -> 
         project = edr.infer_project(workspace, absolute) or ""
     if not project:
         return {"ok": False, "reason": "project could not be inferred", "paths": paths}
-    result = pm.mark_dirty(project, workspace, paths)
+    result = pm.update_files(project, workspace, paths)
     if not result.get("ok"):
-        return {"ok": False, "project": project, "reason": result.get("reason")}
+        # Fail closed: when the map cannot be updated incrementally, mark the
+        # tree dirty so a risky write must refresh before it proceeds.
+        result = pm.mark_dirty(project, workspace, paths)
+        if not result.get("ok"):
+            return {"ok": False, "project": project, "reason": result.get("reason")}
     epoch = os.path.join(workspace, ".agents", "state", "context.epoch")
     return {"ok": True, "project": project, "session": session,
+            "map_state": "CURRENT",
             "dirty_files": result.get("dirty_files", []),
+            "changed": result.get("changed", []),
+            "skipped": result.get("skipped", []),
+            "coverage_state": result.get("coverage_state", ""),
             "epoch": os.path.getmtime(epoch) if os.path.isfile(epoch) else 0}
 
 
@@ -74,18 +82,40 @@ def selftest() -> int:
                                                 force=False, project_path="")) == 0
         return root
 
-    @case("touch marks the map dirty and changes the epoch")
+    @case("a successful source write updates the map and keeps it CURRENT")
     def _():
         root = fixture()
+        path = os.path.join(root, "proj", "a.py")
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("x = 1\n\ndef added():\n    return 2\n")
         before = touch(root, ["proj/a.py"], "demo", "s1")
         assert before["ok"] is True, before
-        assert pm.verify("demo", root)["state"] == "STALE"
-        return "dirty"
+        assert before["changed"] == ["a.py"], before
+        assert pm.verify("demo", root)["state"] == "CURRENT"
+        value = pm.read_json(pm.store_path(root, "demo"))
+        names = [item["name"] for item in value["modules"][0]["defs"]]
+        assert "added" in names, names
+        return "incremental"
+
+    @case("an artifact write bumps the epoch without staling the map")
+    def _():
+        root = fixture()
+        os.makedirs(os.path.join(root, "proj", ".agents", "evidence"))
+        artifact = os.path.join(root, "proj", ".agents", "evidence", "note.txt")
+        open(artifact, "w", encoding="utf-8").write("ok\n")
+        result = touch(root, ["proj/.agents/evidence/note.txt"], "demo", "s1")
+        assert result["ok"] is True, result
+        assert result["skipped"], result
+        assert pm.verify("demo", root)["state"] == "CURRENT"
+        value = pm.read_json(pm.store_path(root, "demo"))
+        assert ".agents/evidence/note.txt" not in value["sources"]["files"]
+        return "artifact skipped"
 
     @case("refresh restores CURRENT and clears dirty")
     def _():
         root = fixture()
-        touch(root, ["proj/a.py"], "demo", "s1")
+        assert pm.mark_dirty("demo", root, ["proj/a.py"])["ok"] is True
+        assert pm.verify("demo", root)["state"] == "STALE"
         result = refresh("demo", root)
         assert result["ok"] is True, result
         assert pm.verify("demo", root)["state"] == "CURRENT"

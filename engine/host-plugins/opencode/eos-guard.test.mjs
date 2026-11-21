@@ -4,7 +4,10 @@
 // hook is actually invoked.
 import test from "node:test"
 import assert from "node:assert/strict"
-import { classifyShell, summaryOf, permissionDecision } from "./eos-guard.js"
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import guard, { classifyShell, summaryOf, permissionDecision } from "./eos-guard.js"
 
 test("read-only shell commands are allowed", () => {
   for (const command of [
@@ -126,4 +129,72 @@ test("permission write is deferred to the decision engine", () => {
 test("permission read is never denied by the guard", () => {
   const verdict = permissionDecision({ action: "read", resources: ["a.py"] })
   assert.equal(verdict.allow, true)
+})
+
+async function harness(gateAllow) {
+  const workspace = mkdtempSync(join(tmpdir(), "eos-guard-"))
+  const tools = join(workspace, ".agents", "tools")
+  mkdirSync(tools, { recursive: true })
+  const log = join(workspace, "touch.log")
+  writeFileSync(join(tools, "decision.py"),
+    `console.log(JSON.stringify({ok:true,allow:true,decision:"edr-test",reasons:[]}))\n`)
+  writeFileSync(join(tools, "write_gate.py"),
+    `console.log(JSON.stringify({allow:${gateAllow},needs_decision:false,` +
+    `map_state:"CURRENT",decision:"edr-test",reasons:[]}))\n`)
+  writeFileSync(join(tools, "post_write.py"),
+    `require("fs").appendFileSync(process.env.EOS_TOUCH_LOG,` +
+    `process.argv.slice(2).join(" ")+"\\n");` +
+    `console.log(JSON.stringify({ok:true}))\n`)
+  const previousPython = process.env.EOS_PYTHON
+  const previousLog = process.env.EOS_TOUCH_LOG
+  process.env.EOS_PYTHON = process.execPath
+  process.env.EOS_TOUCH_LOG = log
+  const handlers = {}
+  await guard.setup({
+    location: { directory: workspace },
+    session: { hook: async () => {} },
+    tool: { hook: async (name, fn) => { handlers[name] = fn } },
+    permission: { hook: async (name, fn) => { handlers["permission." + name] = fn } },
+  })
+  return {
+    log,
+    before: (input, output) => handlers["execute.before"](input, output),
+    after: (input, output) => handlers["execute.after"](input, output),
+    restore: () => {
+      if (previousPython === undefined) delete process.env.EOS_PYTHON
+      else process.env.EOS_PYTHON = previousPython
+      if (previousLog === undefined) delete process.env.EOS_TOUCH_LOG
+      else process.env.EOS_TOUCH_LOG = previousLog
+    },
+  }
+}
+
+test("an allowed write touches the map only after the write executes", async () => {
+  const host = await harness(true)
+  try {
+    const input = { tool: "write", sessionID: "s-post", callID: "c1" }
+    const output = { args: { filePath: "a.py", content: "x = 1\n" } }
+    await host.before(input, output)
+    assert.equal(existsSync(host.log), false,
+      "the map was touched before the write executed")
+    await host.after(input, { output: "ok" })
+    const text = readFileSync(host.log, "utf8")
+    assert.match(text, /touch --json/)
+    assert.match(text, /a\.py/)
+  } finally {
+    host.restore()
+  }
+})
+
+test("a denied write never touches the map", async () => {
+  const host = await harness(false)
+  try {
+    const input = { tool: "write", sessionID: "s-deny", callID: "c2" }
+    const output = { args: { filePath: "b.py", content: "x = 1\n" } }
+    await assert.rejects(() => host.before(input, output), /EOS BLOCKED/)
+    await host.after(input, { output: "" })
+    assert.equal(existsSync(host.log), false, "a denied write touched the map")
+  } finally {
+    host.restore()
+  }
 })

@@ -24,6 +24,7 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -226,16 +227,21 @@ def build(project: str, workspace: str, previous: dict | None = None,
         parser = ("python-ast" if rel in py else
                   "js-regex-v1" if rel in js else
                   "mql-lexical-v1" if rel in mql else "none")
+        parse_state = info.get("parse")
+        if parser != "python-ast" and parse_state in ("OK", "EMPTY"):
+            # A regex/lexical adapter is not a parser: it must never be
+            # reported as a complete parse (0.3.4 coverage honesty).
+            parse_state = "PARTIAL"
         modules.append({
-            "path": rel, "module": module, "parser": parser, "parse": info.get("parse"),
+            "path": rel, "module": module, "parser": parser, "parse": parse_state,
             "imports": [{"module": item.get("module"), "names": item.get("names") or []}
                         for item in (info.get("imports") or [])],
             "defs": [{"name": item.get("name"), "kind": item.get("kind")}
                      for item in (info.get("defs") or [])],
         })
-        if info.get("parse") == "PARTIAL":
+        if parse_state == "PARTIAL":
             unknowns.append(f"lexical/partial parser only: {rel}")
-        elif info.get("parse") not in ("OK", "EMPTY"):
+        elif parse_state not in ("OK", "EMPTY"):
             unknowns.append(f"parse failed: {rel}")
         if info.get("dynamic"):
             unknowns.append(f"dynamic import/getattr: {rel}")
@@ -289,7 +295,7 @@ def build(project: str, workspace: str, previous: dict | None = None,
         unknowns.append(f"{len(unsupported)} source file(s) have no parser adapter")
     if not files:
         coverage_state = "NONE"
-    elif not unsupported and not unknowns and topology:
+    elif py and not js and not mql and not unsupported and not unknowns and topology:
         coverage_state = "FULL"
     else:
         coverage_state = "PARTIAL"
@@ -356,6 +362,8 @@ def verify(project: str, workspace: str) -> dict:
     recorded_git = value.get("git") or {}
     if recorded_git.get("head") != current_git.get("head"):
         reasons.append("git HEAD changed")
+    if (recorded_git.get("branch") or "") != (current_git.get("branch") or ""):
+        reasons.append("git branch changed")
     if bool(recorded_git.get("dirty")) != bool(current_git.get("dirty")):
         reasons.append("worktree dirty state changed")
     if value.get("dirty_files"):
@@ -410,6 +418,174 @@ def excerpt(project: str, workspace: str, max_lines: int = 30) -> str:
         lines.append("  unknowns:")
         lines.extend(f"    - {item}" for item in value["unknowns"][:5])
     return "\n".join(lines[:max_lines])
+
+
+def parse_entry(root: str, rel: str):
+    if rel.lower().endswith(".py"):
+        text = impact_tool.read_text(os.path.join(root, rel))
+        if not text:
+            return {"module": rel, "parse": "EMPTY", "imports": [], "defs": [], "dynamic": False}
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return {"module": rel, "parse": "FAILED", "imports": [], "defs": [], "dynamic": False}
+        imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.append({"module": alias.name, "names": []})
+            elif isinstance(node, ast.ImportFrom):
+                imports.append({"module": node.module or "",
+                                "names": [a.name for a in node.names]})
+        defs = []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                defs.append({"name": node.name, "kind": type(node).__name__})
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id.isupper():
+                        defs.append({"name": target.id, "kind": "constant"})
+        return {"module": rel[:-3].replace("/", ".").replace(".__init__", ""),
+                "parse": "OK", "imports": imports, "defs": defs,
+                "dynamic": any(token in text for token in ("importlib", "__import__(", "getattr("))}
+    if rel.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")):
+        return js_index(root, [rel]).get(rel)
+    if rel.lower().endswith((".mq4", ".mq5", ".mqh")):
+        return mql_index(root, [rel]).get(rel)
+    return None
+
+
+def update_files(project: str, workspace: str, files: list) -> dict:
+    """File-level incremental update. Only the changed files are parsed; import
+    edges are recomputed from the stored module table."""
+    path = store_path(workspace, project)
+    if not os.path.isfile(path):
+        return {"ok": False, "reason": "map missing"}
+    value = read_json(path)
+    if map_hash(value) != value.get("map_sha256"):
+        return {"ok": False, "reason": "map corrupt"}
+    root, _ = project_root(project, workspace, value.get("project_path", ""))
+    root_real = os.path.realpath(root)
+    sources = dict((value.get("sources") or {}).get("files") or {})
+    modules = {item["path"]: item for item in value.get("modules") or []}
+    tests = {item["path"]: item for item in value.get("tests") or []}
+    contracts = [item for item in value.get("contracts") or []]
+    unknowns = list(value.get("unknowns") or [])
+    changed, problems, skipped = [], [], []
+
+    for raw in files:
+        absolute = os.path.realpath(os.path.abspath(os.path.join(workspace, raw)))
+        if not (absolute == root_real or absolute.startswith(root_real + os.sep)):
+            problems.append(f"outside the project: {raw}")
+            continue
+        rel = os.path.relpath(absolute, root).replace("\\", "/")
+        entry = parse_entry(root, rel) if os.path.isfile(absolute) else None
+        if rel not in sources and entry is None:
+            # Evidence, artifacts and logs live inside the project tree but are
+            # not project sources. They dirty the tree; they must not pollute the
+            # module table (0.3.4).
+            skipped.append(rel)
+            continue
+        changed.append(rel)
+        contracts = [item for item in contracts if item.get("path") != rel]
+        tests.pop(rel, None)
+        unknowns = [item for item in unknowns if rel not in item]
+        if not os.path.isfile(absolute):
+            sources.pop(rel, None)
+            modules.pop(rel, None)
+            continue
+        sources[rel] = {"sha256": sha256_file(absolute), "bytes": os.path.getsize(absolute)}
+        if entry:
+            parser = ("python-ast" if rel.endswith(".py") else
+                      "js-regex-v1" if rel.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")) else
+                      "mql-lexical-v1")
+            parse_state = entry.get("parse")
+            if parser != "python-ast" and parse_state in ("OK", "EMPTY"):
+                parse_state = "PARTIAL"
+            modules[rel] = {
+                "path": rel, "module": entry.get("module") or rel,
+                "parser": parser,
+                "parse": parse_state,
+                "imports": entry.get("imports") or [],
+                "defs": entry.get("defs") or [],
+            }
+            if parse_state == "PARTIAL":
+                unknowns.append(f"lexical/partial parser only: {rel}")
+            elif parse_state not in ("OK", "EMPTY"):
+                unknowns.append(f"parse failed: {rel}")
+            if entry.get("dynamic"):
+                unknowns.append(f"dynamic import/getattr: {rel}")
+            if impact_tool.testish(rel):
+                tests[rel] = {"path": rel, "reason": "test file"}
+            if any(token in rel.lower() for token in
+                   ("route", "schema", "contract", "api", "endpoint", "bridge", "protocol")):
+                for item in entry.get("defs") or []:
+                    if not str(item.get("name", "")).startswith("_"):
+                        contracts.append({"path": rel, "symbol": item.get("name"),
+                                          "kind": "exported_api", "confidence": "MEDIUM"})
+        else:
+            modules.pop(rel, None)
+
+    module_to_file = {item.get("module", rel): rel for rel, item in modules.items()}
+    edges = []
+    for rel, item in modules.items():
+        module = item.get("module", rel)
+        for imp in item.get("imports") or []:
+            target = imp.get("module") or ""
+            target_file = module_to_file.get(target)
+            if not target_file and target.startswith("."):
+                target_file = resolve_js(root, rel, target)
+            if not target_file and target:
+                target_tail = target.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[-1]
+                for candidate, candidate_file in module_to_file.items():
+                    if candidate.endswith("." + target_tail) or candidate == target_tail:
+                        target_file = candidate_file
+                        break
+            if target_file and target_file != rel:
+                edges.append({"from": rel, "to": target_file, "kind": "import",
+                              "confidence": "HIGH" if target_file == module_to_file.get(target) else "MEDIUM",
+                              "evidence": f"{rel}: imports {target}"})
+
+    parsers = {"python-ast": 0, "js-regex-v1": 0, "mql-lexical-v1": 0, "unsupported": 0}
+    for item in modules.values():
+        parsers[item.get("parser") or "unsupported"] = parsers.get(item.get("parser") or "unsupported", 0) + 1
+    parsers["unsupported"] = len([rel for rel in sources if rel not in modules])
+    coverage = dict(value.get("coverage") or {})
+    coverage["ast"] = "FULL" if parsers["python-ast"] else "NONE"
+    coverage["js"] = "PARTIAL" if parsers["js-regex-v1"] else "NONE"
+    coverage["mql"] = "PARTIAL" if parsers["mql-lexical-v1"] else "NONE"
+    if not sources:
+        coverage_state = "NONE"
+    elif parsers["python-ast"] and not parsers["js-regex-v1"] and not parsers["mql-lexical-v1"] \
+            and not parsers["unsupported"] and not unknowns and (value.get("topology") or {}).get("used"):
+        coverage_state = "FULL"
+    else:
+        coverage_state = "PARTIAL"
+
+    value.update({
+        "generated_at": utc_now(), "mode": "incremental",
+        "git": git_state(root),
+        "sources": {"count": len(sources), "files": dict(sorted(sources.items()))},
+        "modules": list(modules.values()),
+        "edges": edges,
+        "tests": list(tests.values()),
+        "contracts": contracts,
+        "parsers": parsers,
+        "coverage": coverage,
+        "coverage_state": coverage_state,
+        "unknowns": sorted(set(unknowns)),
+        "dirty_files": [],
+        "dirty_at": "",
+    })
+    value["map_sha256"] = map_hash(value)
+    write_json(path, value)
+    epoch = os.path.join(workspace, ".agents", "state", "context.epoch")
+    os.makedirs(os.path.dirname(epoch), exist_ok=True)
+    with open(epoch, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(utc_now() + " incremental " + str(len(changed)) + "\n")
+    return {"ok": True, "changed": changed, "problems": problems,
+            "skipped": skipped, "coverage_state": coverage_state,
+            "edges": len(edges)}
 
 
 def mark_dirty(project: str, workspace: str, files: list) -> dict:
@@ -592,6 +768,46 @@ def selftest() -> int:
         assert cmd_update(argparse.Namespace(project="demo", workspace=root)) == 0
         assert verify("demo", root)["state"] == "CURRENT"
         return "current"
+
+    @case("a JS adapter is reported PARTIAL, never a full parse")
+    def _():
+        root = fixture()
+        with open(os.path.join(root, "proj", "app.js"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            handle.write("export function go() { return 1 }\n")
+        assert cmd_create(argparse.Namespace(project="demo", workspace=root,
+                                             force=False)) == 0
+        value = read_json(store_path(root, "demo"))
+        js = [item for item in value["modules"] if item["path"] == "app.js"][0]
+        assert js["parse"] == "PARTIAL", js
+        assert value["coverage"]["js"] == "PARTIAL", value["coverage"]
+        assert value["coverage_state"] == "PARTIAL", value["coverage_state"]
+        return "honest coverage"
+
+    @case("a Git branch change makes the map STALE")
+    def _():
+        import subprocess
+
+        root = fixture()
+        project = os.path.join(root, "proj")
+
+        def git(*args):
+            return subprocess.run(["git", "-C", project, *args],
+                                  capture_output=True, text=True, timeout=30)
+
+        git("init")
+        git("config", "user.email", "eos@test")
+        git("config", "user.name", "eos")
+        git("add", ".")
+        git("commit", "-m", "init")
+        assert cmd_create(argparse.Namespace(project="demo", workspace=root,
+                                             force=False)) == 0
+        assert verify("demo", root)["state"] == "CURRENT"
+        git("checkout", "-b", "other")
+        result = verify("demo", root)
+        assert result["state"] == "STALE", result
+        assert any("git branch changed" in reason for reason in result["reasons"]), result
+        return "branch invalidated"
 
     @case("an unregistered project is mapped from an explicit path")
     def _():

@@ -108,17 +108,27 @@ _TEXT_CACHE = {}
 
 
 def read_text(path: str) -> str:
-    if path in _TEXT_CACHE:
-        return _TEXT_CACHE[path]
+    # The cache key includes mtime and size: an incremental update in the same
+    # process must see the bytes the write just produced, not the previous
+    # content (found in the 0.3.4 post-write test).
     try:
-        if os.path.getsize(path) > MAX_FILE_BYTES:
-            _TEXT_CACHE[path] = ""
+        stat = os.stat(path)
+    except OSError:
+        return ""
+    key = (path, stat.st_mtime_ns, stat.st_size)
+    if key in _TEXT_CACHE:
+        return _TEXT_CACHE[key]
+    try:
+        if stat.st_size > MAX_FILE_BYTES:
+            _TEXT_CACHE[key] = ""
             return ""
         with open(path, encoding="utf-8-sig", errors="replace") as handle:
             value = handle.read()
     except OSError:
         value = ""
-    _TEXT_CACHE[path] = value
+    if len(_TEXT_CACHE) > 4096:
+        _TEXT_CACHE.clear()
+    _TEXT_CACHE[key] = value
     return value
 
 

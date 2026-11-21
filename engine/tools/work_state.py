@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -62,6 +63,52 @@ def state_path(workspace: str, project: str) -> str:
 
 def events_path(workspace: str, project: str) -> str:
     return os.path.join(root(workspace, project), "events.jsonl")
+
+
+def lock_path(workspace: str, project: str) -> str:
+    return os.path.join(root(workspace, project), ".lock")
+
+
+def acquire_lock(workspace: str, project: str, session: str, owner: str,
+                 ttl_seconds: int = 120):
+    """A short-lived writer lease. A second session cannot mutate the state
+    while a live lease exists; an old lease can be reclaimed."""
+    path = lock_path(workspace, project)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    for attempt in (1, 2):
+        try:
+            handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(handle, json.dumps({"pid": os.getpid(), "session": session,
+                                         "owner": owner, "ts": time.time()}).encode("utf-8"))
+            return handle, path
+        except FileExistsError:
+            try:
+                data = read_json(path)
+            except (OSError, json.JSONDecodeError):
+                data = {}
+            age = time.time() - float(data.get("ts") or 0)
+            if data.get("session") == session or age > ttl_seconds:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                if attempt == 2:
+                    raise SystemExit(f"BLOCKED: work state is locked by {data.get('session')}")
+                continue
+            raise SystemExit(f"BLOCKED: work state is locked by session {data.get('session')} "
+                             f"({age:.0f}s)")
+    raise SystemExit("BLOCKED: work state lock could not be acquired")
+
+
+def release_lock(handle, path: str) -> None:
+    try:
+        os.close(handle)
+    except OSError:
+        pass
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def read_json(path: str):
@@ -160,6 +207,15 @@ def guard_owner(state: dict, session: str, takeover: bool, reason: str) -> bool:
 
 def cmd_start(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
+    handle, path = acquire_lock(workspace, args.project, args.session,
+                                args.owner or args.session)
+    try:
+        return _start(args, workspace)
+    finally:
+        release_lock(handle, path)
+
+
+def _start(args, workspace: str) -> int:
     existing = None
     try:
         existing = load_state(workspace, args.project)
@@ -187,6 +243,15 @@ def cmd_start(args) -> int:
 
 def cmd_update(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
+    handle, path = acquire_lock(workspace, args.project, args.session,
+                                args.owner or args.session)
+    try:
+        return _update(args, workspace)
+    finally:
+        release_lock(handle, path)
+
+
+def _update(args, workspace: str) -> int:
     try:
         state = load_state(workspace, args.project)
     except SystemExit as exc:
@@ -233,6 +298,15 @@ def cmd_update(args) -> int:
 
 def cmd_close(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
+    handle, path = acquire_lock(workspace, args.project, args.session,
+                                args.owner or args.session)
+    try:
+        return _close(args, workspace)
+    finally:
+        release_lock(handle, path)
+
+
+def _close(args, workspace: str) -> int:
     try:
         state = load_state(workspace, args.project)
     except SystemExit as exc:
@@ -404,6 +478,47 @@ def selftest() -> int:
         assert allowed == 0
         assert load_state(root, "demo")["task"] == "new"
         return "supersede guarded"
+
+    @case("a live lease blocks another session and a stale lease is reclaimed")
+    def _():
+        root = workspace()
+        handle, path = acquire_lock(root, "demo", "s1", "a")
+        try:
+            try:
+                acquire_lock(root, "demo", "s2", "b")
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("a live lease was ignored")
+        finally:
+            release_lock(handle, path)
+        with open(lock_path(root, "demo"), "w", encoding="utf-8", newline="\n") as handle_file:
+            json.dump({"pid": 1, "session": "old", "owner": "x", "ts": 0}, handle_file)
+        handle, path = acquire_lock(root, "demo", "s2", "b")
+        release_lock(handle, path)
+        return "lease"
+
+    @case("two real processes cannot both become the writer")
+    def _():
+        import subprocess
+        root = workspace()
+        script = os.path.abspath(__file__)
+        children = []
+        for session in ("p1", "p2"):
+            children.append(subprocess.Popen(
+                [sys.executable, script, "start", "--project", "demo",
+                 "--task", "race", "--session", session, "--owner", session,
+                 "--new", "--workspace", root],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
+        outputs = [child.communicate(timeout=120)[0] for child in children]
+        codes = [child.returncode for child in children]
+        assert codes.count(0) == 1, (codes, outputs)
+        loser = [text for text, code in zip(outputs, codes) if code != 0][0]
+        assert "BLOCKED" in loser, loser
+        state = load_state(root, "demo")
+        winner = "p1" if codes[0] == 0 else "p2"
+        assert state["session_id"] == winner, (state, codes)
+        return "exactly one writer"
 
     @case("a corrupt state is refused and recover restores the event state")
     def _():

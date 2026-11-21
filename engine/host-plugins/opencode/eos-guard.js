@@ -324,17 +324,51 @@ function askWriteGate(engine, python, workspace, path, session, timeoutMs = 1200
   })
 }
 
-function touchWrite(engine, python, workspace, path, session) {
-  try {
-    const child = spawn(python, [
-      join(engine, "tools", "post_write.py"), "touch",
-      "--workspace", workspace, "--path", path, "--session", String(session || ""),
-    ], { cwd: workspace, windowsHide: true, stdio: "ignore" })
-    child.on("error", () => {})
-  } catch {
-    // A failed touch cannot turn an allowed write into a denial; the next
-    // preflight will still see a changed source hash.
-  }
+function touchWrite(engine, python, workspace, path, session, timeoutMs = TIMEOUT_MS) {
+  // The post-write must be awaited: the next gate check has to see the map the
+  // write produced, not the map from before it (0.3.4).
+  return new Promise((resolvePromise) => {
+    let settled = false
+    let child
+    const done = (value) => {
+      if (!settled) { settled = true; resolvePromise(value) }
+    }
+    try {
+      child = spawn(python, [
+        join(engine, "tools", "post_write.py"), "touch", "--json",
+        "--workspace", workspace, "--path", path, "--session", String(session || ""),
+      ], { cwd: workspace, windowsHide: true })
+    } catch (error) {
+      done({ ok: false, reason: `post-write failed: ${error.message}` })
+      return
+    }
+    const timer = setTimeout(() => {
+      done({ ok: false, reason: "post-write timeout" })
+      try { child.kill() } catch { /* already gone */ }
+    }, timeoutMs)
+    let out = ""
+    child.stdout.on("data", (chunk) => { if (out.length < 100000) out += chunk.toString() })
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      done({ ok: false, reason: `post-write failed: ${error.message}` })
+    })
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      const lines = out.trim().split(/\r?\n/).filter(Boolean)
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        try {
+          const parsed = JSON.parse(lines[index])
+          if (parsed && typeof parsed.ok === "boolean") {
+            done({ ...parsed, ok: code === 0 && parsed.ok === true })
+            return
+          }
+        } catch {
+          // not the JSON line
+        }
+      }
+      done({ ok: false, reason: `post-write produced no JSON (rc=${code})` })
+    })
+  })
 }
 
 function writeTarget(tool, args) {
@@ -444,11 +478,45 @@ export function summaryOf(tool, args) {
   }
 }
 
+export function createWriteQueue(ttlMs = 5 * 60 * 1000, limit = 64) {
+  // A write is queued when the guard allows it and dequeued only after the host
+  // reports that it executed. Marking the map before the write is a lie when
+  // the write fails; that was the 0.3.3 defect this queue removes.
+  const items = []
+  const fresh = (item) => Date.now() - item.at < ttlMs
+  return {
+    note(path, session) {
+      items.push({ path, session, at: Date.now() })
+      while (items.length > limit) items.shift()
+    },
+    take(session, summary) {
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index]
+        if (!fresh(item)) { items.splice(index, 1); continue }
+        if (item.session !== session) continue
+        if (summary && summary.path && item.path !== summary.path) continue
+        items.splice(index, 1)
+        return item
+      }
+      return null
+    },
+    size() {
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        if (!fresh(items[index])) items.splice(index, 1)
+      }
+      return items.length
+    },
+  }
+}
+
 async function install(ctx, options) {
   const workspace = workspaceOf(ctx, options && options.workspace)
   const { engine, python } = engineFor(workspace)
   const cache = new Map()
   const sessionTasks = new Map()
+  const writes = createWriteQueue()
+  const noteWrite = writes.note
+  const takeWrite = writes.take
   let enforcement = "unknown"
   let hooks = []
   let permissionHookAvailable = false
@@ -506,7 +574,7 @@ async function install(ctx, options) {
           `Reasons: ${(gate.reasons || []).join("; ").slice(0, MAX_REASON)}`)
       }
       if (gate.allow) {
-        touchWrite(engine, python, workspace, path, sessionID)
+        noteWrite(path, sessionID)
         record(workspace, sessionID, { ...summary, verdict: "ALLOW",
           decision: gate.decision || "", reason: `write gate: map=${gate.map_state}` })
         return
@@ -515,7 +583,7 @@ async function install(ctx, options) {
       if (!decision.ok) {
         const auto = await allowAtomic(sessionID, path)
         if (auto.ok) {
-          touchWrite(engine, python, workspace, path, sessionID)
+          noteWrite(path, sessionID)
           record(workspace, sessionID, { ...summary, verdict: "ALLOW",
             decision: auto.decision, reason: "auto ATOMIC decision" })
           return
@@ -526,7 +594,7 @@ async function install(ctx, options) {
           `EOS tried to prepare one automatically: ${(auto.reasons || []).join("; ").slice(0, MAX_REASON)}. ` +
           `Next: ${auto.next || "open a decision with auto_decision.py prepare"}`)
       }
-      touchWrite(engine, python, workspace, path, sessionID)
+      noteWrite(path, sessionID)
       record(workspace, sessionID, { ...summary, verdict: "ALLOW", decision: decision.decision })
       return
     }
@@ -588,7 +656,7 @@ async function install(ctx, options) {
         return
       }
       if (gate.allow) {
-        touchWrite(engine, python, workspace, path, input.sessionID)
+        noteWrite(path, input.sessionID)
         record(workspace, input.sessionID, {
           kind: "permission", action: "write", resource: path,
           verdict: "ALLOW", decision: gate.decision || "",
@@ -600,7 +668,7 @@ async function install(ctx, options) {
       if (!decision.ok) {
         const auto = await allowAtomic(input.sessionID, path)
         if (auto.ok) {
-          touchWrite(engine, python, workspace, path, input.sessionID)
+          noteWrite(path, input.sessionID)
           record(workspace, input.sessionID, {
             kind: "permission", action: "write", resource: path,
             verdict: "ALLOW", decision: auto.decision, reason: "auto ATOMIC decision",
@@ -614,7 +682,7 @@ async function install(ctx, options) {
         })
         return
       }
-      touchWrite(engine, python, workspace, path, input.sessionID)
+      noteWrite(path, input.sessionID)
       record(workspace, input.sessionID, {
         kind: "permission", action: "write", resource: path,
         verdict: "ALLOW", decision: decision.decision,
@@ -626,9 +694,26 @@ async function install(ctx, options) {
     if (ctx && ctx.tool && typeof ctx.tool.hook === "function") {
       await ctx.tool.hook("execute.before", onBefore)
       await ctx.tool.hook("execute.after", async (input, output) => {
+        const tool = String(input && input.tool || "")
+        const summary = summaryOf(tool, input && input.args)
+        const pending = WRITE_TOOLS.has(tool)
+          ? takeWrite(input && input.sessionID, summary)
+          : null
+        let touched = null
+        if (pending) {
+          touched = await touchWrite(engine, python, workspace, pending.path,
+                                     input && input.sessionID)
+          record(workspace, input && input.sessionID, {
+            kind: "post-write", path: pending.path,
+            verdict: touched.ok ? "TOUCHED" : "TOUCH_FAILED",
+            map_state: touched.map_state || "",
+            reason: touched.reason || "",
+          })
+        }
         record(workspace, input && input.sessionID, {
-          ...summaryOf(String(input && input.tool || ""), input && input.args),
+          ...summary,
           verdict: "AFTER",
+          post_write: touched ? (touched.ok ? "done" : "failed") : "not-a-write",
           output_sha256: sha256(output && output.output || "").slice(0, 32),
           output_chars: String(output && output.output || "").length,
         })
