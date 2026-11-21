@@ -145,6 +145,110 @@ def build_plan(workspace: str, project: str, decision_id: str, branch: str) -> d
     }
 
 
+TAG_RE = re.compile(r"^v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
+
+
+def build_tag_plan(workspace: str, project: str, decision_id: str, tag: str) -> dict:
+    problems = []
+    if not TAG_RE.match(tag or ""):
+        problems.append(f"tag is not a version: {tag!r}")
+    try:
+        record = edr.load(workspace, project, decision_id)
+    except edr.DecisionError as exc:
+        return {"schema": SCHEMA, "verdict": "BLOCKED", "problems": [str(exc)],
+                "files": [], "repo": "", "head": "", "remote": ""}
+    problems.extend(edr.integrity(record))
+    if record.get("state") != "CLOSED":
+        problems.append(f"decision is {record.get('state')}, not CLOSED")
+    gate = record.get("gate") or {}
+    if not gate.get("ok") or gate.get("verdict") != "PASS":
+        problems.append("decision has no verified PASS gate")
+    gate_path = ep.load_stored_path(gate.get("path", ""), workspace)
+    if not gate.get("path") or not os.path.isfile(gate_path):
+        problems.append("gate artifact is missing")
+    elif edr.sha256_file(gate_path) != gate.get("sha256"):
+        problems.append("gate artifact changed after verification")
+
+    files, file_problems = decision_files(workspace, record)
+    problems.extend(file_problems)
+    repo, repo_problem = repo_for(files)
+    if repo_problem:
+        problems.append(repo_problem)
+
+    head, remote = "", ""
+    if repo:
+        status = [line for line in git(repo, ["status", "--porcelain=v1"]).stdout.splitlines()
+                  if line.strip() and not line.startswith("??")]
+        if status:
+            problems.append("tracked files are modified; commit the release first")
+        head = git(repo, ["rev-parse", "HEAD"]).stdout.strip()
+        if git(repo, ["rev-parse", "--verify", "--quiet", "refs/tags/" + tag]).returncode == 0:
+            problems.append(f"tag already exists locally: {tag}")
+        remote = git(repo, ["remote", "get-url", "origin"]).stdout.strip()
+        if remote:
+            found = git(repo, ["ls-remote", "--tags", "origin", "refs/tags/" + tag])
+            if found.stdout.strip():
+                problems.append(f"tag already exists on origin: {tag}")
+    return {"schema": SCHEMA, "verdict": "READY" if not problems else "BLOCKED",
+            "project": project, "decision": decision_id, "tag": tag, "repo": repo,
+            "head": head, "remote": remote, "files": files, "problems": problems}
+
+
+def cmd_tag(args) -> int:
+    workspace = ep.resolve_workspace(args.workspace)
+    plan = build_tag_plan(workspace, args.project, args.decision, args.tag)
+    if plan["verdict"] != "READY":
+        print("BLOCKED: the tag plan is not ready")
+        for problem in plan["problems"]:
+            print(f"  - {problem}")
+        return 1
+    repo = plan["repo"]
+    message = args.message or f"EOS {args.tag}"
+    created = git(repo, ["tag", "-a", args.tag, "-m", message])
+    if created.returncode != 0:
+        print("BLOCKED: git tag failed")
+        print((created.stdout + created.stderr).strip()[:800])
+        return 1
+    remote_sha = ""
+    pushed = False
+    if args.push:
+        if not plan.get("remote"):
+            print(f"BLOCKED: tag {args.tag} created locally, but no origin remote is configured")
+            return 1
+        push = git(repo, ["push", "origin", args.tag], timeout=180)
+        if push.returncode != 0:
+            print(f"BLOCKED: tag {args.tag} created locally, push failed")
+            print((push.stdout + push.stderr).strip()[-500:])
+            return 1
+        remote = git(repo, ["ls-remote", "--tags", "origin"])
+        for line in remote.stdout.splitlines():
+            if not line.strip():
+                continue
+            sha, ref = line.split("\t", 1)
+            if ref == f"refs/tags/{args.tag}^{{}}":
+                remote_sha = sha
+            elif not remote_sha and ref == f"refs/tags/{args.tag}":
+                remote_sha = sha
+        if remote_sha != plan["head"]:
+            print(f"BLOCKED: remote tag SHA {remote_sha or '(missing)'} != local {plan['head']}")
+            return 1
+        pushed = True
+    receipt = write_receipt(workspace, {
+        "schema": SCHEMA, "kind": "ship_tag", "created_at": utc_now(),
+        "project": args.project, "decision": args.decision, "tag": args.tag,
+        "commit": plan["head"], "files": plan["files"], "pushed": pushed,
+        "remote": plan.get("remote", ""), "remote_sha": remote_sha,
+    })
+    if args.json:
+        print(json.dumps({"ok": True, "tag": args.tag, "commit": plan["head"],
+                          "remote_sha": remote_sha, "receipt": receipt},
+                         ensure_ascii=True))
+    else:
+        print(f"PASS: tag {args.tag} @ {plan['head'][:12]} (pushed={pushed})")
+        print(f"  receipt: {ep.store_path(receipt, workspace)}")
+    return 0
+
+
 def cmd_plan(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
     plan = build_plan(workspace, args.project, args.decision, args.branch)
@@ -351,6 +455,26 @@ def selftest() -> int:
         assert remote_sha == local_sha
         return "pushed"
 
+    @case("a release tag points at the pushed commit")
+    def _():
+        root = fixture()
+        remote = tempfile.mkdtemp(prefix="eos-remote-tag-")
+        git(remote, ["init", "--bare", "-q"])
+        git(root, ["remote", "add", "origin", remote])
+        decision_id = closed(root)
+        apply_args = argparse.Namespace(project="eos", decision=decision_id,
+                                        branch="eos/t3", message="test", push=True,
+                                        workspace=root)
+        assert cmd_apply(apply_args) == 0
+        tag_args = argparse.Namespace(project="eos", decision=decision_id,
+                                      tag="v1.0.0", message="release", push=True,
+                                      json=False, workspace=root)
+        assert cmd_tag(tag_args) == 0
+        local_sha = git(root, ["rev-parse", "HEAD"]).stdout.strip()
+        remote_sha = git(remote, ["rev-parse", "refs/tags/v1.0.0^{}"]).stdout.strip()
+        assert remote_sha == local_sha, (remote_sha, local_sha)
+        return "tag pushed"
+
     @case("an unclosed decision cannot ship")
     def _():
         root = fixture()
@@ -395,6 +519,13 @@ def main() -> int:
     p.add_argument("--message", default="")
     p.add_argument("--push", action="store_true")
     p.set_defaults(func=cmd_apply)
+    p = sub.add_parser("tag", parents=[common])
+    p.add_argument("--decision", required=True)
+    p.add_argument("--tag", required=True)
+    p.add_argument("--message", default="")
+    p.add_argument("--push", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_tag)
     p = sub.add_parser("selftest")
     p.set_defaults(func=lambda _args: selftest())
     args = parser.parse_args()
