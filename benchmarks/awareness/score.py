@@ -329,6 +329,32 @@ def cmd_compare(args) -> int:
     return 0
 
 
+def cmd_adversarial(args) -> int:
+    """A keyword-only answer must not earn discovery or correctness."""
+    scenario = SCENARIOS.get(args.scenario)
+    if not scenario:
+        raise SystemExit(f"unknown scenario: {args.scenario}")
+    root = Path(tempfile.mkdtemp(prefix=f"eos-adversarial-{args.scenario}-"))
+    materialise(scenario, root)
+    text = " ".join(signal for blind in scenario["blind_spots"]
+                    for signal in blind.get("signals") or [])
+    agent = {
+        "findings": [{"severity": "blocker", "claim": text, "evidence": ["fake"]}],
+        "decision": {"approach": text, "alternatives": ["a", "b"],
+                     "assumptions": ["a"], "why": text},
+        "self_correction": [{"wrong": "x", "detected_by": "y", "fix": "z",
+                             "evidence": ["fake"]}],
+        "scope": {}, "closure": {},
+    }
+    value = score_tree(scenario, root, agent, {})
+    ok = value["discovery"] == 0.0 and value["correctness"] < 0.5
+    print(f"ADVERSARIAL {args.scenario}: discovery={value['discovery']:.2f} "
+          f"correctness={value['correctness']:.2f} overall={value['overall']:.2f} "
+          f"{'PASS' if ok else 'FAIL'}")
+    shutil.rmtree(root, ignore_errors=True)
+    return 0 if ok else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="score.py", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -345,6 +371,9 @@ def main() -> int:
     p.add_argument("--old", required=True)
     p.add_argument("--new", required=True)
     p.set_defaults(func=cmd_compare)
+    p = sub.add_parser("adversarial")
+    p.add_argument("--scenario", required=True)
+    p.set_defaults(func=cmd_adversarial)
     args = parser.parse_args()
     return int(args.func(args))
 
