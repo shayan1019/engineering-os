@@ -37,10 +37,12 @@ The real comparison is the 12-scenario suite and the open-source transfer set.
 
 | Metric | Definition |
 |---|---|
-| discovery | unstated blind spots the agent names in its findings |
+| diagnosis | unstated blind spots the agent names with a real source citation (file/line); independent of whether the file changed |
+| discovery | alias of diagnosis, kept for older result files |
 | judgment | alternatives, assumptions and the correctness rationale in its decision |
-| correctness | oracle checks on the resulting tree |
-| self-correction | a recorded wrong attempt, how it was detected and what changed |
+| application | oracle checks on the resulting tree; 0 when the guard blocked the write |
+| authorization | ALLOWED / BLOCKED / UNKNOWN |
+| self-correction | a recorded wrong attempt, how it was detected and what changed, with a real source citation |
 | scope | changed files outside the allowed set, forbidden files touched |
 | regression | the fixture's own tests still pass |
 | closure | the oracle checks pass twice (no flaky or partial fix) |
@@ -53,19 +55,24 @@ correctness scores stay independent.
 
 ## Scorer anti-gaming rules
 
-- Discovery counts a blind spot only when the report names it **and** the file
-  the blind spot declares in `evidence` actually changed.
-- Correctness comes from hidden oracle checks, never from the report.
-- Self-correction needs `wrong`, `detected_by`, `fix` and `evidence` that names
-  a changed file.
+- Diagnosis counts a blind spot only when the report names it **and** cites a
+  real source file (and, when given, a real line) from the blind spot's
+  `evidence` set. The file does **not** need to change; a CRITICAL gate that
+  blocks the write must not erase a correct diagnosis.
+- Application is measured separately by the hidden oracle checks on the tree.
+- Authorization is recorded separately: `BLOCKED` means the guard refused the
+  write and the result is not a reasoning failure.
+- Self-correction needs `wrong`, `detected_by`, `fix` and a citation that
+  resolves to a real source file/line.
 - A control that does nothing must fail every correctness check; checks that a
   no-op passed are removed rather than averaged in.
 - `adversarial` submits every blind-spot keyword with fake evidence and no file
-  change. It must earn discovery 0 and correctness below 0.5.
+  change. It must earn diagnosis 0 and application below 0.5.
 
 Known confound: EOS may classify a task as CRITICAL and refuse a headless write
 until a human approves. That is a product-permission outcome, not an engineering
-judgment result; record it as a blocked run, not as a wrong answer.
+judgment result. The scorer records `authorization=BLOCKED`; diagnosis is still
+measured from real source citations, while application stays 0.
 
 ## Commands
 
