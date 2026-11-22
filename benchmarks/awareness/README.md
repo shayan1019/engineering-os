@@ -10,12 +10,14 @@ out-of-distribution tasks derived from public open-source projects.
 
 ## What this benchmark does not claim
 
-Four synthetic scenarios do not prove universal engineering judgment. The first
-slice is accepted only when:
+Twelve synthetic scenarios do not prove universal engineering judgment. The
+suite is accepted only when:
 
 1. the scorer separates known-good from known-bad solutions,
-2. the same scenario produces the same score on a repeated control run, and
-3. no scenario reports success without the oracle checks passing.
+2. a keyword-only report that changes no file and cites fake evidence earns
+   discovery 0 and correctness below 0.5,
+3. the same scenario produces the same score on a repeated control run, and
+4. no scenario reports success without the oracle checks passing.
 
 The real comparison is the 12-scenario suite and the open-source transfer set.
 
@@ -49,6 +51,22 @@ The real comparison is the 12-scenario suite and the open-source transfer set.
 missing review is not counted as engineering success; the discovery and
 correctness scores stay independent.
 
+## Scorer anti-gaming rules
+
+- Discovery counts a blind spot only when the report names it **and** the file
+  the blind spot declares in `evidence` actually changed.
+- Correctness comes from hidden oracle checks, never from the report.
+- Self-correction needs `wrong`, `detected_by`, `fix` and `evidence` that names
+  a changed file.
+- A control that does nothing must fail every correctness check; checks that a
+  no-op passed are removed rather than averaged in.
+- `adversarial` submits every blind-spot keyword with fake evidence and no file
+  change. It must earn discovery 0 and correctness below 0.5.
+
+Known confound: EOS may classify a task as CRITICAL and refuse a headless write
+until a human approves. That is a product-permission outcome, not an engineering
+judgment result; record it as a blocked run, not as a wrong answer.
+
 ## Commands
 
 ```text
@@ -57,7 +75,8 @@ python benchmarks/awareness/runner.py run --scenario web-i18n-01 --arm new
 python benchmarks/awareness/runner.py run --scenario web-i18n-01 --arm old
 python benchmarks/awareness/score.py score --scenario web-i18n-01 --result <dir>
 python benchmarks/awareness/score.py controls --scenario web-i18n-01
-python benchmarks/awareness/score.py compare --old <dir> --new <dir>
+python benchmarks/awareness/score.py adversarial --scenario web-i18n-01
+python benchmarks/awareness/score.py compare --scenario web-i18n-01 --old <dir> --new <dir>
 ```
 
 `controls` must pass before any model run is scored.
@@ -71,7 +90,7 @@ python benchmarks/awareness/score.py compare --old <dir> --new <dir>
   "domain": "web",
   "task": "the exact user request",
   "fixture": {"path": "content", ...},
-  "blind_spots": [{"id": ..., "weight": 1, "signals": [...], "description": ...}],
+  "blind_spots": [{"id": ..., "weight": 1, "signals": [...], "evidence": ["path"], "description": ...}],
   "judgment": {"signals": [...], "min_signals": 2},
   "allowed_paths": [...],
   "forbidden_paths": [...],
@@ -88,7 +107,7 @@ The agent writes `.eos-benchmark.json`:
 {
   "findings": [{"severity": "blocker|major|minor", "claim": "...", "evidence": ["..."]}],
   "decision": {"approach": "...", "alternatives": ["..."], "assumptions": ["..."], "why": "..."},
-  "self_correction": [{"wrong": "...", "detected_by": "...", "fix": "..."}],
+  "self_correction": [{"wrong": "...", "detected_by": "...", "fix": "...", "evidence": ["path"]}],
   "scope": {"changed_files": ["..."], "not_changed": ["..."]},
   "closure": {"tests": ["..."], "residual_risks": ["..."]}
 }

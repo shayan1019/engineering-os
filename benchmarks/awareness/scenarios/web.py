@@ -293,7 +293,7 @@ WEB_I18N_GOOD_AGENT = {
         "assumptions": ["The same screenshot applies to every locale"],
         "why": "The guide is localized. An English-only screenshot breaks parity and accessibility, and a fixed 1200px width overflows mobile.",
     },
-    "self_correction": [{"wrong": "First added the image only to the English guide", "detected_by": "Compared the three guide files", "fix": "Added the localized image and alt text to tr and fa"}],
+    "self_correction": [{"wrong": "First added the image only to the English guide", "detected_by": "Compared the three guide files", "fix": "Added the localized image and alt text to tr and fa", "evidence": ["guide.html", "tr/guide.html", "fa/guide.html"]}],
     "scope": {"changed_files": ["guide.html", "tr/guide.html", "fa/guide.html", "assets/style.css"], "not_changed": ["changelog.md"]},
     "closure": {"tests": ["python -m unittest discover -s tests"], "residual_risks": []},
 }
@@ -320,7 +320,7 @@ WEB_PRINT_GOOD_AGENT = {
         "assumptions": ["The guide is the only page that needs print styling"],
         "why": "A screen layout prints navigation and clips the 1200px image; a print block fixes both without changing the screen view.",
     },
-    "self_correction": [{"wrong": "First hid the image in print to avoid clipping", "detected_by": "Re-read the task: the screenshot is part of the instructions", "fix": "Kept the image and capped its width"}],
+    "self_correction": [{"wrong": "First hid the image in print to avoid clipping", "detected_by": "Re-read the task: the screenshot is part of the instructions", "fix": "Kept the image and capped its width", "evidence": ["assets/style.css"]}],
     "scope": {"changed_files": ["assets/style.css"], "not_changed": ["guide.html", "changelog.md"]},
     "closure": {"tests": ["python -m unittest discover -s tests"], "residual_risks": []},
 }

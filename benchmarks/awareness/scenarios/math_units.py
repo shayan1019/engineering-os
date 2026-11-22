@@ -197,7 +197,7 @@ POSITION_GOOD_AGENT = {
         "assumptions": ["contract_size is the contract size per lot", "the stop distance is the only price risk in this task"],
         "why": "The risk percentage is a hard limit. Rounding to nearest can exceed it, and forcing the minimum lot can multiply the intended risk.",
     },
-    "self_correction": [{"wrong": "First replaced round() with a minimum-lot clamp", "detected_by": "Computed the risk of the clamped size", "fix": "Return 0 below the minimum lot and floor to the lot step"}],
+    "self_correction": [{"wrong": "First replaced round() with a minimum-lot clamp", "detected_by": "Computed the risk of the clamped size", "fix": "Return 0 below the minimum lot and floor to the lot step", "evidence": ["position_size.py"]}],
     "scope": {"changed_files": ["position_size.py"], "not_changed": ["tests/test_position_size.py"]},
     "closure": {"tests": ["python -m unittest discover -s tests"], "residual_risks": ["spread and slippage are outside this function"]},
 }
@@ -223,7 +223,7 @@ WEIGHTED_GOOD_AGENT = {
         "assumptions": ["None is the only missing marker", "weights are non-negative importance values"],
         "why": "A missing sensor must not pull the result to zero, and an empty valid set has no defined average. zip would otherwise hide a length bug.",
     },
-    "self_correction": [{"wrong": "First treated None as zero", "detected_by": "Re-read the task: sparse sensor readings are missing, not zero", "fix": "Skipped None and its weight"}],
+    "self_correction": [{"wrong": "First treated None as zero", "detected_by": "Re-read the task: sparse sensor readings are missing, not zero", "fix": "Skipped None and its weight", "evidence": ["weighted_average.py"]}],
     "scope": {"changed_files": ["weighted_average.py"], "not_changed": ["tests/test_weighted_average.py"]},
     "closure": {"tests": ["python -m unittest discover -s tests"], "residual_risks": []},
 }
