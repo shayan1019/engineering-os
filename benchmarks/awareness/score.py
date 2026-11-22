@@ -127,6 +127,11 @@ def interventions(tree: Path) -> int:
 def score_tree(scenario: dict, tree: Path, agent: dict, meta: dict | None = None) -> dict:
     meta = meta or {}
     report_present = bool(agent)
+    final_text = str(meta.get("final_text") or "").lower()
+    blocked_reason = ""
+    if not report_present and final_text and "blocked" in final_text:
+        if any(word in final_text for word in ("approval", "critical", "guard", "write gate")):
+            blocked_reason = "the guard blocked the write; the agent reported BLOCKED"
     if not agent and meta.get("final_text"):
         # The final message is still engineering evidence. The structured file
         # is preferred, but a missing file must not erase the reasoning.
@@ -233,6 +238,8 @@ def score_tree(scenario: dict, tree: Path, agent: dict, meta: dict | None = None
         "duration_seconds": meta.get("duration_seconds"),
         "interventions": interventions(tree),
         "report_present": report_present,
+        "blocked": bool(blocked_reason),
+        "blocked_reason": blocked_reason,
     }
 
 
@@ -251,6 +258,8 @@ def print_score(value: dict) -> None:
           f"discovery={value['discovery']:.2f}  judgment={value['judgment']:.2f}  "
           f"correctness={value['correctness']:.2f}  scope={value['scope']:.2f}  "
           f"regression={value['regression']:.2f}  closure={value['closure']:.2f}")
+    if value.get("blocked"):
+        print(f"  BLOCKED: {value.get('blocked_reason')}")
     if value["missed_blind_spots"]:
         print("  missed: " + ", ".join(value["missed_blind_spots"]))
     if value["scope_violations"]:
@@ -325,6 +334,9 @@ def cmd_compare(args) -> int:
     new = score_tree(scenario, new_tree, new_agent, new_meta)
     print(f"old overall={old['overall']:.3f}  new overall={new['overall']:.3f}  "
           f"delta={new['overall'] - old['overall']:+.3f}")
+    if old.get("blocked") or new.get("blocked"):
+        print(f"  blocked        old={old.get('blocked')}  new={new.get('blocked')} "
+              f"(delta is not a reasoning comparison)")
     for key in ("discovery", "judgment", "correctness", "scope", "regression", "closure"):
         print(f"  {key:14} old={old[key]:.2f}  new={new[key]:.2f}")
     return 0
