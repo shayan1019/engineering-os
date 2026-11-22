@@ -145,8 +145,20 @@ def required_for(task: str, risk: str = "STANDARD") -> list:
     return required
 
 
+def _project_for(workspace: str, decision_id: str) -> str:
+    root = os.path.join(workspace, ".agents", "evidence", "decisions")
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return ""
+    for name in names:
+        if os.path.isfile(os.path.join(root, name, decision_id + ".json")):
+            return name
+    return ""
+
+
 def check(workspace: str, required: list, session: str | None = None,
-          skills: list | None = None) -> dict:
+          skills: list | None = None, decision_id: str = "") -> dict:
     report = collect(workspace, session)
     present, missing = [], []
     for name in required:
@@ -161,9 +173,20 @@ def check(workspace: str, required: list, session: str | None = None,
         elif name == "research":
             present.append(name) if report["research"] else missing.append(name)
         elif name == "review":
-            ok = bool(report["denied"]) or bool(report["denied"] is not None and
-                                                os.path.isdir(os.path.join(workspace, ".agents", "evidence", "challenges")))
-            present.append(name) if ok else missing.append(name)
+            # A denial, a directory or a declared role is not a review. The only
+            # accepted proof is the sealed review contract bound to the decision.
+            if not decision_id:
+                missing.append(name)
+                continue
+            try:
+                import decision as edr  # noqa: PLC0415
+                import review_contract as review  # noqa: PLC0415
+                record = edr.load(workspace, _project_for(workspace, decision_id), decision_id)
+                verdict = review.validate(workspace, record)
+            except Exception:  # noqa: BLE001 - evidence must fail closed
+                missing.append(name)
+                continue
+            present.append(name) if verdict["ok"] and not verdict.get("skipped") else missing.append(name)
         elif name == "skill":
             used = {item["skill"] for item in report["skills_read"]}
             wanted = set(skills or [])
@@ -194,7 +217,7 @@ def cmd_check(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
     required = [item.strip() for item in (args.require or "").split(",") if item.strip()]
     skills = [item.strip() for item in (args.skills or "").split(",") if item.strip()]
-    result = check(workspace, required, args.session, skills)
+    result = check(workspace, required, args.session, skills, getattr(args, "decision", "") or "")
     if args.json:
         print(json.dumps({k: result[k] for k in ("verdict", "required", "present", "missing")},
                          ensure_ascii=True))
@@ -293,6 +316,14 @@ def selftest() -> int:
         assert "research" in required_for("research the official API docs", "STANDARD")
         return "planned"
 
+    @case("a shell denial does not count as review evidence")
+    def _():
+        root = fixture()
+        result = check(root, ["review"], "ses_test")
+        assert result["verdict"] == "BLOCKED"
+        assert "review" in result["missing"]
+        return "denial rejected"
+
     passed = failed = 0
     for name, fn in cases:
         try:
@@ -319,6 +350,7 @@ def main() -> int:
     p.add_argument("--require", required=True)
     p.add_argument("--skills", default="")
     p.add_argument("--session", default="")
+    p.add_argument("--decision", default="")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_check)
     p = sub.add_parser("plan")

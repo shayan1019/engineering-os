@@ -83,6 +83,31 @@
               "required": true
             },
             {
+              "name": "review_contract_selftest",
+              "cmd": ["python", "tools/review_contract.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "completion_selftest",
+              "cmd": ["python", "tools/completion.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "work_state_selftest",
+              "cmd": ["python", "tools/work_state.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "tool_evidence_selftest",
+              "cmd": ["python", "tools/tool_evidence.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "auto_decision_selftest",
+              "cmd": ["python", "tools/auto_decision.py", "selftest"],
+              "required": true
+            },
+            {
               "name": "challenge_selftest",
               "cmd": ["python", "tools/challenge.py", "selftest"],
               "required": true
@@ -125,6 +150,7 @@
             {"name": "auto_decision_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/auto_decision.py", "selftest"], "required": true},
             {"name": "tool_evidence_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/tool_evidence.py", "selftest"], "required": true},
             {"name": "completion_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/completion.py", "selftest"], "required": true},
+            {"name": "review_contract_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/review_contract.py", "selftest"], "required": true},
             {"name": "ship_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/ship.py", "selftest"], "required": true},
             {"name": "scope_install_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/scope_install.py", "selftest"], "required": true},
             {"name": "guard_contract_test", "cmd": ["node", "--test", "%WORKSPACE%/engineering-os/engine/host-plugins/opencode/eos-guard.test.mjs"], "required": true},

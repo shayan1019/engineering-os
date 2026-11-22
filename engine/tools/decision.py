@@ -97,6 +97,35 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def review_contract_marker(risk: str) -> int:
+    """Declare the requirement at open time, independent of module presence.
+
+    A STANDARD/CRITICAL decision written on a deployment without
+    review_contract.py must fail closed at close time, not silently become
+    legacy. The marker is therefore a policy declaration, not a probe.
+    """
+    return 1 if risk in ("STANDARD", "CRITICAL") else 0
+
+
+def _record_contract_open(workspace: str, decision_id: str, risk: str) -> None:
+    """Append the open event that anchors the contract to this decision id.
+
+    created_at is mutable through save(); the registry is the anchor that a
+    backdated record cannot remove by rewriting itself.
+    """
+    if risk not in ("STANDARD", "CRITICAL"):
+        return
+    path = os.path.join(workspace, ".agents", "evidence", "decisions",
+                        "_review_contract.jsonl")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps({"id": decision_id, "risk": risk, "at": utc_now()},
+                                    ensure_ascii=True) + "\n")
+    except OSError as exc:
+        print(f"WARN: could not record the review-contract open event: {exc}")
+
+
 def iso_from_timestamp(value: float) -> str:
     return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -339,6 +368,9 @@ def integrity(record: dict) -> list:
         problems.append("record hash mismatch (edited outside this tool)")
     if not record.get("history"):
         problems.append("empty history")
+    challenges = record.get("challenges")
+    if challenges is not None and not isinstance(challenges, dict):
+        problems.append("challenges is not an object")
     return problems
 
 
@@ -374,6 +406,10 @@ def cmd_open(args) -> int:
     project = safe_project(args.project)
     if args.risk not in RISKS:
         print(f"BLOCKED: risk must be one of {', '.join(RISKS)}")
+        return 2
+    if args.risk in ("STANDARD", "CRITICAL") and not (getattr(args, "session", "") or "").strip():
+        print("BLOCKED: STANDARD/CRITICAL decisions require --session; "
+              "reviewer independence cannot be checked without it")
         return 2
     if not (args.task or "").strip():
         print("BLOCKED: a decision needs the task it is about")
@@ -420,6 +456,8 @@ def cmd_open(args) -> int:
         "gate": None,
         "change": {"files": [], "diff_sha256": ""},
         "challenges": {"open_blockers": 0, "ledger": ""},
+        "review_contract": review_contract_marker(args.risk),
+        "human_acceptance": [],
         "history": [{"from": "", "to": "DRAFT", "at": utc_now(),
                      "actor": args.actor or "eos.decision", "reason": "opened"}],
         "record_sha256": "",
@@ -447,6 +485,7 @@ def cmd_open(args) -> int:
         fields["rollback"] = {"value": "git revert of the change; no data migration", "evidence": []}
 
     path = save(workspace, record)
+    _record_contract_open(workspace, record["id"], args.risk)
     print(f"OPEN: {record['id']} ({project}, {args.risk}, DRAFT)")
     print(f"  record: {ep.store_path(path, workspace)}")
     print(f"  scope : {', '.join(scope)}")
@@ -475,6 +514,13 @@ def set_field(record: dict, name: str, value, evidence=None) -> None:
         if not isinstance(text, list):
             raise DecisionError("scope must be a list of paths or globs")
         text = [scope_pattern(item) for item in text]
+    if name == "impact":
+        if not isinstance(text, dict):
+            raise DecisionError("impact must be an object, not a free-form value")
+        if not isinstance(text.get("files") or [], list):
+            raise DecisionError("impact.files must be a list")
+        if text.get("unknowns") is not None and not isinstance(text.get("unknowns"), list):
+            raise DecisionError("impact.unknowns must be a list")
     record["fields"][name] = {"value": text, "evidence": list(evidence or [])}
 
 
@@ -489,6 +535,13 @@ def cmd_set(args) -> int:
         return 1
     if record["state"] in TERMINAL:
         print(f"BLOCKED: {record['id']} is {record['state']}; open a new decision")
+        return 1
+    if record["state"] == "VERIFIED" and args.field in ("impact", "scope"):
+        print("BLOCKED: a verified decision cannot narrow its reviewed surfaces; open a new decision")
+        return 1
+    reviewed_at = (record.get("challenges") or {}).get("reviewed_at")
+    if reviewed_at and args.field in ("impact", "scope"):
+        print("BLOCKED: a reviewed decision cannot narrow its surfaces; open a new decision")
         return 1
     value = args.value
     if isinstance(value, str) and value[:1] in "[{":
@@ -568,8 +621,7 @@ def transition(workspace: str, record: dict, target: str, actor: str, reason: st
                 print(f"  - {item}")
             return 1
         change = record.setdefault("change", {})
-        if not change.get("recorded_at"):
-            change["recorded_at"] = utc_now()
+        change["recorded_at"] = utc_now()
     if target == "VERIFIED":
         gate = record.get("gate") or {}
         if not gate.get("ok"):
@@ -585,6 +637,21 @@ def transition(workspace: str, record: dict, target: str, actor: str, reason: st
         if int((record.get("challenges") or {}).get("open_blockers") or 0) > 0:
             print("BLOCKED: open blocker(s) remain")
             return 1
+        try:
+            import review_contract as review  # noqa: PLC0415
+        except ImportError:
+            if record.get("risk") in ("STANDARD", "CRITICAL"):
+                print("BLOCKED: review_contract.py is missing; "
+                      "a STANDARD/CRITICAL decision cannot close without the contract")
+                return 1
+        else:
+            if review.applies(record, workspace):
+                verdict = review.validate(workspace, record)
+                if not verdict["ok"]:
+                    print("BLOCKED: engineering review evidence is incomplete")
+                    for problem in verdict["problems"]:
+                        print(f"  - {problem}")
+                    return 1
     if target == "BLOCKED" and not (reason or "").strip():
         print("BLOCKED: BLOCKED requires a reason")
         return 2
@@ -604,8 +671,13 @@ def cmd_transition(args) -> int:
     return transition(workspace, record, args.to, args.actor, args.reason or "")
 
 
-def approve_record(workspace: str, record: dict, actor: str, role: str, auto: bool) -> int:
+def approve_record(workspace: str, record: dict, actor: str, role: str, auto: bool,
+                   confirm: str = "") -> int:
     tier = record["risk"]
+    challenges = record.get("challenges")
+    if challenges is not None and not isinstance(challenges, dict):
+        print("BLOCKED: challenges is not an object")
+        return 1
     gaps = missing(record, REQUIRED_BEFORE_EDIT[tier])
     if gaps:
         print("BLOCKED: the pre-edit contract is incomplete")
@@ -614,9 +686,22 @@ def approve_record(workspace: str, record: dict, actor: str, role: str, auto: bo
     if int((record.get("challenges") or {}).get("open_blockers") or 0) > 0:
         print("BLOCKED: open blocker(s) in the challenge ledger")
         return 1
-    if not auto and role not in ("architect", "chief-architect", "reviewer"):
-        print("BLOCKED: only architect or reviewer may approve a non-atomic change")
+    if auto and tier != "ATOMIC":
+        print("BLOCKED: only ATOMIC can be auto-approved")
         return 1
+    if not auto and role not in ("architect", "chief-architect", "reviewer", "human"):
+        print("BLOCKED: only architect, reviewer or a human may approve a non-atomic change")
+        return 1
+    if tier == "CRITICAL":
+        if auto:
+            print("BLOCKED: CRITICAL never auto-approves, even with --auto")
+            return 1
+        if role != "human":
+            print("BLOCKED: CRITICAL approval requires a human, not a declared model role")
+            return 1
+        if confirm != record["id"]:
+            print("BLOCKED: human approval requires --confirm <decision-id>")
+            return 1
     record["approval"] = {
         "by": actor or role or "eos",
         "role": role or "architect",
@@ -635,7 +720,48 @@ def approve_record(workspace: str, record: dict, actor: str, role: str, auto: bo
 def cmd_approve(args) -> int:
     workspace = resolve_workspace(args.workspace)
     record = load(workspace, args.project, args.id)
-    return approve_record(workspace, record, args.actor, args.role, args.auto)
+    problems = integrity(record)
+    if problems:
+        print("BLOCKED: decision record is not trustworthy")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 1
+    return approve_record(workspace, record, args.actor, args.role, args.auto,
+                          getattr(args, "confirm", "") or "")
+
+
+def cmd_accept_unknown(args) -> int:
+    """Seal a human acceptance for one unresolved unknown claim."""
+    workspace = resolve_workspace(args.workspace)
+    record = load(workspace, args.project, args.id)
+    problems = integrity(record)
+    if problems:
+        print("BLOCKED: decision record is not trustworthy")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 1
+    if record["state"] in TERMINAL:
+        print(f"BLOCKED: {record['id']} is {record['state']}; open a new decision")
+        return 1
+    if args.confirm != record["id"]:
+        print("BLOCKED: human acceptance requires --confirm <decision-id>")
+        return 2
+    claim = (args.claim or "").strip()
+    if not claim:
+        print("BLOCKED: a human acceptance needs the exact unknown claim")
+        return 2
+    try:
+        import review_contract as review  # noqa: PLC0415
+    except ImportError:
+        print("BLOCKED: review_contract.py is not installed")
+        return 2
+    entry = {"claim": claim[:1000], "claim_sha256": review.claim_hash(claim),
+             "actor": args.actor or "human", "at": utc_now(),
+             "reason": (args.reason or "").strip()[:1000]}
+    record.setdefault("human_acceptance", []).append(entry)
+    save(workspace, record)
+    print(f"ACCEPTED: {record['id']} unknown {entry['claim_sha256'][:12]}")
+    return 0
 
 
 def cmd_implement(args) -> int:
@@ -724,11 +850,15 @@ def cmd_attach(args) -> int:
     if ledger.get("decision") != record["id"]:
         print(f"BLOCKED: ledger belongs to decision {ledger.get('decision')}, not {record['id']}")
         return 1
+    canonical = ch.path_for(workspace, record["project"], ledger["id"])
+    if os.path.realpath(ledger_path) != os.path.realpath(canonical):
+        print("BLOCKED: attach the canonical ledger path, not a copy")
+        return 1
     blockers = ch.count_open_blockers(ledger)
     record["challenges"] = {
         "open_blockers": blockers,
-        "ledger": ep.store_path(ledger_path, workspace),
-        "sha256": sha256_file(ledger_path),
+        "ledger": ep.store_path(canonical, workspace),
+        "sha256": sha256_file(canonical),
     }
     save(workspace, record)
     print(f"ATTACH: {record['id']} <- {ledger['id']} ({blockers} open blocker(s))")
@@ -893,6 +1023,19 @@ def cmd_check(args) -> int:
             elif sha256_file(gate_path) != gate["sha256"]:
                 result["ok"] = False
                 result["problems"] = result["problems"] + ["gate artifact changed after verification"]
+        try:
+            import review_contract as review  # noqa: PLC0415
+        except ImportError:
+            if record.get("risk") in ("STANDARD", "CRITICAL") and int(record.get("review_contract") or 0):
+                result["ok"] = False
+                result["problems"] = result["problems"] + ["review_contract.py is required but missing"]
+        else:
+            if review.applies(record, workspace):
+                verdict = review.validate(workspace, record)
+                if not verdict["ok"]:
+                    result["ok"] = False
+                    result["problems"] = result["problems"] + [
+                        f"review evidence: {item}" for item in verdict["problems"]]
     if args.json:
         print(json.dumps(result, ensure_ascii=True))
     else:
@@ -1162,7 +1305,7 @@ def selftest() -> int:
         root = workspace()
         args = argparse.Namespace(project="eos", task="bigger change", risk="STANDARD",
                                   scope=["engine/tools/x.py"], suite="unit", actor="architect",
-                                  approve=False, workspace=root)
+                                  approve=False, session="ses_decision", workspace=root)
         assert cmd_open(args) == 0
         decision_id = latest_decisions(root, "eos")[0]["id"]
         r = record(root, decision_id)
@@ -1201,7 +1344,7 @@ def selftest() -> int:
         root = workspace()
         args = argparse.Namespace(project="eos", task="bigger change", risk="STANDARD",
                                   scope=["engine/tools/x.py"], suite="unit", actor="architect",
-                                  approve=False, workspace=root)
+                                  approve=False, session="ses_decision", workspace=root)
         assert cmd_open(args) == 0
         decision_id = latest_decisions(root, "eos")[0]["id"]
         r = record(root, decision_id)
@@ -1308,6 +1451,157 @@ def selftest() -> int:
         assert not result["ok"], result
         return "denied"
 
+    def standard_ready(root, marker=True):
+        args = argparse.Namespace(project="eos", task="bigger change", risk="STANDARD",
+                                  scope=["engine/tools/x.py"], suite="unit", actor="architect",
+                                  approve=False, session="ses_decision", workspace=root)
+        assert cmd_open(args) == 0
+        decision_id = latest_decisions(root, "eos")[0]["id"]
+        r = record(root, decision_id)
+        for name, value in (
+            ("current_behavior", "the tool refuses everything"),
+            ("do_not_regress", ["existing PASS cases"]),
+            ("evidence", ["engine/tools/x.py:1"]),
+            ("assumptions", ["the gate is reachable"]),
+            ("impact", {"files": ["engine/tools/x.py"], "unknowns": []}),
+            ("alternatives", ["do nothing"]),
+            ("verification", {"suite": "unit"}),
+            ("rollback", "git revert"),
+        ):
+            set_field(r, name, value)
+        if not marker:
+            r.pop("review_contract", None)
+            r["created_at"] = "2020-01-01T00:00:00Z"
+            registry = os.path.join(root, ".agents", "evidence", "decisions",
+                                    "_review_contract.jsonl")
+            if os.path.isfile(registry):
+                kept = []
+                with open(registry, encoding="utf-8") as handle:
+                    for line in handle:
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if event.get("id") != decision_id:
+                            kept.append(line)
+                with open(registry, "w", encoding="utf-8", newline="\n") as handle:
+                    handle.writelines(kept)
+        save(root, r)
+        return decision_id
+
+    def close_ready(root, decision_id):
+        r = record(root, decision_id)
+        assert approve_record(root, r, "architect", "architect", auto=False) == 0
+        r = record(root, decision_id)
+        r["change"] = {"files": ["engine/tools/x.py"], "diff_sha256": ""}
+        save(root, r)
+        assert transition(root, r, "IMPLEMENTED", "implementer") == 0
+        gate = _fixture_gate(root)
+        assert cmd_verify(argparse.Namespace(project="eos", id=decision_id, gate=gate,
+                                             max_age_min=None, actor="verifier",
+                                             workspace=root)) == 0
+        return record(root, decision_id)
+
+    @case("a new STANDARD decision cannot close without review evidence")
+    def _():
+        root = workspace()
+        decision_id = standard_ready(root, marker=True)
+        r = close_ready(root, decision_id)
+        assert transition(root, r, "CLOSED", "verifier", "done") == 1
+        return "review missing"
+
+    @case("rewriting risk to ATOMIC does not skip the registry contract")
+    def _():
+        root = workspace()
+        decision_id = standard_ready(root, marker=True)
+        r = record(root, decision_id)
+        r["risk"] = "ATOMIC"
+        save(root, r)
+        r = close_ready(root, decision_id)
+        assert transition(root, r, "CLOSED", "verifier", "done") == 1
+        return "risk rewrite blocked"
+
+    @case("a backdated record is still covered by the open registry")
+    def _():
+        root = workspace()
+        decision_id = standard_ready(root, marker=True)
+        r = record(root, decision_id)
+        r.pop("review_contract", None)
+        r["created_at"] = "2020-01-01T00:00:00Z"
+        save(root, r)
+        r = close_ready(root, decision_id)
+        assert transition(root, r, "CLOSED", "verifier", "done") == 1
+        return "registry anchor"
+
+    @case("a legacy STANDARD decision without the marker still closes")
+    def _():
+        root = workspace()
+        decision_id = standard_ready(root, marker=False)
+        r = close_ready(root, decision_id)
+        assert transition(root, r, "CLOSED", "verifier", "done") == 0
+        return "legacy closed"
+
+    @case("a STANDARD decision with a sealed review closes")
+    def _():
+        root = workspace()
+        decision_id = standard_ready(root, marker=True)
+        import challenge as ch
+        import review_contract as rc
+        assert ch.cmd_open(argparse.Namespace(project="eos", decision=decision_id,
+                                              task="t", workspace=root)) == 0
+        ledger_id = sorted(os.listdir(os.path.join(root, ".agents", "evidence",
+                                                   "challenges", "eos")))[-1][:-5]
+        ledger_rel = ep.store_path(ch.path_for(root, "eos", ledger_id), root)
+        assert cmd_attach(argparse.Namespace(project="eos", id=decision_id,
+                                             ledger=ledger_rel, workspace=root)) == 0
+        current = record(root, decision_id)
+        required, unknowns = rc.surfaces(current)
+        os.makedirs(os.path.join(root, ".agents", "evidence", "tools"), exist_ok=True)
+        with open(os.path.join(root, ".agents", "evidence", "tools", "ses_review.jsonl"),
+                  "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps({"ts": utc_now(), "kind": "permission", "action": "read",
+                                     "resource": "engine/tools/x.py", "verdict": "ALLOW"}) + "\n")
+        review = {
+            "version": 1,
+            "reviewer": {"role": "reviewer", "agent": "reviewer",
+                         "session": "ses_review", "ran_at": utc_now()},
+            "coverage": {"inspected": [{"surface": item, "evidence": ["engine/tools/x.py:1"]}
+                                       for item in required],
+                         "not_inspected": []},
+            "falsification": [{"claim": "x is wrong", "test": "assert x",
+                               "result": "passed", "evidence": ["cmd:pytest -q"]}],
+            "unknowns": [{"claim": claim, "disposition": "closed",
+                          "evidence": ["test:unit"]} for claim in unknowns],
+        }
+        r = close_ready(root, decision_id)
+        sealed = rc.record_review(root, "eos", decision_id, review, "reviewer")
+        assert sealed["sealed"], sealed
+        r = record(root, decision_id)
+        assert transition(root, r, "CLOSED", "verifier", "done") == 0
+        return "closed with review"
+
+    @case("STANDARD cannot be auto-approved")
+    def _():
+        root = workspace()
+        decision_id = standard_ready(root, marker=True)
+        r = record(root, decision_id)
+        assert approve_record(root, r, "eos.auto", "eos.atomic", auto=True) == 1
+        return "auto refused"
+
+    @case("human acceptance is sealed against the exact claim")
+    def _():
+        root = workspace()
+        decision_id = standard_ready(root, marker=True)
+        args = argparse.Namespace(project="eos", id=decision_id, claim="unit not proven",
+                                  actor="owner", reason="accepted for release",
+                                  confirm=decision_id, workspace=root)
+        assert cmd_accept_unknown(args) == 0
+        r = record(root, decision_id)
+        assert r["human_acceptance"][0]["claim"] == "unit not proven"
+        import review_contract as rc
+        assert r["human_acceptance"][0]["claim_sha256"] == rc.claim_hash("unit not proven")
+        return "sealed acceptance"
+
     passed = failed = 0
     for name, fn in cases:
         try:
@@ -1358,8 +1652,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--id", required=True)
     p.add_argument("--actor", default="")
     p.add_argument("--role", default="architect")
+    p.add_argument("--confirm", default="")
     p.add_argument("--auto", action="store_true")
     p.set_defaults(func=cmd_approve)
+
+    p = sub.add_parser("accept-unknown", parents=[common])
+    p.add_argument("--id", required=True)
+    p.add_argument("--claim", required=True)
+    p.add_argument("--actor", default="human")
+    p.add_argument("--reason", required=True)
+    p.add_argument("--confirm", required=True)
+    p.set_defaults(func=cmd_accept_unknown)
 
     p = sub.add_parser("implement", parents=[common])
     p.add_argument("--id", required=True)

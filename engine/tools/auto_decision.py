@@ -133,6 +133,10 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
     risk, reasons = classify(task, scope, impact, impact_required=use_impact)
     if risk == "CRITICAL":
         reasons.append("critical never auto-approves")
+    if risk in ("STANDARD", "CRITICAL") and not (session or "").strip():
+        return {"verdict": "BLOCKED",
+                "problems": ["session is required for STANDARD/CRITICAL decisions"],
+                "risk": risk, "reasons": reasons}
     if problems:
         return {"verdict": "BLOCKED", "problems": problems,
                 "risk": risk, "reasons": reasons}
@@ -160,7 +164,7 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
                              f"tests={tests[:5] or 'none found'}"),
         "do_not_regress": ["existing tests in the project", "behaviour outside the declared scope"],
         "evidence": evidence,
-        "assumptions": ["scope is exactly the declared file(s)"] + unknowns,
+        "assumptions": ["scope is exactly the declared file(s)"],
         "impact": {"files": scope, "components": components, "tests": tests,
                    "unknowns": unknowns, "cross_process": bool((impact or {}).get("cross_process")),
                    "source": impact_note},
@@ -230,7 +234,7 @@ def selftest() -> int:
         for name in ("b.py", "c.py", "d.py"):
             open(os.path.join(root, name), "w").write("x")
         result = prepare(root, "eos", "refactor the module", ["app.py", "b.py", "c.py", "d.py"],
-                         approve=True, use_impact=False)
+                         approve=True, use_impact=False, session="ses_auto")
         assert result["risk"] == "STANDARD", result
         assert result["approved"] is False
         return result["risk"]
@@ -239,7 +243,7 @@ def selftest() -> int:
     def _():
         root = fixture()
         result = prepare(root, "eos", "deploy to production", ["app.py"],
-                         approve=True, use_impact=False)
+                         approve=True, use_impact=False, session="ses_auto")
         assert result["risk"] == "CRITICAL", result
         assert result["approved"] is False
         assert result["human_approval_required"] is True
@@ -269,7 +273,7 @@ def selftest() -> int:
                                   approve=True, workspace=root)
         assert edr.cmd_open(args) == 0
         result = prepare(root, "eos", "two files", ["app.py", "b.py"],
-                         approve=True, use_impact=False)
+                         approve=True, use_impact=False, session="ses_auto")
         assert not result.get("reused"), result
         assert result["state"] == "DRAFT", result
         return "not reused"

@@ -286,6 +286,9 @@ def render(ctx: dict) -> str:
                  "STANDARD needs specialist review, CRITICAL needs a human")
     lines.append("completion: CLOSED decision + PASS gate + tool/skill evidence "
                  "(`completion.py check`)")
+    lines.append("review: STANDARD/CRITICAL must record inspected and not-inspected surfaces, "
+                 "falsification tests and unknown dispositions (`review_contract.py check`); "
+                 "zero open blockers alone is not completion")
     lines.append("procedure: use the specialists above, delegate the change to the implementer, "
                  "review it, then verify with the gate")
     lines.append("a PASS claim requires a gate artifact; an agent's own statement is never evidence")

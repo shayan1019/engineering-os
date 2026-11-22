@@ -17,6 +17,7 @@ Commands:
           --claim <text> [--evidence <path>]... [--test <text>] [--confidence HIGH|MEDIUM|LOW]
   resolve --id <ledger> --finding <f-id> --status resolved|rejected \
           --reason <text> [--by <role>] [--evidence <path>]...
+  review  --decision <edr-id> --file <review.json> [--actor <role>]
   status  --id <ledger> [--json]
   check   --id <ledger>            exit 1 when an open blocker remains
   selftest
@@ -212,6 +213,23 @@ def cmd_resolve(args) -> int:
     return 1
 
 
+def cmd_review(args) -> int:
+    """Seal a review block through the single review-contract validator."""
+    workspace = ep.resolve_workspace(args.workspace)
+    try:
+        with open(args.file, encoding="utf-8") as handle:
+            review = json.load(handle)
+        import review_contract as contract  # noqa: PLC0415
+        value = contract.record_review(workspace, args.project, args.decision,
+                                       review, args.actor)
+    except Exception as exc:  # noqa: BLE001 - every failure must be reported
+        print(f"BLOCKED: {exc}")
+        return 1
+    print(f"REVIEW: {args.decision} ({value['surfaces']} surface(s))")
+    print(f"  ledger: {ep.store_path(value['ledger'], workspace)}")
+    return 0
+
+
 def cmd_status(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
     record = load(workspace, args.project, args.id)
@@ -381,6 +399,12 @@ def main() -> int:
     p.add_argument("--by", default="")
     p.add_argument("--evidence", action="append", default=[])
     p.set_defaults(func=cmd_resolve)
+
+    p = sub.add_parser("review", parents=[common])
+    p.add_argument("--decision", required=True)
+    p.add_argument("--file", required=True)
+    p.add_argument("--actor", default="")
+    p.set_defaults(func=cmd_review)
 
     p = sub.add_parser("status", parents=[common])
     p.add_argument("--id", required=True)

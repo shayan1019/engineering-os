@@ -320,6 +320,45 @@ def _close(args, workspace: str) -> int:
     if not guard_owner(state, args.session, args.takeover, args.reason):
         print(f"BLOCKED: task is owned by session {state.get('session_id')}")
         return 1
+    decision_id = str(state.get("decision") or "")
+    if decision_id:
+        try:
+            import decision as edr  # noqa: PLC0415
+            record = edr.load(workspace, args.project, decision_id)
+        except Exception:  # noqa: BLE001 - an unreadable link cannot prove completion
+            print(f"BLOCKED: linked decision {decision_id} is not readable; completion is unproven")
+            return 1
+        problems = edr.integrity(record)
+        if problems:
+            print(f"BLOCKED: linked decision {decision_id} is not trustworthy")
+            for problem in problems:
+                print(f"  - {problem}")
+            return 1
+        try:
+            import review_contract as review  # noqa: PLC0415
+        except ImportError:
+            if record.get("risk") in ("STANDARD", "CRITICAL"):
+                print("BLOCKED: review_contract.py is required for this decision but is not installed")
+                return 1
+            state["completion"] = "decision_only"
+        else:
+            if review.applies(record, workspace):
+                if record.get("state") != "CLOSED":
+                    print(f"BLOCKED: linked decision {decision_id} is {record.get('state')}, not CLOSED; "
+                          "work-state cannot claim completion")
+                    return 1
+                verdict = review.validate(workspace, record)
+                if not verdict["ok"]:
+                    print("BLOCKED: engineering review evidence is incomplete")
+                    for problem in verdict["problems"]:
+                        print(f"  - {problem}")
+                    return 1
+                state["completion"] = "review_contract"
+            else:
+                state["completion"] = "decision_only"
+    else:
+        state["completion"] = "untracked"
+        print("WARN: no linked decision; this close is a work-state cleanup, not an EOS completion claim")
     state["status"] = "closed"
     state["next_action"] = ""
     save_state(workspace, args.project, state, "close")
@@ -743,6 +782,22 @@ def selftest() -> int:
         assert state["task"] == "fix a"
         return "recovered"
 
+    @case("closing a work state with an unreadable linked decision is blocked")
+    def _():
+        root = workspace()
+        cmd_start(argparse.Namespace(project="demo", task="fix a", session="s1",
+                                     owner="agent1", new=False, workspace=root))
+        args = argparse.Namespace(project="demo", session="s1", status="in_progress",
+                                  decision="edr-missing", challenge="", file=[], error=[],
+                                  clear_error=[], test="", next="", map_sha="", git_head="",
+                                  git_branch="", takeover=False, reason="", owner="",
+                                  workspace=root)
+        assert cmd_update(args) == 0
+        close = argparse.Namespace(project="demo", session="s1", takeover=False,
+                                   reason="", owner="", workspace=root)
+        assert cmd_close(close) == 1
+        return "unproven completion blocked"
+
     passed = failed = 0
     for name, fn in cases:
         try:
@@ -794,6 +849,7 @@ def main() -> int:
     p.add_argument("--session", required=True)
     p.add_argument("--takeover", action="store_true")
     p.add_argument("--reason", default="")
+    p.add_argument("--owner", default="")
     p.set_defaults(func=cmd_close)
 
     p = sub.add_parser("record-atomic", parents=[common])

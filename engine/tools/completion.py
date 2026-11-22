@@ -55,6 +55,9 @@ def check(workspace: str, project: str, task: str, risk: str = "STANDARD",
         problems.append(f"decision {decision_id} is {record.get('state')}, not CLOSED")
     if record.get("project") != project:
         problems.append(f"decision project {record.get('project')} != {project}")
+    order = {"ATOMIC": 0, "STANDARD": 1, "CRITICAL": 2}
+    if order.get(risk, 1) > order.get(record.get("risk"), 0):
+        problems.append(f"decision risk {record.get('risk')} is lower than the requested risk {risk}")
 
     gate = record.get("gate") or {}
     if not gate.get("ok") or gate.get("verdict") != "PASS":
@@ -67,11 +70,26 @@ def check(workspace: str, project: str, task: str, risk: str = "STANDARD",
     evidence["decision"] = edr.decision_path(workspace, project, decision_id)
     evidence["gate"] = gate_path
 
-    challenges = record.get("challenges") or {}
+    challenges = record.get("challenges")
+    if challenges is not None and not isinstance(challenges, dict):
+        problems.append("decision challenges field is not an object")
+        challenges = {}
+    challenges = challenges or {}
     if int(challenges.get("open_blockers") or 0) > 0:
         problems.append(f"{challenges.get('open_blockers')} open blocker(s) in the challenge ledger")
     if challenges.get("ledger"):
         evidence["challenge"] = ep.load_stored_path(challenges["ledger"], workspace)
+
+    try:
+        import review_contract as review  # noqa: PLC0415
+    except ImportError:
+        if record.get("risk") in ("STANDARD", "CRITICAL"):
+            problems.append("review contract is required but review_contract.py is not installed")
+    else:
+        if review.applies(record, workspace):
+            verdict = review.validate(workspace, record)
+            evidence["review"] = verdict
+            problems.extend(f"review evidence: {item}" for item in verdict["problems"])
 
     required = [name for name in te.required_for(task, risk)
                 if name in ("test", "research")]
@@ -140,7 +158,7 @@ def selftest() -> int:
         root = workspace()
         decision_id = closed_decision(root)
         evidence(root)
-        result = check(root, "eos", "fix the bug", "STANDARD", decision_id, "ses_x", ["tdd"])
+        result = check(root, "eos", "fix the bug", "ATOMIC", decision_id, "ses_x", ["tdd"])
         assert result["verdict"] == "PASS", result["problems"]
         return decision_id
 
@@ -178,6 +196,34 @@ def selftest() -> int:
         result = check(root, "eos", "fix the bug", "STANDARD", decision_id, "ses_x")
         assert result["verdict"] == "BLOCKED"
         return "hash mismatch"
+
+    @case("a marked STANDARD decision without review is BLOCKED")
+    def _():
+        root = workspace()
+        decision_id = closed_decision(root)
+        evidence(root)
+        record = edr.load(root, "eos", decision_id)
+        record["risk"] = "STANDARD"
+        record["review_contract"] = 1
+        edr.save(root, record)
+        result = check(root, "eos", "fix the bug", "STANDARD", decision_id, "ses_x")
+        assert result["verdict"] == "BLOCKED", result["problems"]
+        assert any("review" in problem for problem in result["problems"]), result["problems"]
+        return "review missing"
+
+    @case("a legacy decision without the marker still PASSes")
+    def _():
+        root = workspace()
+        decision_id = closed_decision(root)
+        evidence(root)
+        record = edr.load(root, "eos", decision_id)
+        record.pop("review_contract", None)
+        record["risk"] = "STANDARD"
+        record["created_at"] = "2020-01-01T00:00:00Z"
+        edr.save(root, record)
+        result = check(root, "eos", "fix the bug", "STANDARD", decision_id, "ses_x")
+        assert result["verdict"] == "PASS", result["problems"]
+        return "legacy pass"
 
     passed = failed = 0
     for name, fn in cases:
