@@ -1,6 +1,6 @@
 [package]
 name = "eos"
-version = "0.2.5"
+version = "1.0.2"
 edition = "2021"
 description = "Engineering OS CLI: install, workspace, host adapters, gate and evidence"
 license = "proprietary"

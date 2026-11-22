@@ -165,6 +165,13 @@ struct Args {
 
 impl Args {
     fn parse(raw: &[String]) -> Args {
+        // Boolean flags must not swallow the next positional (e.g.
+        // `eos open --print <dir>`). Value flags still consume the next token.
+        const BOOLEAN: &[&str] = &[
+            "print", "json", "dry-run", "no-integrate", "force", "product",
+            "add-to-path", "purge-config", "keep-versions", "auto", "help",
+            "yes", "quiet", "takeover", "new",
+        ];
         let mut positionals = Vec::new();
         let mut flags: Vec<(String, Option<String>)> = Vec::new();
         let mut i = 0;
@@ -176,6 +183,7 @@ impl Args {
                     None => (rest.to_string(), None),
                 };
                 if value.is_none()
+                    && !BOOLEAN.contains(&name.as_str())
                     && i + 1 < raw.len()
                     && !raw[i + 1].starts_with("--")
                 {
@@ -515,7 +523,7 @@ fn doctor_product(engine: &Engine, ws: &Path, as_json: bool) -> i32 {
     //    activation plugin that makes EOS automatic in a native session.
     let dispatch = engine.root.join("tools").join("agent_dispatch_test.py");
     let plugin = engine.root.join("tools").join("plugin_install.py");
-    let plugin_file = ws.join(".opencode").join("plugin").join("eos-activation.js");
+    let plugin_file = ws.join(".opencode").join("plugins").join("eos-activation.js");
     if dispatch.is_file() {
         let out = Command::new(&engine.python)
             .arg(&dispatch)
@@ -551,15 +559,30 @@ fn doctor_product(engine: &Engine, ws: &Path, as_json: bool) -> i32 {
         }
     }
     if plugin.is_file() {
-        let current = plugin_file.is_file()
-            && fs::read_to_string(&plugin_file)
-                .map(|a| fs::read_to_string(engine.root.join("host-plugins").join("opencode").join("eos-activation.js")).map(|b| a == b).unwrap_or(false))
-                .unwrap_or(false);
+        let global_plugin = std::env::var("OPENCODE_CONFIG_DIR").ok()
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var("USERPROFILE").ok()
+                .map(|home| std::path::PathBuf::from(home).join(".config").join("opencode")))
+            .or_else(|| std::env::var("HOME").ok()
+                .map(|home| std::path::PathBuf::from(home).join(".config").join("opencode")))
+            .map(|dir| dir.join("plugins").join("eos-activation.js"));
+        let source_plugin = engine.root.join("host-plugins").join("opencode").join("eos-activation.js");
+        let is_current = |path: &std::path::PathBuf| -> bool {
+            path.is_file()
+                && fs::read_to_string(path)
+                    .map(|a| fs::read_to_string(&source_plugin).map(|b| a == b).unwrap_or(false))
+                    .unwrap_or(false)
+        };
+        let workspace_current = is_current(&plugin_file);
+        let global_current = global_plugin.as_ref().map(|p| is_current(p)).unwrap_or(false);
+        let current = workspace_current || global_current;
         checks.push((
             if current { "PASS" } else { "WARN" }.into(),
             "activation plugin".into(),
-            if current {
+            if workspace_current {
                 format!("automatic EOS activation is installed in {}", ws.display())
+            } else if global_current {
+                "automatic EOS activation is installed globally".into()
             } else {
                 format!("not installed or out of date in {}; run: eos open {}", ws.display(), ws.display())
             },

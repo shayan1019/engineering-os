@@ -25,7 +25,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-alpha");
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ManifestEntry {

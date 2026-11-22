@@ -333,7 +333,7 @@ pub fn integrate(
             "9 agent files via engine/tools/agent_install.py".into(),
         );
         push(
-            project.join(".opencode").join("plugin"),
+            project.join(".opencode").join("plugins"),
             "PLANNED",
             "activation plugin via engine/tools/plugin_install.py (adds context, no permissions)".into(),
         );
@@ -397,13 +397,13 @@ pub fn integrate(
                             .trim()
                             .to_string();
                         push(
-                            project.join(".opencode").join("plugin"),
+                            project.join(".opencode").join("plugins"),
                             if o.status.success() { "WRITTEN" } else { "FAILED" },
                             if o.status.success() { plast } else { perr.trim().to_string() },
                         );
                     }
                     Err(e) => push(
-                        project.join(".opencode").join("plugin"),
+                        project.join(".opencode").join("plugins"),
                         "FAILED",
                         format!("cannot run plugin installer: {e}"),
                     ),

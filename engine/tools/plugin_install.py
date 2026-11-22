@@ -35,8 +35,24 @@ MANIFEST_DIR = ep.STATE_DIR
 
 def plugin_dir(project: str, host: str) -> str:
     if host == "opencode":
+        return os.path.join(project, ".opencode", "plugins")
+    return os.path.join(project, f".{host}", "plugins")
+
+
+def legacy_plugin_dir(project: str, host: str) -> str:
+    """The retired singular path. Read only to remove it safely."""
+    if host == "opencode":
         return os.path.join(project, ".opencode", "plugin")
     return os.path.join(project, f".{host}", "plugin")
+
+
+def global_plugin_dir(host: str) -> str:
+    if host != "opencode":
+        return ""
+    config = os.environ.get("OPENCODE_CONFIG_DIR")
+    if not config:
+        config = os.path.join(os.path.expanduser("~"), ".config", "opencode")
+    return os.path.join(config, "plugins")
 
 
 def canonical(name: str) -> str:
@@ -73,6 +89,16 @@ def install_one(project: str, host: str, force: bool, name: str) -> int:
         return 1
     target_dir = plugin_dir(project, host)
     target = os.path.join(target_dir, name)
+    legacy = os.path.join(legacy_plugin_dir(project, host), name)
+    if os.path.isfile(legacy):
+        os.remove(legacy)
+        print(f"  retired legacy plugin: {legacy}")
+    global_dir = global_plugin_dir(host)
+    if global_dir and os.path.abspath(target_dir) != os.path.abspath(global_dir):
+        global_target = os.path.join(global_dir, name)
+        if os.path.isfile(global_target):
+            print(f"SKIP: global plugin already provides {name}; workspace copy not created")
+            return 0
     manifest = load_manifest()
     key = os.path.abspath(target)
 
@@ -142,8 +168,18 @@ def uninstall(project: str, host: str) -> int:
         manifest["installed"].pop(key, None)
         print(f"PASS: {name} removed from {target}")
     save_manifest(manifest)
+    legacy_dir = legacy_plugin_dir(project, host)
+    for name in PLUGINS:
+        legacy = os.path.join(legacy_dir, name)
+        if os.path.isfile(legacy):
+            os.remove(legacy)
+            print(f"PASS: retired legacy plugin removed: {legacy}")
     try:
         os.rmdir(target_dir)  # only succeeds when the host's directory is empty
+    except OSError:
+        pass
+    try:
+        os.rmdir(legacy_dir)
     except OSError:
         pass
     return 0
@@ -151,12 +187,14 @@ def uninstall(project: str, host: str) -> int:
 
 def status(project: str, host: str) -> int:
     target_dir = plugin_dir(project, host)
+    global_dir = global_plugin_dir(host)
     manifest = load_manifest()
     ok = True
     for name in PLUGINS:
         target = os.path.join(target_dir, name)
         entry = manifest.get("installed", {}).get(os.path.abspath(target))
         exists = os.path.isfile(target)
+        provided_by_global = bool(global_dir) and os.path.isfile(os.path.join(global_dir, name))
         source = canonical(name)
         current = False
         if exists and os.path.isfile(source):
@@ -166,10 +204,11 @@ def status(project: str, host: str) -> int:
         print(f"  path        : {target}")
         print(f"  present     : {exists}")
         print(f"  current     : {current}")
+        print(f"  global      : {provided_by_global}")
         print(f"  eos managed : {bool(entry)}")
         if entry:
             print(f"  installed at: {entry.get('installed_at')}")
-        ok = ok and exists and current
+        ok = ok and (current or provided_by_global)
     return 0 if ok else 1
 
 

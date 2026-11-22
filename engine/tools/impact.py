@@ -94,6 +94,14 @@ def project_root(project: str, workspace: str) -> tuple:
     # or a new folder is writable by the map and blocked by the decision engine.
     if project.startswith("auto-") and os.path.isdir(workspace):
         return os.path.abspath(workspace), {"id": project, "path": ".", "discovered": True}
+    marker = os.path.join(workspace, ".eos", "project.json")
+    if os.path.isfile(marker):
+        try:
+            identity = read_json(marker)
+        except (OSError, json.JSONDecodeError):
+            identity = {}
+        if str(identity.get("id") or "") == project:
+            return os.path.abspath(workspace), {"id": project, "path": ".", "identity": True}
     raise SystemExit(f"BLOCKED: unknown project '{project}' (not in PROJECT_PROFILES.json)")
 
 

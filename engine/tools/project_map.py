@@ -115,6 +115,14 @@ def resolve_root(project: str, workspace: str, explicit_path: str = "") -> tuple
                     return root, item
     if project.startswith("auto-") and os.path.isdir(workspace):
         return os.path.abspath(workspace), {"id": project, "path": ".", "discovered": True}
+    marker = os.path.join(workspace, ".eos", "project.json")
+    if os.path.isfile(marker):
+        try:
+            data = read_json(marker)
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        if str(data.get("id") or "") == project:
+            return os.path.abspath(workspace), {"id": project, "path": ".", "identity": True}
     raise SystemExit(f"BLOCKED: unknown project '{project}' (not registered or discovered)")
 
 
