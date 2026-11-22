@@ -93,21 +93,50 @@ def prepare_home(arm: str, root: Path, old_tag: str, new_tag: str) -> tuple:
     shutil.copytree(engine, version_dir / "engine", dirs_exist_ok=True)
     link_or_copy(GLOBAL_EOS / "versions" / RUNTIME_VERSION / "runtime", version_dir / "runtime")
     (version_dir / "VERSION").write_text(version + "\n", encoding="utf-8")
-    # Isolate the host configuration and plugins for this arm. Both arms get
-    # the same contract; the engine tag is the treatment.
-    config = home / "opencode-config"
-    config.mkdir(parents=True, exist_ok=True)
-    global_config = Path.home() / ".config" / "opencode" / "opencode.jsonc"
-    if global_config.is_file():
-        shutil.copyfile(global_config, config / "opencode.jsonc")
-    plugins = config / "plugins"
-    plugins.mkdir(parents=True, exist_ok=True)
-    source_plugins = engine / "host-plugins" / "opencode"
-    for name in ("eos-activation.js", "eos-guard.js"):
-        source = source_plugins / name
+    # Full host isolation: each arm gets its own XDG config/data/state/cache.
+    # The global config file and the auth/DB are copied, but the global plugin
+    # directory is not; the arm plugins are installed into the fixture by the
+    # arm engine's own scope installer.
+    xdg = {
+        "config": home / "xdg-config",
+        "data": home / "xdg-data",
+        "state": home / "xdg-state",
+        "cache": home / "xdg-cache",
+    }
+    for path in xdg.values():
+        path.mkdir(parents=True, exist_ok=True)
+    host_config = Path.home() / ".config" / "opencode" / "opencode.jsonc"
+    config_dir = xdg["config"] / "opencode"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    if host_config.is_file():
+        shutil.copyfile(host_config, config_dir / "opencode.jsonc")
+    data_dir = xdg["data"] / "opencode"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("auth.json", "opencode.db", "opencode.db-shm", "opencode.db-wal"):
+        source = Path.home() / ".local" / "share" / "opencode" / name
         if source.is_file():
-            shutil.copyfile(source, plugins / name)
-    return home, version_dir, config
+            shutil.copyfile(source, data_dir / name)
+    state_dir = xdg["state"] / "opencode"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("kv.json", "model.json"):
+        source = Path.home() / ".local" / "state" / "opencode" / name
+        if source.is_file():
+            shutil.copyfile(source, state_dir / name)
+    return home, version_dir, xdg
+
+
+def install_workspace_plugins(engine: Path, work: Path) -> dict:
+    """Install the arm's own plugins into the fixture, project-local."""
+    script = engine / "tools" / "scope_install.py"
+    if not script.is_file():
+        return {"ok": False, "detail": f"scope installer missing: {script}"}
+    proc = subprocess.run(
+        [sys.executable, str(script), "install", "--mode", "workspace",
+         "--root", str(work), "--apply", "--force"],
+        capture_output=True, text=True, timeout=300,
+    )
+    return {"ok": proc.returncode == 0,
+            "detail": (proc.stdout + proc.stderr).strip()[-1200:]}
 
 
 def materialise(scenario: dict, dest: Path) -> None:
@@ -156,13 +185,15 @@ def run(args) -> int:
     materialise(scenario, work)
     prompt = scenario["task"].strip() + OUTPUT_CONTRACT
     (result / "prompt.txt").write_text(prompt, encoding="utf-8", newline="\n")
-    home, version_dir, config = prepare_home(args.arm, root, args.old_tag, args.new_tag)
+    home, version_dir, xdg = prepare_home(args.arm, root, args.old_tag, args.new_tag)
+    plugin_install = install_workspace_plugins(version_dir / "engine", work)
     meta = {
         "scenario": args.scenario, "domain": scenario.get("domain"),
         "arm": args.arm, "model": args.model, "created_at": stamp,
         "work": str(work), "home": str(home), "version_dir": str(version_dir),
-        "opencode_config": str(config),
+        "xdg": {name: str(path) for name, path in xdg.items()},
         "engine_tag": args.old_tag if args.arm == "old" else args.new_tag,
+        "plugin_install": plugin_install,
     }
     (result / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     if args.dry_run:
@@ -175,8 +206,12 @@ def run(args) -> int:
     if not opencode:
         raise SystemExit("opencode executable not found on PATH")
     env = {**os.environ, "EOS_HOME": str(home),
-           "OPENCODE_CONFIG_DIR": str(config),
+           "XDG_CONFIG_HOME": str(xdg["config"]),
+           "XDG_DATA_HOME": str(xdg["data"]),
+           "XDG_STATE_HOME": str(xdg["state"]),
+           "XDG_CACHE_HOME": str(xdg["cache"]),
            "EOS_PYTHON": str(version_dir / "runtime" / "python" / "python.exe")}
+    env.pop("OPENCODE_CONFIG_DIR", None)
     cmd = [opencode, "run", "--standalone", "--format", "json",
            "--agent", "build", "--model", args.model, prompt]
     try:
@@ -193,7 +228,22 @@ def run(args) -> int:
     (result / "agent.stdout.jsonl").write_text(proc.stdout, encoding="utf-8")
     (result / "agent.stderr.log").write_text(proc.stderr, encoding="utf-8")
     parsed = parse_agent(proc.stdout)
-    meta.update({"returncode": proc.returncode, **parsed})
+    guard = work / ".agents" / "evidence" / "tools" / "guard.jsonl"
+    host_engine = ""
+    if guard.is_file():
+        for line in reversed(guard.read_text(encoding="utf-8", errors="replace").splitlines()):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("kind") == "capability":
+                host_engine = str(event.get("engine") or "")
+                break
+    expected = str(version_dir / "engine").lower()
+    host_ok = bool(host_engine and expected in host_engine.lower())
+    meta.update({"returncode": proc.returncode, **parsed,
+                 "host_engine": host_engine, "host_engine_ok": host_ok,
+                 "valid_host": bool(plugin_install.get("ok") and host_ok)})
     (result / "agent.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False),
                                        encoding="utf-8")
     tree = result / "tree"

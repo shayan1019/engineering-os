@@ -22,7 +22,7 @@ sys.path.insert(0, str(HERE))
 from scenarios import SCENARIOS  # noqa: E402
 
 IGNORE = (".agents", ".eos-benchmark.json", "__pycache__", ".pytest_cache",
-          ".mypy_cache", "node_modules", ".git")
+          ".mypy_cache", "node_modules", ".git", ".opencode", ".eos", "AGENTS.md")
 WEIGHTS = {"discovery": 0.25, "judgment": 0.20, "correctness": 0.20,
            "self_correction": 0.05, "scope": 0.10, "regression": 0.10,
            "closure": 0.10}
@@ -140,8 +140,15 @@ def score_tree(scenario: dict, tree: Path, agent: dict, meta: dict | None = None
         }
     text = text_of(agent)
     blind = scenario["blind_spots"]
-    matched = [item for item in blind
-               if any(signal.lower() in text for signal in item.get("signals") or [])]
+    changed = changed_files(scenario["fixture"], tree)
+    matched = []
+    for item in blind:
+        if not any(signal.lower() in text for signal in item.get("signals") or []):
+            continue
+        evidence = item.get("evidence") or []
+        if evidence and not any(path in changed for path in evidence):
+            continue
+        matched.append(item)
     total_weight = sum(float(item.get("weight") or 1) for item in blind) or 1.0
     discovery = sum(float(item.get("weight") or 1) for item in matched) / total_weight
 
@@ -182,7 +189,8 @@ def score_tree(scenario: dict, tree: Path, agent: dict, meta: dict | None = None
     scope = 0.0 if forbidden else max(0.0, 1.0 - len(violations) / max(1, len(changed)))
 
     self_entries = [item for item in agent.get("self_correction") or []
-                    if isinstance(item, dict) and item.get("wrong") and item.get("fix")]
+                    if isinstance(item, dict) and item.get("wrong") and item.get("fix")
+                    and item.get("evidence")]
     self_correction = 1.0 if self_entries else 0.0
 
     closure = 1.0 if checks and all(item.get("ok") for item in run_checks(scenario, tree)) else 0.0
@@ -194,9 +202,16 @@ def score_tree(scenario: dict, tree: Path, agent: dict, meta: dict | None = None
                + WEIGHTS["closure"] * closure
                - FALSE_ALARM_PENALTY * false_alarm_rate)
     meta = meta or {}
+    host_valid = meta.get("valid_host")
+    invalid_reason = ""
+    if host_valid is False:
+        overall = 0.0
+        invalid_reason = "host isolation failed: arm plugin or engine was not the loaded one"
     return {
         "schema": 1, "scenario": scenario.get("id"), "domain": scenario.get("domain"),
         "overall": round(max(0.0, min(1.0, overall)), 4),
+        "host_valid": host_valid if host_valid is not None else True,
+        "invalid_reason": invalid_reason,
         "discovery": round(discovery, 4),
         "judgment": round(judgment, 4),
         "correctness": round(correctness, 4),
