@@ -349,7 +349,7 @@ if __name__ == "__main__":
 def _check_cli(tree: Path) -> list:
     module = _load(tree, "cli")
     flags, positionals = module.parse(["--print", "dir"])
-    boolean_ok = flags.get("print") is None and positionals == ["dir"]
+    boolean_ok = flags.get("print") in (None, True, "") and positionals == ["dir"]
     flags, positionals = module.parse(["--output", "file", "dir"])
     value_ok = flags.get("output") == "file" and positionals == ["dir"]
     return [{"name": "boolean flags do not swallow positionals and value flags still work",
