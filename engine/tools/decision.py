@@ -341,24 +341,42 @@ def _literal_prefix(pattern: str) -> str:
     return pattern.rstrip("/")
 
 
+def _has_glob(pattern: str) -> bool:
+    return any(char in pattern for char in "*?[")
+
+
 def scopes_overlap(first: str, second: str) -> bool:
-    """Conservative overlap test for two declared scopes."""
+    """Conservative overlap test for two declared scopes.
+
+    When two globs cannot be proven disjoint, the answer is True. A false
+    negative would authorise two writers over the same file, which is the
+    failure this function exists to prevent.
+    """
     first = normalise_rel(first).rstrip("/")
     second = normalise_rel(second).rstrip("/")
     if not first or not second:
         return False
     if first == second:
         return True
-    if path_in_scope(first + "/", second) or path_in_scope(second + "/", first):
+    first_glob = _has_glob(first)
+    second_glob = _has_glob(second)
+    if not first_glob and path_in_scope(second, first):
         return True
+    if not second_glob and path_in_scope(first, second):
+        return True
+    if not first_glob and not second_glob:
+        return path_in_scope(first + "/", second) or path_in_scope(second + "/", first)
     first_prefix, second_prefix = _literal_prefix(first), _literal_prefix(second)
-    if first_prefix and second_prefix:
-        if first_prefix == second_prefix:
-            return True
-        if first_prefix.startswith(second_prefix + "/"):
-            return True
-        if second_prefix.startswith(first_prefix + "/"):
-            return True
+    if not first_prefix or not second_prefix:
+        return True
+    if first_prefix == second_prefix:
+        return True
+    if first_prefix.startswith(second_prefix + "/"):
+        return True
+    if second_prefix.startswith(first_prefix + "/"):
+        return True
+    if "**" in first or "**" in second:
+        return True
     return False
 
 
@@ -758,27 +776,36 @@ def approve_record(workspace: str, record: dict, actor: str, role: str, auto: bo
         if confirm != record["id"]:
             print("BLOCKED: human approval requires --confirm <decision-id>")
             return 1
-    conflicts = active_conflicts(workspace, record["project"], scope_list(record), record["id"])
-    if conflicts:
-        print("BLOCKED: another active write authorization covers this surface")
-        for conflict in conflicts[:5]:
-            print(f"  - {conflict['id']} ({conflict['state']}) scope {conflict['scope']} "
-                  f"overlaps {conflict['path']} (session {conflict['session_id'] or '-'})")
-        print("  next: close or supersede the other decision before approving this one")
+    lock_path = os.path.join(project_dir(workspace, record["project"]), ".approve.lock")
+    try:
+        handle = ep.acquire_file_lock(lock_path, float(os.environ.get("EOS_LOCK_TIMEOUT", "15")))
+    except (TimeoutError, OSError) as exc:
+        print(f"BLOCKED: approval lock unavailable: {exc}")
         return 1
-    record["approval"] = {
-        "by": actor or role or "eos",
-        "role": role or "architect",
-        "at": utc_now(),
-        "mode": "auto" if auto else "reviewed",
-    }
-    if record["state"] == "DRAFT":
-        record["state"] = "REVIEWED"
-        record["history"].append({"from": "DRAFT", "to": "REVIEWED", "at": utc_now(),
-                                  "actor": actor or role, "reason": "approval review"})
-    save(workspace, record)
-    return transition(workspace, record, "APPROVED_FOR_EDIT", actor or role,
-                      "pre-edit contract complete")
+    try:
+        conflicts = active_conflicts(workspace, record["project"], scope_list(record), record["id"])
+        if conflicts:
+            print("BLOCKED: another active write authorization covers this surface")
+            for conflict in conflicts[:5]:
+                print(f"  - {conflict['id']} ({conflict['state']}) scope {conflict['scope']} "
+                      f"overlaps {conflict['path']} (session {conflict['session_id'] or '-'})")
+            print("  next: close or supersede the other decision before approving this one")
+            return 1
+        record["approval"] = {
+            "by": actor or role or "eos",
+            "role": role or "architect",
+            "at": utc_now(),
+            "mode": "auto" if auto else "reviewed",
+        }
+        if record["state"] == "DRAFT":
+            record["state"] = "REVIEWED"
+            record["history"].append({"from": "DRAFT", "to": "REVIEWED", "at": utc_now(),
+                                      "actor": actor or role, "reason": "approval review"})
+        save(workspace, record)
+        return transition(workspace, record, "APPROVED_FOR_EDIT", actor or role,
+                          "pre-edit contract complete")
+    finally:
+        ep.unlock_handle(handle)
 
 
 def cmd_approve(args) -> int:
@@ -1202,6 +1229,8 @@ def selftest() -> int:
         os.makedirs(os.path.join(root, ".agents", "evidence"), exist_ok=True)
         return root
 
+    engine_dir = os.path.dirname(os.path.abspath(__file__))
+
     def open_atomic(root, scope="engine/tools/x.py", approve=True) -> str:
         args = argparse.Namespace(
             project="eos", task="fix a local bug", risk="ATOMIC", scope=[scope],
@@ -1240,6 +1269,14 @@ def selftest() -> int:
         assert not scopes_overlap("engine/tools/x.py", "engine/tools/y.py")
         return "directory prefix"
 
+    @case("wildcard scopes overlap conservatively")
+    def _():
+        assert scopes_overlap("*.py", "foo.py")
+        assert scopes_overlap("src/f*.py", "src/foo.py")
+        assert scopes_overlap("*.py", "*.js"), "unprovable overlap must fail closed"
+        assert not scopes_overlap("src/f*.py", "src/b*.py")
+        return "wildcard fail closed"
+
     @case("a second active authorization over the same surface is refused")
     def _():
         root = workspace()
@@ -1255,6 +1292,53 @@ def selftest() -> int:
         assert approve_record(root, record_value, "eos.test", "eos.atomic", True) == 1
         assert check_edit(root, "eos", os.path.join(root, "engine/tools/x.py"))["decision"] == first
         return "overlap blocked"
+
+    @case("two processes cannot approve overlapping decisions")
+    def _():
+        root = workspace()
+        start = os.path.join(root, "start.txt")
+        ready_files = [os.path.join(root, f"ready-{index}.txt") for index in range(2)]
+        helper = (
+            "import argparse, os, sys, time\n"
+            f"sys.path.insert(0, {engine_dir!r})\n"
+            "import decision as edr\n"
+            "root, scope, ready, start = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]\n"
+            "task = 'race-' + scope\n"
+            "args = argparse.Namespace(project='eos', task=task, risk='ATOMIC',\n"
+            "    scope=[scope], suite='unit', actor='race', approve=False,\n"
+            "    workspace=root, session='')\n"
+            "assert edr.cmd_open(args) == 0\n"
+            "record = next(item for item in edr.latest_decisions(root, 'eos')\n"
+            "              if item.get('task') == task)\n"
+            "with open(ready, 'w', encoding='utf-8') as handle:\n"
+            "    handle.write('ready')\n"
+            "deadline = time.time() + 15\n"
+            "while not os.path.exists(start):\n"
+            "    if time.time() > deadline:\n"
+            "        sys.exit(4)\n"
+            "    time.sleep(0.01)\n"
+            "sys.exit(0 if edr.approve_record(root, record, 'race', 'eos.atomic', True) == 0 else 3)\n"
+        )
+        procs = []
+        for index, scope in enumerate(("proj", "proj/a.py")):
+            procs.append(subprocess.Popen(
+                [sys.executable, "-c", helper, root, scope, ready_files[index], start],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        deadline = time.time() + 20
+        while time.time() < deadline and not all(os.path.exists(path) for path in ready_files):
+            time.sleep(0.01)
+        if not all(os.path.exists(path) for path in ready_files):
+            for proc in procs:
+                proc.kill()
+            raise AssertionError("processes did not reach the approval barrier")
+        with open(start, "w", encoding="utf-8") as handle:
+            handle.write("go")
+        codes = [proc.wait(timeout=30) for proc in procs]
+        assert sorted(codes) == [0, 3], codes
+        active = [item for item in latest_decisions(root, "eos")
+                  if item.get("state") == "APPROVED_FOR_EDIT"]
+        assert len(active) == 1, active
+        return "one process won"
 
     @case("scope cannot escape the workspace")
     def _():
