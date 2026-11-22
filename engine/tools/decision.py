@@ -325,7 +325,63 @@ def path_in_scope(pattern: str, path: str) -> bool:
     path = normalise_rel(path)
     if pattern.endswith("/"):
         return path.startswith(pattern)
+    if not any(char in pattern for char in "*?["):
+        # A scope that names a directory covers its descendants even without a
+        # trailing slash. This is the difference between an approved EDR and a
+        # silently minted second one.
+        return path == pattern or path.startswith(pattern + "/")
     return bool(_pattern_regex(pattern).match(path))
+
+
+def _literal_prefix(pattern: str) -> str:
+    pattern = normalise_rel(pattern)
+    for index, char in enumerate(pattern):
+        if char in "*?[":
+            return pattern[:index].rstrip("/")
+    return pattern.rstrip("/")
+
+
+def scopes_overlap(first: str, second: str) -> bool:
+    """Conservative overlap test for two declared scopes."""
+    first = normalise_rel(first).rstrip("/")
+    second = normalise_rel(second).rstrip("/")
+    if not first or not second:
+        return False
+    if first == second:
+        return True
+    if path_in_scope(first + "/", second) or path_in_scope(second + "/", first):
+        return True
+    first_prefix, second_prefix = _literal_prefix(first), _literal_prefix(second)
+    if first_prefix and second_prefix:
+        if first_prefix == second_prefix:
+            return True
+        if first_prefix.startswith(second_prefix + "/"):
+            return True
+        if second_prefix.startswith(first_prefix + "/"):
+            return True
+    return False
+
+
+def active_conflicts(workspace: str, project: str, scope: list, ignore_id: str = "") -> list:
+    conflicts = []
+    for other in latest_decisions(workspace, project):
+        if other.get("id") == ignore_id:
+            continue
+        if other.get("state") not in ("APPROVED_FOR_EDIT", "IMPLEMENTED"):
+            continue
+        if integrity(other):
+            continue
+        for new_scope in scope or []:
+            for old_scope in scope_list(other):
+                if scopes_overlap(new_scope, old_scope):
+                    conflicts.append({"id": other.get("id"), "state": other.get("state"),
+                                      "scope": old_scope, "path": new_scope,
+                                      "session_id": other.get("session_id") or ""})
+                    break
+            else:
+                continue
+            break
+    return conflicts
 
 
 def covers(scope: list, path: str) -> bool:
@@ -702,6 +758,14 @@ def approve_record(workspace: str, record: dict, actor: str, role: str, auto: bo
         if confirm != record["id"]:
             print("BLOCKED: human approval requires --confirm <decision-id>")
             return 1
+    conflicts = active_conflicts(workspace, record["project"], scope_list(record), record["id"])
+    if conflicts:
+        print("BLOCKED: another active write authorization covers this surface")
+        for conflict in conflicts[:5]:
+            print(f"  - {conflict['id']} ({conflict['state']}) scope {conflict['scope']} "
+                  f"overlaps {conflict['path']} (session {conflict['session_id'] or '-'})")
+        print("  next: close or supersede the other decision before approving this one")
+        return 1
     record["approval"] = {
         "by": actor or role or "eos",
         "role": role or "architect",
@@ -1166,6 +1230,31 @@ def selftest() -> int:
         assert inside["ok"], inside
         assert not outside["ok"], outside
         return inside["decision"]
+
+    @case("directory scope covers descendants without a trailing slash")
+    def _():
+        assert path_in_scope("engine/tools", "engine/tools/x.py")
+        assert path_in_scope("engine/tools", "engine/tools")
+        assert not path_in_scope("engine/tools/x.py", "engine/tools/y.py")
+        assert scopes_overlap("engine/tools", "engine/tools/x.py")
+        assert not scopes_overlap("engine/tools/x.py", "engine/tools/y.py")
+        return "directory prefix"
+
+    @case("a second active authorization over the same surface is refused")
+    def _():
+        root = workspace()
+        first = open_atomic(root, scope="engine/tools", approve=True)
+        args = argparse.Namespace(
+            project="eos", task="second writer", risk="ATOMIC",
+            scope=["engine/tools/x.py"], suite="unit", actor="eos.test",
+            approve=False, workspace=root, session="",
+        )
+        assert cmd_open(args) == 0
+        second = latest_decisions(root, "eos")[0]["id"]
+        record_value = load(root, "eos", second)
+        assert approve_record(root, record_value, "eos.test", "eos.atomic", True) == 1
+        assert check_edit(root, "eos", os.path.join(root, "engine/tools/x.py"))["decision"] == first
+        return "overlap blocked"
 
     @case("scope cannot escape the workspace")
     def _():

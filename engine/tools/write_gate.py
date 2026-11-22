@@ -98,6 +98,10 @@ def check(workspace: str, path: str, session: str = "", project: str = "") -> di
                        "reason": f"work task is owned by session {owner}"}
 
     reasons = [verdict["reason"]]
+    map_sha = str(map_value.get("map_sha256") or "")
+    map_generated = str(map_value.get("generated_at") or "")
+    if map_sha:
+        reasons.append(f"map {map_state} sha256={map_sha[:16]} generated_at={map_generated}")
     if decision.get("reasons"):
         reasons.extend(decision["reasons"][:3])
     return {
@@ -106,6 +110,8 @@ def check(workspace: str, path: str, session: str = "", project: str = "") -> di
         "project": project, "path": ep.store_path(absolute, workspace),
         "session": session, "owner": owner,
         "map_state": map_state,
+        "map_sha256": map_sha,
+        "map_generated_at": map_generated,
         "map_coverage": map_value.get("coverage_state", "UNKNOWN"),
         "map_dirty_files": map_value.get("dirty_files") or [],
         "decision": decision.get("decision") if decision.get("ok") else "",
@@ -145,6 +151,26 @@ def selftest() -> int:
         needs = policy("CURRENT", None)
         assert needs["allow"] is False and needs["needs_decision"] is True
         return "invalid/needs"
+
+    @case("map revision is part of the gate evidence")
+    def _():
+        root = tempfile.mkdtemp(prefix="eos-gate-m-")
+        registry = os.path.join(root, ".agents", "registry")
+        os.makedirs(registry)
+        with open(os.path.join(registry, "PROJECT_PROFILES.json"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            json.dump({"profiles": [{"id": "demo", "path": "proj"}]}, handle)
+        project = os.path.join(root, "proj")
+        os.makedirs(project)
+        with open(os.path.join(project, "a.py"), "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("x = 1\n")
+        assert pm.cmd_create(argparse.Namespace(project="demo", workspace=root,
+                                                force=False, project_path="")) == 0
+        result = check(root, os.path.join(project, "a.py"), "s1", "demo")
+        assert result["map_sha256"], result
+        assert result["map_generated_at"], result
+        assert any("sha256=" in reason for reason in result["reasons"]), result
+        return "map sha recorded"
 
     @case("another session's EDR is refused")
     def _():

@@ -121,6 +121,20 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
                 "missing": [], "next": "write inside the scope",
                 "human_approval_required": False, "reused": True}
 
+    conflicts = edr.active_conflicts(workspace, project, scope)
+    if conflicts:
+        return {
+            "verdict": "BLOCKED",
+            "problems": [f"{item['id']} ({item['state']}) already holds an active write "
+                         f"authorization for {item['path']} (session {item['session_id'] or '-'})"
+                         for item in conflicts[:5]],
+            "risk": "UNKNOWN",
+            "reasons": ["another session owns this write surface"],
+            "project": project, "scope": scope, "approved": False,
+            "human_approval_required": True, "reused": False, "state": "DRAFT",
+            "next": "close or supersede the other decision before writing",
+        }
+
     impact = None
     impact_note = "not measured"
     if use_impact:
@@ -185,8 +199,12 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
     # clean challenge ledger must happen first. CRITICAL is never approved by a
     # model; a human must do it.
 
+    if approve and risk == "ATOMIC" and not approved:
+        verdict = "BLOCKED"
+    else:
+        verdict = "READY" if approved or risk != "CRITICAL" else "BLOCKED"
     return {
-        "verdict": "READY" if approved or risk != "CRITICAL" else "BLOCKED",
+        "verdict": verdict,
         "decision": decision_id,
         "risk": risk,
         "reasons": reasons,
@@ -227,6 +245,40 @@ def selftest() -> int:
         assert result["approved"] is True, result
         assert result["state"] == "APPROVED_FOR_EDIT", result
         return result["decision"]
+
+    @case("a directory decision without a trailing slash is reused")
+    def _():
+        root = fixture()
+        os.makedirs(os.path.join(root, "proj"))
+        with open(os.path.join(root, "proj", "a.py"), "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("x = 1\n")
+        args = argparse.Namespace(project="eos", task="directory scope", risk="ATOMIC",
+                                  scope=["proj"], suite="unit", actor="eos.test",
+                                  approve=True, workspace=root, session="")
+        assert edr.cmd_open(args) == 0
+        result = prepare(root, "eos", "retry the same task", ["proj/a.py"],
+                         approve=True, use_impact=False, session="")
+        assert result.get("reused") is True, result
+        return result["decision"]
+
+    @case("another session cannot take over a directory decision")
+    def _():
+        root = fixture()
+        os.makedirs(os.path.join(root, "proj"))
+        with open(os.path.join(root, "proj", "a.py"), "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("x = 1\n")
+        args = argparse.Namespace(project="eos", task="owner task", risk="ATOMIC",
+                                  scope=["proj"], suite="unit", actor="eos.test",
+                                  approve=True, workspace=root, session="ses_a")
+        assert edr.cmd_open(args) == 0
+        before = len(edr.latest_decisions(root, "eos"))
+        result = prepare(root, "eos", "takeover task", ["proj/a.py"],
+                         approve=True, use_impact=False, session="ses_b")
+        assert result["verdict"] == "BLOCKED", result
+        assert result["approved"] is False, result
+        assert result.get("reused") is not True, result
+        assert len(edr.latest_decisions(root, "eos")) == before, "a second EDR was created"
+        return "blocked without a second EDR"
 
     @case("several files become STANDARD and are not auto-approved without review")
     def _():
