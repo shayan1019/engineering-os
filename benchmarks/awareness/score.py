@@ -190,7 +190,8 @@ def score_tree(scenario: dict, tree: Path, agent: dict, meta: dict | None = None
 
     self_entries = [item for item in agent.get("self_correction") or []
                     if isinstance(item, dict) and item.get("wrong") and item.get("fix")
-                    and item.get("evidence")]
+                    and item.get("detected_by") and item.get("evidence")
+                    and any(str(path) in changed for path in item.get("evidence") or [])]
     self_correction = 1.0 if self_entries else 0.0
 
     closure = 1.0 if checks and all(item.get("ok") for item in run_checks(scenario, tree)) else 0.0
