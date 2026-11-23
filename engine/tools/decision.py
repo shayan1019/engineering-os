@@ -297,6 +297,42 @@ def scope_pattern(pattern: str) -> str:
     return norm
 
 
+def scope_input_problem(workspace: str, raw: str) -> str:
+    """Diagnose an accidentally comma-joined set of existing scope paths.
+
+    Never split or grant permission automatically: a comma can be part of a
+    legitimate filename. Diagnose only if the exact literal path is absent and
+    every independently specified component exists inside this workspace.
+    The caller must resubmit an explicit scope list before any EDR is opened.
+    """
+    if not isinstance(raw, str):
+        return ""
+    value = normalise_rel(raw)
+    if "," not in value or any(char in value for char in "*?["):
+        return ""
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) < 2 or any(not part for part in parts):
+        return ""
+    root = os.path.realpath(os.path.abspath(workspace))
+    literal = os.path.join(root, value.replace("/", os.sep))
+    if os.path.lexists(literal):
+        return ""
+    for part in parts:
+        try:
+            scope_pattern(part)
+        except DecisionError:
+            return ""
+        candidate = os.path.realpath(os.path.join(root, part.replace("/", os.sep)))
+        if not (candidate == root or candidate.startswith(root + os.sep)):
+            return ""
+        if not os.path.exists(candidate):
+            return ""
+    suggestion = " ".join(f'--scope "{part}"' for part in parts)
+    return (f"ambiguous comma-joined scope {value!r}; no authorization created. "
+            f"If these are separate scopes, pass {suggestion}. "
+            "A literal comma filename must already exist to disambiguate.")
+
+
 def _pattern_regex(pattern: str) -> re.Pattern:
     out = []
     index = 0
@@ -524,6 +560,10 @@ def cmd_open(args) -> int:
         return 2
     scope = []
     for raw in args.scope or []:
+        problem = scope_input_problem(workspace, raw)
+        if problem:
+            print(f"BLOCKED: {problem}")
+            return 2
         try:
             scope.append(scope_pattern(raw))
         except DecisionError as exc:
@@ -658,6 +698,12 @@ def cmd_set(args) -> int:
         except json.JSONDecodeError as exc:
             print(f"BLOCKED: --value looks like JSON but does not parse: {exc}")
             return 2
+    if args.field == "scope":
+        for raw in value if isinstance(value, list) else [value]:
+            problem = scope_input_problem(workspace, raw)
+            if problem:
+                print(f"BLOCKED: {problem}")
+                return 2
     try:
         set_field(record, args.field, value, args.evidence)
     except DecisionError as exc:
@@ -1338,6 +1384,32 @@ def selftest() -> int:
         assert inside["ok"], inside
         assert not outside["ok"], outside
         return inside["decision"]
+
+    @case("accidentally comma-joined scope is rejected before an EDR opens")
+    def _():
+        root = workspace()
+        os.makedirs(os.path.join(root, "6.0_final_merge"))
+        os.makedirs(os.path.join(root, "_canonical"))
+        raw = "6.0_final_merge,_canonical"
+        problem = scope_input_problem(root, raw)
+        assert "comma-joined" in problem and '--scope "_canonical"' in problem, problem
+        before = len(latest_decisions(root, "eos"))
+        args = argparse.Namespace(project="eos", task="repair scope",
+                                  risk="ATOMIC", scope=[raw], suite="unit",
+                                  actor="eos.test", approve=True,
+                                  workspace=root, session="")
+        assert cmd_open(args) == 2
+        assert len(latest_decisions(root, "eos")) == before
+        return "no ambiguous EDR"
+
+    @case("real comma filename does not trigger joined-scope diagnosis")
+    def _():
+        root = workspace()
+        for name in ("part", "other", "part,other"):
+            os.makedirs(os.path.join(root, name))
+        assert not scope_input_problem(root, "part,other")
+        assert not scope_input_problem(root, "new,not-yet-existing")
+        return "literal commas preserved"
 
     @case("directory scope covers descendants without a trailing slash")
     def _():
