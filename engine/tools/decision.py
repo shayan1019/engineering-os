@@ -333,24 +333,65 @@ def path_in_scope(pattern: str, path: str) -> bool:
     return bool(_pattern_regex(pattern).match(path))
 
 
-def _literal_prefix(pattern: str) -> str:
-    pattern = normalise_rel(pattern)
-    for index, char in enumerate(pattern):
-        if char in "*?[":
-            return pattern[:index].rstrip("/")
-    return pattern.rstrip("/")
-
-
 def _has_glob(pattern: str) -> bool:
     return any(char in pattern for char in "*?[")
+
+
+def _segments(pattern: str) -> list:
+    return [part for part in normalise_rel(pattern).split("/") if part]
+
+
+def _segment_prefix(segment: str) -> str:
+    for index, char in enumerate(segment):
+        if char in "*?[":
+            return segment[:index]
+    return segment
+
+
+def _segment_overlap(first: str, second: str) -> bool:
+    first_glob = _has_glob(first)
+    second_glob = _has_glob(second)
+    if not first_glob and not second_glob:
+        return first == second
+    if not first_glob:
+        return bool(_pattern_regex(second).match(first))
+    if not second_glob:
+        return bool(_pattern_regex(first).match(second))
+    first_prefix, second_prefix = _segment_prefix(first), _segment_prefix(second)
+    if not first_prefix or not second_prefix:
+        return True
+    return first_prefix.startswith(second_prefix) or second_prefix.startswith(first_prefix)
+
+
+def _head_segments(segments: list) -> list:
+    head = []
+    for segment in segments:
+        if "**" in segment:
+            break
+        head.append(segment)
+    return head
+
+
+def _segments_overlap(first: str, second: str) -> bool:
+    first_segments, second_segments = _segments(first), _segments(second)
+    if any("**" in segment for segment in first_segments + second_segments):
+        for left, right in zip(_head_segments(first_segments), _head_segments(second_segments)):
+            if not _segment_overlap(left, right):
+                return False
+        return True
+    if len(first_segments) != len(second_segments):
+        return False
+    return all(_segment_overlap(left, right)
+               for left, right in zip(first_segments, second_segments))
 
 
 def scopes_overlap(first: str, second: str) -> bool:
     """Conservative overlap test for two declared scopes.
 
-    When two globs cannot be proven disjoint, the answer is True. A false
-    negative would authorise two writers over the same file, which is the
-    failure this function exists to prevent.
+    A concrete path that matches the other glob overlaps. Two globs overlap
+    when their segment languages can meet; when that cannot be decided, the
+    answer is True. A false negative would authorise two writers over the same
+    file, which is the failure this function exists to prevent.
     """
     first = normalise_rel(first).rstrip("/")
     second = normalise_rel(second).rstrip("/")
@@ -360,24 +401,11 @@ def scopes_overlap(first: str, second: str) -> bool:
         return True
     first_glob = _has_glob(first)
     second_glob = _has_glob(second)
-    if not first_glob and path_in_scope(second, first):
+    if not first_glob and path_in_scope(first + "/", second):
         return True
-    if not second_glob and path_in_scope(first, second):
+    if not second_glob and path_in_scope(second + "/", first):
         return True
-    if not first_glob and not second_glob:
-        return path_in_scope(first + "/", second) or path_in_scope(second + "/", first)
-    first_prefix, second_prefix = _literal_prefix(first), _literal_prefix(second)
-    if not first_prefix or not second_prefix:
-        return True
-    if first_prefix == second_prefix:
-        return True
-    if first_prefix.startswith(second_prefix + "/"):
-        return True
-    if second_prefix.startswith(first_prefix + "/"):
-        return True
-    if "**" in first or "**" in second:
-        return True
-    return False
+    return _segments_overlap(first, second)
 
 
 def active_conflicts(workspace: str, project: str, scope: list, ignore_id: str = "") -> list:
@@ -1273,6 +1301,7 @@ def selftest() -> int:
     def _():
         assert scopes_overlap("*.py", "foo.py")
         assert scopes_overlap("src/f*.py", "src/foo.py")
+        assert scopes_overlap("src/f*.py", "src/foo*.py")
         assert scopes_overlap("*.py", "*.js"), "unprovable overlap must fail closed"
         assert not scopes_overlap("src/f*.py", "src/b*.py")
         return "wildcard fail closed"
@@ -1320,7 +1349,7 @@ def selftest() -> int:
             "sys.exit(0 if edr.approve_record(root, record, 'race', 'eos.atomic', True) == 0 else 3)\n"
         )
         procs = []
-        for index, scope in enumerate(("proj", "proj/a.py")):
+        for index, scope in enumerate(("src/f*.py", "src/foo*.py")):
             procs.append(subprocess.Popen(
                 [sys.executable, "-c", helper, root, scope, ready_files[index], start],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
