@@ -380,7 +380,13 @@ def _segments_overlap(first: str, second: str) -> bool:
                 return False
         return True
     if len(first_segments) != len(second_segments):
-        return False
+        shorter, longer = ((first_segments, second_segments)
+                           if len(first_segments) < len(second_segments)
+                           else (second_segments, first_segments))
+        if any(_has_glob(segment) for segment in shorter):
+            return False
+        return all(_segment_overlap(left, right)
+                   for left, right in zip(shorter, longer))
     return all(_segment_overlap(left, right)
                for left, right in zip(first_segments, second_segments))
 
@@ -1259,6 +1265,51 @@ def selftest() -> int:
 
     engine_dir = os.path.dirname(os.path.abspath(__file__))
 
+    def race_scopes(scopes) -> tuple:
+        root = workspace()
+        start = os.path.join(root, "start.txt")
+        ready_files = [os.path.join(root, f"ready-{index}.txt")
+                       for index in range(len(scopes))]
+        helper = (
+            "import argparse, os, sys, time\n"
+            f"sys.path.insert(0, {engine_dir!r})\n"
+            "import decision as edr\n"
+            "root, scope, ready, start = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]\n"
+            "task = 'race-' + scope\n"
+            "args = argparse.Namespace(project='eos', task=task, risk='ATOMIC',\n"
+            "    scope=[scope], suite='unit', actor='race', approve=False,\n"
+            "    workspace=root, session='')\n"
+            "assert edr.cmd_open(args) == 0\n"
+            "record = next(item for item in edr.latest_decisions(root, 'eos')\n"
+            "              if item.get('task') == task)\n"
+            "with open(ready, 'w', encoding='utf-8') as handle:\n"
+            "    handle.write('ready')\n"
+            "deadline = time.time() + 15\n"
+            "while not os.path.exists(start):\n"
+            "    if time.time() > deadline:\n"
+            "        sys.exit(4)\n"
+            "    time.sleep(0.01)\n"
+            "sys.exit(0 if edr.approve_record(root, record, 'race', 'eos.atomic', True) == 0 else 3)\n"
+        )
+        procs = []
+        for index, scope in enumerate(scopes):
+            procs.append(subprocess.Popen(
+                [sys.executable, "-c", helper, root, scope, ready_files[index], start],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        deadline = time.time() + 20
+        while time.time() < deadline and not all(os.path.exists(path) for path in ready_files):
+            time.sleep(0.01)
+        if not all(os.path.exists(path) for path in ready_files):
+            for proc in procs:
+                proc.kill()
+            raise AssertionError("processes did not reach the approval barrier")
+        with open(start, "w", encoding="utf-8") as handle:
+            handle.write("go")
+        codes = [proc.wait(timeout=30) for proc in procs]
+        active = [item for item in latest_decisions(root, "eos")
+                  if item.get("state") == "APPROVED_FOR_EDIT"]
+        return codes, active
+
     def open_atomic(root, scope="engine/tools/x.py", approve=True) -> str:
         args = argparse.Namespace(
             project="eos", task="fix a local bug", risk="ATOMIC", scope=[scope],
@@ -1312,6 +1363,15 @@ def selftest() -> int:
         assert not scopes_overlap("src/f*.py", "src/b*.py")
         return "prefix intersection"
 
+    @case("a literal directory conflicts with a deeper wildcard")
+    def _():
+        assert scopes_overlap("src/foo", "src/f*/bar.py")
+        assert scopes_overlap("src/f*/bar.py", "src/foo")
+        assert scopes_overlap("src/foo", "src/foo*/bar.py")
+        assert scopes_overlap("src/foo*/bar.py", "src/foo")
+        assert not scopes_overlap("src/foo", "src/bar/baz.py")
+        return "directory prefix"
+
     @case("a second active authorization over the same surface is refused")
     def _():
         root = workspace()
@@ -1330,48 +1390,15 @@ def selftest() -> int:
 
     @case("two processes cannot approve overlapping decisions")
     def _():
-        root = workspace()
-        start = os.path.join(root, "start.txt")
-        ready_files = [os.path.join(root, f"ready-{index}.txt") for index in range(2)]
-        helper = (
-            "import argparse, os, sys, time\n"
-            f"sys.path.insert(0, {engine_dir!r})\n"
-            "import decision as edr\n"
-            "root, scope, ready, start = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]\n"
-            "task = 'race-' + scope\n"
-            "args = argparse.Namespace(project='eos', task=task, risk='ATOMIC',\n"
-            "    scope=[scope], suite='unit', actor='race', approve=False,\n"
-            "    workspace=root, session='')\n"
-            "assert edr.cmd_open(args) == 0\n"
-            "record = next(item for item in edr.latest_decisions(root, 'eos')\n"
-            "              if item.get('task') == task)\n"
-            "with open(ready, 'w', encoding='utf-8') as handle:\n"
-            "    handle.write('ready')\n"
-            "deadline = time.time() + 15\n"
-            "while not os.path.exists(start):\n"
-            "    if time.time() > deadline:\n"
-            "        sys.exit(4)\n"
-            "    time.sleep(0.01)\n"
-            "sys.exit(0 if edr.approve_record(root, record, 'race', 'eos.atomic', True) == 0 else 3)\n"
-        )
-        procs = []
-        for index, scope in enumerate(("src/f*.py", "src/foo*.py")):
-            procs.append(subprocess.Popen(
-                [sys.executable, "-c", helper, root, scope, ready_files[index], start],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        deadline = time.time() + 20
-        while time.time() < deadline and not all(os.path.exists(path) for path in ready_files):
-            time.sleep(0.01)
-        if not all(os.path.exists(path) for path in ready_files):
-            for proc in procs:
-                proc.kill()
-            raise AssertionError("processes did not reach the approval barrier")
-        with open(start, "w", encoding="utf-8") as handle:
-            handle.write("go")
-        codes = [proc.wait(timeout=30) for proc in procs]
+        codes, active = race_scopes(("src/f*.py", "src/foo*.py"))
         assert sorted(codes) == [0, 3], codes
-        active = [item for item in latest_decisions(root, "eos")
-                  if item.get("state") == "APPROVED_FOR_EDIT"]
+        assert len(active) == 1, active
+        return "one process won"
+
+    @case("two processes cannot approve a directory/wildcard conflict")
+    def _():
+        codes, active = race_scopes(("src/foo", "src/f*/bar.py"))
+        assert sorted(codes) == [0, 3], codes
         assert len(active) == 1, active
         return "one process won"
 
