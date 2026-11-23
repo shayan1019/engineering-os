@@ -28,6 +28,12 @@ jobs:
         run: python engine/tools/skill_index.py discover
       - name: Skill doctor
         run: python engine/tools/skill_index.py doctor || true
+      - name: Scope, EDR and work-state regression selftests
+        run: |
+          python engine/tools/decision.py selftest
+          python engine/tools/auto_decision.py selftest
+          python engine/tools/write_gate.py selftest
+          python engine/tools/work_state.py selftest
       - name: Activation plugin test (automatic EOS activation)
         run: node engine/host-plugins/opencode/eos-activation.test.mjs
       - name: Secret scan over the engine
