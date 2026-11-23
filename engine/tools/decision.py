@@ -965,6 +965,13 @@ def cmd_implement(args) -> int:
     for item in files:
         if item not in known:
             known.append(item)
+    hashes = dict((record.get("change") or {}).get("hashes") or {})
+    for item in known:
+        full_path = ep.load_stored_path(item, workspace)
+        try:
+            hashes[item] = sha256_file(full_path)
+        except OSError:
+            continue
     stamps = []
     for item in known:
         full_path = ep.load_stored_path(item, workspace)
@@ -976,12 +983,89 @@ def cmd_implement(args) -> int:
     # the agent got around to recording it. File mtime is the only honest clock
     # available here; `implement` may legitimately run after the gate.
     recorded_at = iso_from_timestamp(max(stamps)) if stamps else utc_now()
-    record["change"] = {"files": known, "diff_sha256": "", "recorded_at": recorded_at}
+    record["change"] = {"files": known, "hashes": hashes,
+                        "diff_sha256": sha256_bytes(canonical(hashes)),
+                        "recorded_at": recorded_at}
     save(workspace, record)
     if record["state"] == "APPROVED_FOR_EDIT":
         return transition(workspace, record, "IMPLEMENTED", args.actor or "implementer",
                           "implementation recorded")
     print(f"IMPLEMENTED: {record['id']} ({len(known)} file(s))")
+    return 0
+
+
+def cmd_record_change(args) -> int:
+    """Attach the real changed files and hashes to the decision that allowed them.
+
+    Authorization-only EDRs were a known audit gap: the write receipt lived in
+    the work state and the guard log, not in the EDR. This command records the
+    exact file content hashes without changing the decision state or gate.
+    """
+    workspace = resolve_workspace(args.workspace)
+    if not args.project:
+        first = (args.file or [""])[0]
+        absolute = os.path.abspath(first if os.path.isabs(first)
+                                   else os.path.join(workspace, first))
+        args.project = infer_project(workspace, absolute) or ""
+        if not args.project:
+            print("BLOCKED: project could not be inferred for the change evidence")
+            return 1
+    record = load(workspace, args.project, args.id)
+    problems = integrity(record)
+    if problems:
+        print("BLOCKED: decision record is not trustworthy")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 1
+    if record["state"] not in ("APPROVED_FOR_EDIT", "IMPLEMENTED"):
+        print(f"BLOCKED: {record['state']} is not a writable state")
+        return 1
+    owner = str(record.get("session_id") or "")
+    if owner and args.session and owner != args.session:
+        print(f"BLOCKED: {record['id']} is owned by session {owner}")
+        return 1
+    files = []
+    hashes = {}
+    problems = []
+    for raw in args.file or []:
+        absolute = os.path.abspath(raw if os.path.isabs(raw)
+                                   else os.path.join(workspace, raw))
+        if not (absolute == workspace or absolute.startswith(workspace + os.sep)):
+            problems.append(f"outside the workspace: {raw}")
+            continue
+        rel = ep.store_path(absolute, workspace)
+        if not covers(scope_list(record), rel):
+            problems.append(f"outside the approved scope: {rel}")
+            continue
+        if not os.path.isfile(absolute):
+            problems.append(f"changed file does not exist: {rel}")
+            continue
+        files.append(rel)
+        hashes[rel] = sha256_file(absolute)
+    if problems:
+        print("BLOCKED: change evidence rejected")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 1
+    if not files:
+        print("BLOCKED: no changed file was recorded")
+        return 2
+    record["change"] = {
+        "files": files,
+        "hashes": hashes,
+        "diff_sha256": sha256_bytes(canonical(hashes)),
+        "recorded_at": utc_now(),
+        "session": args.session or owner,
+    }
+    save(workspace, record)
+    result = {"ok": True, "decision": record["id"], "files": files,
+              "hashes": hashes, "diff_sha256": record["change"]["diff_sha256"],
+              "state": record["state"]}
+    if args.json:
+        print(json.dumps(result, ensure_ascii=True))
+    else:
+        print(f"CHANGE: {record['id']} ({len(files)} file(s)) "
+              f"diff={record['change']['diff_sha256'][:12]}")
     return 0
 
 
@@ -1384,6 +1468,38 @@ def selftest() -> int:
         assert inside["ok"], inside
         assert not outside["ok"], outside
         return inside["decision"]
+
+    @case("a successful write records the changed file hash on the decision")
+    def _():
+        root = workspace()
+        target = os.path.join(root, "engine", "tools", "x.py")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("x = 1\n")
+        open_args = argparse.Namespace(
+            project="eos", task="hash evidence", risk="ATOMIC",
+            scope=["engine/tools/x.py"], suite="unit", actor="eos.test",
+            approve=True, workspace=root, session="owner",
+        )
+        assert cmd_open(open_args) == 0
+        decision_id = latest_decisions(root, "eos")[0]["id"]
+        args = argparse.Namespace(project="eos", id=decision_id,
+                                  file=["engine/tools/x.py"], session="owner",
+                                  workspace=root, json=True)
+        assert cmd_record_change(args) == 0
+        record_value = load(root, "eos", decision_id)
+        assert record_value["change"]["files"] == ["engine/tools/x.py"], record_value
+        assert len(record_value["change"]["hashes"]["engine/tools/x.py"]) == 64
+        assert len(record_value["change"]["diff_sha256"]) == 64
+        args.session = "other"
+        assert cmd_record_change(args) == 1
+        args.session = "owner"
+        args.file = ["engine/tools/y.py"]
+        with open(os.path.join(root, "engine", "tools", "y.py"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            handle.write("y = 1\n")
+        assert cmd_record_change(args) == 1
+        return "hash attached"
 
     @case("accidentally comma-joined scope is rejected before an EDR opens")
     def _():
@@ -1976,6 +2092,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--file", action="append", default=[])
     p.add_argument("--actor", default="implementer")
     p.set_defaults(func=cmd_implement)
+
+    p = sub.add_parser("record-change", parents=[common])
+    p.add_argument("--id", required=True)
+    p.add_argument("--file", action="append", default=[])
+    p.add_argument("--session", default="")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_record_change, project="")
 
     p = sub.add_parser("verify", parents=[common])
     p.add_argument("--id", required=True)

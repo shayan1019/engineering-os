@@ -384,6 +384,27 @@ def selftest() -> int:
         assert [item["id"] for item in edr.latest_decisions(root, "eos")] == existing
         return "no partial authorization"
 
+    @case("a wrong workspace root is rejected and a corrected scope reuses the EDR")
+    def _():
+        root = fixture()
+        args = argparse.Namespace(project="eos", task="approved file",
+                                  risk="ATOMIC", scope=["app.py"], suite="unit",
+                                  actor="eos.test", approve=True,
+                                  workspace=root, session="")
+        assert edr.cmd_open(args) == 0
+        decision = edr.latest_decisions(root, "eos")[0]["id"]
+        outside = os.path.join(tempfile.mkdtemp(prefix="eos-outside-"), "x.py")
+        result = prepare(root, "eos", "retry with a wrong root",
+                         ["app.py", outside], approve=True, use_impact=False, session="")
+        assert result["verdict"] == "BLOCKED", result
+        assert not result.get("reused"), result
+        assert [item["id"] for item in edr.latest_decisions(root, "eos")] == [decision]
+        result = prepare(root, "eos", "retry with the corrected scope",
+                         ["app.py"], approve=True, use_impact=False, session="")
+        assert result.get("reused") is True, result
+        assert result["decision"] == decision, result
+        return "reused after correction"
+
     @case("control-plane evidence cannot be an edit scope")
     def _():
         root = fixture()

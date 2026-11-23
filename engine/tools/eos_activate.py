@@ -230,6 +230,7 @@ def render(ctx: dict) -> str:
     how an agent framework becomes unusable.
     """
     lines = ["<eos-context>"]
+    engine_tools = os.path.join(str(ctx.get("engine") or ""), "tools")
     project = ctx.get("project")
     if project:
         lines.append(f"project: {project} (matched by {ctx.get('project_source') or 'unknown'})"
@@ -265,8 +266,11 @@ def render(ctx: dict) -> str:
             for s in ctx["skills"][:8]
         )
         lines.append("relevant skills: " + names)
-        lines.append("  selection is not usage: read only required SKILL.md via the host skill/read tool, "
-                     "then preserve actual tool evidence; otherwise state why each suggested skill was skipped")
+        lines.append("  selection is not usage: if a skill is required, read only its SKILL.md "
+                     "with the host read/skill tool; the guard records the read. If not required, "
+                     "record an explicit SKIPPED reason with "
+                     f'python "{engine_tools}\\skill_usage.py" skipped --skill <name> --reason <why>. '
+                     "Do not load every skill.")
         for skill in ctx["skills"][:3]:
             if skill.get("path"):
                 lines.append(f"  skill source: {skill['name']} -> {skill['path']}")
@@ -289,9 +293,11 @@ def render(ctx: dict) -> str:
     lines.append("scope input: every approved path must be workspace-relative; "
                  "pass multiple paths as repeated --scope arguments or a JSON scope array, "
                  "never as a comma-joined string")
-    lines.append("recovery after BLOCKED: inspect exact reason and affected scope; "
-                 "correct input using EOS tools, preserve sealed EDR history, "
-                 "re-run authorization and gate, then resume; never bypass a valid security denial")
+    lines.append("recovery after BLOCKED: run "
+                 f'python "{engine_tools}\\recovery.py" diagnose --path <path> --task <task>; '
+                 "apply only the returned safe next step, retry at most twice, preserve sealed "
+                 "EDR history, and never bypass another session's ownership, a reviewer, or a "
+                 "CRITICAL human gate")
     lines.append("permissions: only the implementer may write; the others are read-only")
     lines.append("write gate: EOS prepares the EDR automatically; ATOMIC is auto-approved, "
                  "STANDARD needs specialist review, CRITICAL needs a human")

@@ -31,9 +31,9 @@
 // `hook_unavailable`, never as success.
 
 import { spawn } from "node:child_process"
-import { appendFileSync, mkdirSync, existsSync, readdirSync } from "node:fs"
+import { appendFileSync, mkdirSync, existsSync, readdirSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { dirname, join, resolve, sep } from "node:path"
+import { dirname, join, resolve, sep, isAbsolute } from "node:path"
 import { tmpdir } from "node:os"
 
 const TIMEOUT_MS = 8000
@@ -44,6 +44,8 @@ const WRITE_TOOLS = new Set([
   "write", "edit", "patch", "multiedit", "apply_patch", "write_file",
   "edit_file", "create_file", "str_replace_editor",
 ])
+
+const READ_TOOLS = new Set(["read", "read_file"])
 
 const SHELL_TOOLS = new Set(["bash", "shell", "sh", "zsh", "powershell", "pwsh", "terminal"])
 
@@ -64,6 +66,8 @@ const READ_ONLY_PREFIXES = [
   "python .agents/tools/decision.py",
   "python .agents/tools/auto_decision.py",
   "python .agents/tools/project_map.py",
+  "python .agents/tools/skill_usage.py",
+  "python .agents/tools/recovery.py",
   "python .agents/tools/work_state.py",
   "python .agents/tools/preflight.py",
   "python .agents/tools/post_write.py",
@@ -322,6 +326,61 @@ function askWriteGate(engine, python, workspace, path, session, timeoutMs = 1200
              reasons: [`write gate produced no JSON ${err}`.slice(0, MAX_REASON)] })
     })
   })
+}
+
+function runTool(engine, python, workspace, script, args, timeoutMs = TIMEOUT_MS) {
+  return new Promise((resolvePromise) => {
+    let settled = false
+    const done = (value) => {
+      if (!settled) {
+        settled = true
+        resolvePromise(value)
+      }
+    }
+    let child
+    try {
+      child = spawn(python, [join(engine, "tools", script), ...args],
+        { cwd: workspace, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    } catch (error) {
+      done({ ok: false, reason: `${script} spawn failed: ${error.message}` })
+      return
+    }
+    let out = ""
+    let err = ""
+    const timer = setTimeout(() => {
+      try { child.kill() } catch {}
+      done({ ok: false, reason: `${script} timed out` })
+    }, timeoutMs)
+    child.stdout.on("data", (chunk) => { if (out.length < 100000) out += chunk.toString() })
+    child.stderr.on("data", (chunk) => { if (err.length < 4000) err += chunk.toString() })
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      done({ ok: false, reason: `${script} error: ${error.message}` })
+    })
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      done({ ok: code === 0, code, out: out.slice(0, 2000), reason: err.slice(0, MAX_REASON) })
+    })
+  })
+}
+
+function recordBlocked(engine, python, workspace, session, path, reasons, decision,
+                       mapState, mapSha) {
+  const reason = (Array.isArray(reasons) ? reasons.join("; ") : String(reasons || ""))
+    .slice(0, 2000)
+  return runTool(engine, python, workspace, "work_state.py", [
+    "record-blocked", "--workspace", workspace, "--path", path,
+    "--session", String(session || ""), "--reason", reason || "write denied",
+    "--decision", String(decision || ""), "--map-state", String(mapState || ""),
+    "--map-sha", String(mapSha || ""), "--json",
+  ])
+}
+
+function recordChange(engine, python, workspace, decision, path, session) {
+  return runTool(engine, python, workspace, "decision.py", [
+    "record-change", "--workspace", workspace, "--id", String(decision),
+    "--file", path, "--session", String(session || ""), "--json",
+  ])
 }
 
 function touchWrite(engine, python, workspace, path, session, timeoutMs = TIMEOUT_MS) {
@@ -843,6 +902,9 @@ function pythonVerdict(args) {
   }
   if (values[0] === "-c") return shellVerdict("deny", "inline code is not inspectable")
   if (values[0] === "-") return shellVerdict("deny", "stdin code is not inspectable")
+  if (/[/\\]engine[/\\]tools[/\\](decision|auto_decision|project_map|recovery|skill_usage|write_gate|post_write|work_state)\.py$/i.test(values[0])) {
+    return shellVerdict("allow", "EOS engine tool")
+  }
   if (/\.py$/i.test(values[0])) {
     return shellVerdict("ask", `python script requires approval: ${values[0]}`)
   }
@@ -1077,7 +1139,7 @@ function record(workspace, sessionID, entry) {
   try {
     const path = evidencePath(workspace, sessionID)
     mkdirSync(dirname(path), { recursive: true })
-    appendFileSync(path, JSON.stringify({ ts: now(), ...entry }) + "\n", "utf8")
+    appendFileSync(path, JSON.stringify({ ts: now(), session: String(sessionID || ""), ...entry }) + "\n", "utf8")
   } catch {
     // Evidence loss must not crash the host, but it must not turn a deny into
     // an allow either: recording happens after the verdict is computed.
@@ -1099,6 +1161,59 @@ export function summaryOf(tool, args) {
     path: typeof path === "string" ? path.slice(0, 300) : "",
     bytes: typeof value.content === "string" ? value.content.length : 0,
     args_sha256: sha256(JSON.stringify(value)).slice(0, 32),
+  }
+}
+
+export function skillFromPath(path, workspace) {
+  const raw = String(path || "").trim()
+  if (!raw) return null
+  const absolute = isAbsolute(raw) ? resolve(raw) : resolve(workspace, raw)
+  const root = resolve(workspace)
+  const absoluteLower = absolute.toLowerCase()
+  const rootLower = root.toLowerCase()
+  if (!(absoluteLower === rootLower || absoluteLower.startsWith(rootLower + sep))) return null
+  const relative = absolute.slice(root.length).replace(/^[/\\]+/, "").replace(/\\/g, "/")
+  if (relative !== "SKILL.md" && !relative.endsWith("/SKILL.md")) return null
+  if (!relative.includes(".agents/skills/") && !relative.includes(".opencode/skills/")) return null
+  const parts = relative.split("/")
+  if (parts.length < 3) return null
+  const skill = parts[parts.length - 2]
+  let digest = ""
+  try {
+    digest = sha256(readFileSync(absolute, "utf8"))
+  } catch {
+    // A read may be truncated by the host; the path and skill are still
+    // evidence, the hash is simply absent.
+  }
+  return { skill, path: relative, sha256: digest }
+}
+
+export function readTarget(tool, args) {
+  if (!READ_TOOLS.has(tool)) return ""
+  const value = args || {}
+  return String(value.path || value.filePath || value.file || value.filename || "")
+}
+
+export function skillFromReadOutput(output, workspace) {
+  const text = typeof output === "string"
+    ? output
+    : (output && typeof output.output === "string" ? output.output : "")
+  const match = text.match(/^Read file (.+?), lines \d+/m)
+  if (!match) return null
+  return skillFromPath(match[1].trim(), workspace)
+}
+
+function recordSkill(workspace, sessionID, info) {
+  try {
+    const session = String(sessionID || "unknown")
+      .replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80) || "unknown"
+    const path = join(workspace, ".agents", "evidence", "skills", session + ".jsonl")
+    mkdirSync(dirname(path), { recursive: true })
+    appendFileSync(path, JSON.stringify({
+      ts: now(), kind: "skill", verdict: "USED", ...info, source: "guard-read",
+    }) + "\n", "utf8")
+  } catch {
+    // Evidence loss must not turn a read into a deny.
   }
 }
 
@@ -1164,6 +1279,7 @@ async function install(ctx, options) {
   const { engine, python } = engineFor(workspace)
   const cache = new Map()
   const sessionTasks = new Map()
+  const pendingReads = new Map()
   const writes = createWriteQueue()
   const noteWrite = writes.note
   const takeWrite = writes.take
@@ -1207,6 +1323,14 @@ async function install(ctx, options) {
     const args = output && output.args || {}
     const summary = summaryOf(tool, args)
 
+    if (READ_TOOLS.has(tool)) {
+      const path = readTarget(tool, args)
+      if (path) {
+        const skill = skillFromPath(path, workspace)
+        if (skill) pendingReads.set(callIDOf(input), skill)
+      }
+    }
+
     if (WRITE_TOOLS.has(tool)) {
       const path = writeTarget(tool, args)
       if (!path) {
@@ -1220,8 +1344,11 @@ async function install(ctx, options) {
       const gate = await askWriteGate(engine, python, workspace, path, sessionID)
       if (!gate.allow && !gate.needs_decision) {
         record(workspace, sessionID, { ...summary, verdict: "DENY", reason: gate.reasons || [] })
+        await recordBlocked(engine, python, workspace, sessionID, path,
+                            gate.reasons || [], "", gate.map_state, gate.map_sha256)
         throw new Error(`EOS BLOCKED: ${path} (map=${gate.map_state || "UNKNOWN"}). ` +
-          `Reasons: ${(gate.reasons || []).join("; ").slice(0, MAX_REASON)}`)
+          `Reasons: ${(gate.reasons || []).join("; ").slice(0, MAX_REASON)}. ` +
+          `Next: python "${join(engine, "tools", "recovery.py")}" diagnose --path "${path}"`)
       }
       if (gate.allow) {
         noteWrite(path, sessionID, callIDOf(input), {
@@ -1245,6 +1372,9 @@ async function install(ctx, options) {
         }
         record(workspace, sessionID, { ...summary, verdict: "DENY",
           reason: (auto.reasons || decision.reasons || []) })
+        await recordBlocked(engine, python, workspace, sessionID, path,
+                            auto.reasons || decision.reasons || [], "", gate.map_state,
+                            gate.map_sha256)
         throw new Error(`EOS BLOCKED: no approved decision covers ${path}. ` +
           `EOS tried to prepare one automatically: ${(auto.reasons || []).join("; ").slice(0, MAX_REASON)}. ` +
           `Next: ${auto.next || "open a decision with auto_decision.py prepare"}`)
@@ -1335,6 +1465,10 @@ async function install(ctx, options) {
       })
       return
     }
+    if (verdict.kind === "read") {
+      const skill = skillFromPath(verdict.resource, workspace)
+      if (skill) recordSkill(workspace, input.sessionID, skill)
+    }
     if (verdict.allow === true) {
       record(workspace, input.sessionID, {
         kind: "permission", action: verdict.kind, resource: verdict.resource,
@@ -1354,10 +1488,15 @@ async function install(ctx, options) {
       const gate = await askWriteGate(engine, python, workspace, path, input.sessionID)
       if (!gate.allow && !gate.needs_decision) {
         input.effect = "deny"
+        input.message = `EOS BLOCKED: ${path}. ` +
+          `${(gate.reasons || []).join("; ").slice(0, MAX_REASON)}. ` +
+          `Next: python "${join(engine, "tools", "recovery.py")}" diagnose --path "${path}"`
         record(workspace, input.sessionID, {
           kind: "permission", action: "write", resource: path,
           verdict: "DENY", reason: gate.reasons || [],
         })
+        await recordBlocked(engine, python, workspace, input.sessionID, path,
+                            gate.reasons || [], "", gate.map_state, gate.map_sha256)
         return
       }
       if (gate.allow) {
@@ -1386,10 +1525,16 @@ async function install(ctx, options) {
           return
         }
         input.effect = "deny"
+        input.message = `EOS BLOCKED: ${path}. ` +
+          `${(auto.reasons || decision.reasons || []).join("; ").slice(0, MAX_REASON)}. ` +
+          `Next: python "${join(engine, "tools", "recovery.py")}" diagnose --path "${path}"`
         record(workspace, input.sessionID, {
           kind: "permission", action: "write", resource: path,
           verdict: "DENY", reason: auto.reasons || decision.reasons || [],
         })
+        await recordBlocked(engine, python, workspace, input.sessionID, path,
+                            auto.reasons || decision.reasons || [], "", gate.map_state,
+                            gate.map_sha256)
         return
       }
       noteWrite(path, input.sessionID, callIDOf(input), {
@@ -1412,6 +1557,14 @@ async function install(ctx, options) {
         const pending = WRITE_TOOLS.has(tool)
           ? takeWrite(input && input.sessionID, summary, callIDOf(input))
           : null
+        if (READ_TOOLS.has(tool)) {
+          const key = callIDOf(input)
+          const skill = pendingReads.get(key) || skillFromReadOutput(output, workspace)
+          pendingReads.delete(key)
+          if (skill && !toolFailed(output)) {
+            recordSkill(workspace, input && input.sessionID, skill)
+          }
+        }
         let touched = null
         if (pending && toolFailed(output)) {
           record(workspace, input && input.sessionID, {
@@ -1428,6 +1581,17 @@ async function install(ctx, options) {
             reason: touched.reason || "",
           })
           if (touched.ok) {
+            if (pending.decision) {
+              const change = await recordChange(engine, python, workspace,
+                                                pending.decision, pending.path,
+                                                input && input.sessionID)
+              record(workspace, input && input.sessionID, {
+                kind: "change-evidence", path: pending.path,
+                decision: pending.decision,
+                verdict: change.ok ? "RECORDED" : "FAILED",
+                reason: change.ok ? "" : change.reason || "",
+              })
+            }
             const atomic = await recordAtomic(engine, python, workspace, pending,
                                               touched, input && input.sessionID)
             const status = String(atomic.status ||

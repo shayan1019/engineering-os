@@ -54,7 +54,8 @@ def policy(map_state: str, decision: dict | None) -> dict:
 
 
 def check(workspace: str, path: str, session: str = "", project: str = "") -> dict:
-    absolute = os.path.realpath(os.path.abspath(path))
+    absolute = os.path.realpath(os.path.abspath(
+        path if os.path.isabs(path) else os.path.join(workspace, path)))
     workspace_real = os.path.realpath(os.path.abspath(workspace))
     if not (absolute == workspace_real or absolute.startswith(workspace_real + os.sep)):
         return {"schema": SCHEMA, "allow": False, "needs_decision": False,
@@ -171,6 +172,29 @@ def selftest() -> int:
         assert result["map_generated_at"], result
         assert any("sha256=" in reason for reason in result["reasons"]), result
         return "map sha recorded"
+
+    @case("a relative path is resolved against the workspace")
+    def _():
+        root = tempfile.mkdtemp(prefix="eos-gate-rel-")
+        registry = os.path.join(root, ".agents", "registry")
+        os.makedirs(registry)
+        with open(os.path.join(registry, "PROJECT_PROFILES.json"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            json.dump({"profiles": [{"id": "demo", "path": "proj"}]}, handle)
+        project = os.path.join(root, "proj")
+        os.makedirs(project)
+        with open(os.path.join(project, "a.py"), "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("x = 1\n")
+        assert pm.cmd_create(argparse.Namespace(project="demo", workspace=root,
+                                                force=False, project_path="")) == 0
+        args = argparse.Namespace(project="demo", task="fix", risk="ATOMIC",
+                                  scope=["proj/a.py"], suite="unit", actor="test",
+                                  session="s1", approve=True, workspace=root)
+        assert edr.cmd_open(args) == 0
+        result = check(root, "proj/a.py", "s1", "demo")
+        assert result["allow"] is True, result
+        assert result["path"].endswith("proj/a.py"), result
+        return "workspace-relative"
 
     @case("another session's EDR is refused")
     def _():

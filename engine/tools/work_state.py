@@ -439,6 +439,50 @@ def _record_atomic(args, workspace: str) -> dict:
             "state": state_path(workspace, args.project)}
 
 
+def cmd_record_blocked(args) -> int:
+    """Persist a DENY without touching any session's active work state.
+
+    A blocked write is evidence, not a task transition. It is written to a
+    standalone file under the project's blocked/ directory so another session's
+    open state and hash-chained events remain untouched.
+    """
+    workspace = ep.resolve_workspace(args.workspace)
+    absolute = os.path.abspath(args.path if os.path.isabs(args.path)
+                               else os.path.join(workspace, args.path))
+    project = args.project or ""
+    inferred = bool(project)
+    if not project:
+        try:
+            import decision as edr
+            project = edr.infer_project(workspace, absolute) or ""
+            inferred = bool(project)
+        except (ImportError, SystemExit, OSError):
+            project = ""
+    if not project:
+        project = "auto-work"
+    rel = os.path.relpath(absolute, workspace).replace("\\", "/")
+    folder = os.path.join(root(workspace, project), "blocked")
+    record_id = uuid.uuid4().hex[:12]
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    value = {
+        "schema": SCHEMA, "kind": "blocked_write", "project": project,
+        "project_inferred": inferred, "session": args.session or "", "path": rel,
+        "reason": args.reason, "decision": args.decision or "",
+        "map_state": args.map_state or "", "map_sha256": args.map_sha or "",
+        "at": utc_now(), "record_id": record_id,
+    }
+    target = os.path.join(folder, f"blocked-{stamp}-{record_id}.json")
+    write_json(target, value)
+    result = {"ok": True, "status": "recorded", "path": target,
+              "record_id": record_id, "project": project, "file": rel,
+              "session": value["session"], "project_inferred": inferred}
+    if args.json:
+        print(json.dumps(result, ensure_ascii=True))
+    else:
+        print(f"{str(result.get('status', 'blocked')).upper()}: {result.get('path', '')}".rstrip())
+    return 0 if result.get("ok") else 1
+
+
 def cmd_resume(args) -> int:
     workspace = ep.resolve_workspace(args.workspace)
     try:
@@ -798,6 +842,37 @@ def selftest() -> int:
         assert cmd_close(close) == 1
         return "unproven completion blocked"
 
+    @case("a blocked write is recorded without touching the owner's state")
+    def _():
+        root = workspace()
+        assert cmd_start(argparse.Namespace(project="demo", task="fix a", session="s1",
+                                            owner="agent1", new=False,
+                                            workspace=root)) == 0
+        state_file = state_path(root, "demo")
+        events_file = events_path(root, "demo")
+        with open(state_file, "rb") as handle:
+            state_before = handle.read()
+        with open(events_file, "rb") as handle:
+            events_before = handle.read()
+        args = argparse.Namespace(
+            project="demo", path="blocked.py", session="s2",
+            reason="another session owns this write surface", decision="",
+            map_state="CURRENT", map_sha="ABC", json=True, workspace=root,
+        )
+        assert cmd_record_blocked(args) == 0
+        with open(state_file, "rb") as handle:
+            assert handle.read() == state_before
+        with open(events_file, "rb") as handle:
+            assert handle.read() == events_before
+        blocked_dir = os.path.join(root, ".agents", "evidence", "work", "demo", "blocked")
+        files = os.listdir(blocked_dir)
+        assert len(files) == 1, files
+        value = read_json(os.path.join(blocked_dir, files[0]))
+        assert value["session"] == "s2", value
+        assert value["path"] == "blocked.py", value
+        assert "another session owns" in value["reason"], value
+        return "blocked evidence isolated"
+
     passed = failed = 0
     for name, fn in cases:
         try:
@@ -862,6 +937,18 @@ def main() -> int:
     p.add_argument("--owner", default="")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_record_atomic)
+
+    p = sub.add_parser("record-blocked")
+    p.add_argument("--workspace")
+    p.add_argument("--project", default="")
+    p.add_argument("--path", required=True)
+    p.add_argument("--session", default="")
+    p.add_argument("--reason", required=True)
+    p.add_argument("--decision", default="")
+    p.add_argument("--map-state", default="")
+    p.add_argument("--map-sha", default="")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_record_blocked)
 
     p = sub.add_parser("resume", parents=[common])
     p.add_argument("--json", action="store_true")
