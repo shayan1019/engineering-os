@@ -263,7 +263,7 @@ function askAutoDecision(engine, python, workspace, task, path, session, timeout
           const parsed = JSON.parse(lines[index])
           if (parsed && typeof parsed.approved === "boolean") {
             done({ ok: parsed.approved, decision: parsed.decision, risk: parsed.risk,
-                   reasons: parsed.reasons || [], next: parsed.next || "",
+                   reasons: parsed.reasons || parsed.problems || [], next: parsed.next || "",
                    state: parsed.state })
             return
           }
