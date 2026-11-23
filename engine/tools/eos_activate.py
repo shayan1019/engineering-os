@@ -169,6 +169,7 @@ def build(task: str, project: str, host: str, max_skills: int, session: str = ""
         {
             "name": name,
             "trust": (ranked.get(name) or {}).get("trust"),
+            "path": (ranked.get(name) or {}).get("path"),
             "reasons": (ranked.get(name) or {}).get("reasons"),
         }
         for name in primary
@@ -264,7 +265,11 @@ def render(ctx: dict) -> str:
             for s in ctx["skills"][:8]
         )
         lines.append("relevant skills: " + names)
-        lines.append("  read a skill file only when the task actually needs it")
+        lines.append("  selection is not usage: read only required SKILL.md via the host skill/read tool, "
+                     "then preserve actual tool evidence; otherwise state why each suggested skill was skipped")
+        for skill in ctx["skills"][:3]:
+            if skill.get("path"):
+                lines.append(f"  skill source: {skill['name']} -> {skill['path']}")
     if ctx.get("specialists"):
         lines.append("orchestrator: host session (EOS Core coordinates; no Chief mode required)")
         lines.append("specialists to use: " + ", ".join(ctx["specialists"]))
@@ -281,6 +286,12 @@ def render(ctx: dict) -> str:
             lines.append(f"gate: {ctx['gate']['suite']} is NOT_CONFIGURED - report BLOCKED, never PASS")
         else:
             lines.append(f"gate for this project: eos gate run --project {ctx['project']} --suite {ctx['gate']['suite']}")
+    lines.append("scope input: every approved path must be workspace-relative; "
+                 "pass multiple paths as repeated --scope arguments or a JSON scope array, "
+                 "never as a comma-joined string")
+    lines.append("recovery after BLOCKED: inspect exact reason and affected scope; "
+                 "correct input using EOS tools, preserve sealed EDR history, "
+                 "re-run authorization and gate, then resume; never bypass a valid security denial")
     lines.append("permissions: only the implementer may write; the others are read-only")
     lines.append("write gate: EOS prepares the EDR automatically; ATOMIC is auto-approved, "
                  "STANDARD needs specialist review, CRITICAL needs a human")
