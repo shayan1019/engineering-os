@@ -1306,6 +1306,12 @@ def selftest() -> int:
         assert not scopes_overlap("src/f*.py", "src/b*.py")
         return "wildcard fail closed"
 
+    @case("overlapping wildcard prefixes conflict")
+    def _():
+        assert scopes_overlap("src/f*.py", "src/foo*.py")
+        assert not scopes_overlap("src/f*.py", "src/b*.py")
+        return "prefix intersection"
+
     @case("a second active authorization over the same surface is refused")
     def _():
         root = workspace()
