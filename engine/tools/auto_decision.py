@@ -69,6 +69,10 @@ def safe_scope(workspace: str, values: list) -> tuple:
     scope, problems = [], []
     workspace_real = os.path.realpath(os.path.abspath(workspace))
     for raw in values:
+        problem = edr.scope_input_problem(workspace_real, raw)
+        if problem:
+            problems.append(problem)
+            continue
         candidate = raw if os.path.isabs(raw) else os.path.join(workspace_real, raw)
         absolute = os.path.realpath(os.path.abspath(candidate))
         if not (absolute == workspace_real or absolute.startswith(workspace_real + os.sep)):
@@ -86,6 +90,11 @@ def safe_scope(workspace: str, values: list) -> tuple:
 def prepare(workspace: str, project: str, task: str, scope_values: list,
             approve: bool = False, use_impact: bool = True, session: str = "") -> dict:
     scope, problems = safe_scope(workspace, scope_values)
+    # All-or-nothing: a valid covered path must never mask a rejected sibling.
+    # Check before EDR reuse, impact discovery or auto-approval.
+    if problems:
+        return {"verdict": "BLOCKED", "problems": problems,
+                "next": "correct each scope and retry; authorization was not changed"}
     if not scope:
         return {"verdict": "BLOCKED", "problems": problems or ["no scope"],
                 "next": "pass --scope with the file(s) the change touches"}
@@ -151,10 +160,6 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
         return {"verdict": "BLOCKED",
                 "problems": ["session is required for STANDARD/CRITICAL decisions"],
                 "risk": risk, "reasons": reasons}
-    if problems:
-        return {"verdict": "BLOCKED", "problems": problems,
-                "risk": risk, "reasons": reasons}
-
     args = argparse.Namespace(project=project, task=task, risk=risk, scope=scope,
                               suite="", actor="eos.auto", approve=False,
                               session=session, workspace=workspace)
@@ -343,6 +348,41 @@ def selftest() -> int:
         result = prepare(root, "eos", "fix", ["link/x.py"], approve=True, use_impact=False)
         assert result["verdict"] == "BLOCKED", result
         return "blocked"
+
+    @case("comma-joined scope is rejected before auto-EDR creation")
+    def _():
+        root = fixture()
+        os.makedirs(os.path.join(root, "6.0_final_merge"))
+        os.makedirs(os.path.join(root, "_canonical"))
+        before = len(edr.latest_decisions(root, "eos"))
+        result = prepare(root, "eos", "canonical publication",
+                         ["6.0_final_merge,_canonical"],
+                         approve=True, use_impact=False, session="ses_test")
+        assert result["verdict"] == "BLOCKED", result
+        assert any("comma-joined" in p for p in result.get("problems", [])), result
+        assert len(edr.latest_decisions(root, "eos")) == before
+        return "invalid scope has no EDR"
+
+    @case("invalid sibling cannot be dropped during approved EDR reuse")
+    def _():
+        root = fixture()
+        for name in ("6.0_final_merge", "_canonical"):
+            os.makedirs(os.path.join(root, name))
+        with open(os.path.join(root, "app.py"), "w", encoding="utf-8") as handle:
+            handle.write("x = 1\n")
+        args = argparse.Namespace(project="eos", task="approved file",
+                                  risk="ATOMIC", scope=["app.py"], suite="unit",
+                                  actor="eos.test", approve=True,
+                                  workspace=root, session="ses_test")
+        assert edr.cmd_open(args) == 0
+        existing = [item["id"] for item in edr.latest_decisions(root, "eos")]
+        result = prepare(root, "eos", "retry with malformed extra scope",
+                         ["app.py", "6.0_final_merge,_canonical"],
+                         approve=True, use_impact=False, session="ses_test")
+        assert result["verdict"] == "BLOCKED", result
+        assert not result.get("reused"), result
+        assert [item["id"] for item in edr.latest_decisions(root, "eos")] == existing
+        return "no partial authorization"
 
     @case("control-plane evidence cannot be an edit scope")
     def _():
