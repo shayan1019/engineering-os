@@ -252,7 +252,11 @@ def scenario_backend_contract() -> dict:
 
 def scenario_security_secret_negative() -> dict:
     root = make_workspace([("sec", "proj")])
-    path = write_file(root, "proj/config.py", 'AWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
+    # Assemble a synthetic key at runtime so the scanner still detects the
+    # generated fixture, while a repository-wide secret scan does not mistake
+    # the benchmark source code itself for a leaked credential.
+    fake_key = "AK" + "IA" + "ABCDEFGHIJKLMNOP"
+    path = write_file(root, "proj/config.py", f'AWS_KEY = "{fake_key}"\n')
     findings = ss.scan_file(path, True)
     return {"ok": len(findings) > 0, "want_map": None, "kind": "negative",
             "expected": "a hard-coded AWS key is detected",
