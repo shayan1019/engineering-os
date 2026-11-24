@@ -31,7 +31,7 @@
 // `hook_unavailable`, never as success.
 
 import { spawn } from "node:child_process"
-import { appendFileSync, mkdirSync, existsSync, readdirSync, readFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { dirname, join, resolve, sep, isAbsolute } from "node:path"
 import { tmpdir } from "node:os"
@@ -130,26 +130,106 @@ function workspaceOf(ctx, fallback) {
   return directory ? resolve(directory) : resolve(fallback || process.cwd())
 }
 
-function engineFor(workspace) {
-  // Workspace layout wins: it is the tree the user is actually working in.
-  const local = join(workspace, ".agents", "tools", "decision.py")
-  if (existsSync(local)) {
-    return { engine: join(workspace, ".agents"), python: process.env.EOS_PYTHON || "python" }
+// ENGINE-RESOLVER BEGIN
+// This block is identical in eos-guard.js and eos-activation.js (a test enforces
+// it). It is duplicated because the host loads every file in the plugin
+// directory as a plugin, so a shared helper module cannot live there.
+//
+// Order, and nothing else:
+//   1. <workspace>/.agents     the project's own control plane, explicit
+//   2. EOS_ENGINE              explicit operator override
+//   3. EOS_HOME/config.json    active_version, verified against its manifest
+// Anything invalid returns `problem` and an empty engine. There is no fallback
+// to another installed version: running an engine nobody activated is worse
+// than refusing to run.
+const VERSION_NAME = /^[0-9A-Za-z][0-9A-Za-z._+-]*$/
+const samePath = (a, b) => {
+  const left = realpathSync.native(a)
+  const right = realpathSync.native(b)
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
+}
+const readJson = (path) => JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""))
+const digest = (data) => createHash("sha256").update(data).digest("hex").toUpperCase()
+
+function systemPython() {
+  return process.env.EOS_PYTHON || (process.platform === "win32" ? "python" : "python3")
+}
+
+function runtimePython(prefix) {
+  return join(prefix, "runtime", "python", process.platform === "win32" ? "python.exe" : "bin/python3")
+}
+
+function activeEngine(home) {
+  if (existsSync(join(home, "state", "activation-txn.json"))) {
+    throw new Error("an EOS version change was interrupted; run: eos recover")
   }
-  const home = process.env.EOS_HOME || join(process.env.USERPROFILE || process.env.HOME || "", ".eos")
-  const versions = join(home, "versions")
-  let newest = ""
+  let config
   try {
-    for (const name of readdirSync(versions)) if (name > newest) newest = name
-  } catch {
-    // no versions directory
+    config = readJson(join(home, "config.json"))
+  } catch (error) {
+    throw new Error(`config.json is missing or invalid: ${error.message}`)
   }
-  if (newest) {
-    const runtime = join(versions, newest, "runtime", "python",
-      process.platform === "win32" ? "python.exe" : "bin/python3")
-    return { engine: join(versions, newest, "engine"), python: runtime }
+  const active = config && config.active_version
+  if (typeof active !== "string" || !VERSION_NAME.test(active)) {
+    throw new Error("config.json has no valid active_version")
   }
-  return { engine: join(home, "engine"), python: process.env.EOS_PYTHON || "python" }
+  const records = (Array.isArray(config.versions) ? config.versions : [])
+    .filter((item) => item && item.version === active)
+  if (records.length !== 1) {
+    throw new Error(`config.json has ${records.length} record(s) for active_version ${active}`)
+  }
+  const dir = join(home, "versions", active)
+  if (!samePath(String(records[0].dir), dir)) {
+    throw new Error(`active_version ${active} is not recorded at ${dir}`)
+  }
+  const manifest = readJson(join(dir, "install-manifest.json"))
+  if (manifest.version !== active || !Array.isArray(manifest.entries)) {
+    throw new Error(`install manifest does not describe ${active}`)
+  }
+  const entries = manifest.entries.filter((item) => String(item.rel).startsWith("engine/"))
+  const feed = entries.map((item) => `${item.rel.slice(7)}:${item.sha256}\n`).join("")
+  if (digest(feed) !== String(records[0].engine_manifest_sha256).toUpperCase()) {
+    throw new Error(`install manifest hash does not match config.json for ${active}`)
+  }
+  for (const item of entries) {
+    if (!/^engine\/tools\/[^/]+\.py$/.test(item.rel)) continue
+    if (digest(readFileSync(join(dir, item.rel))) !== item.sha256) {
+      throw new Error(`installed engine file was changed: ${item.rel}`)
+    }
+  }
+  let python = process.env.EOS_PYTHON || ""
+  if (!python && manifest.runtime_mode === "bundled") {
+    python = runtimePython(dir)
+    if (!existsSync(python)) throw new Error(`bundled runtime is missing for ${active}`)
+  }
+  return { engine: join(dir, "engine"), python: python || systemPython(), source: "active_version", version: active }
+}
+
+function locateEngine(workspace) {
+  try {
+    const local = workspace ? join(workspace, ".agents") : ""
+    if (local && ["decision.py", "eos_activate.py"].some((name) => existsSync(join(local, "tools", name)))) {
+      return { engine: local, python: systemPython(), source: "workspace", version: "" }
+    }
+    const override = process.env.EOS_ENGINE
+    if (override) {
+      if (!["decision.py", "eos_activate.py"].every((name) => existsSync(join(override, "tools", name)))) {
+        throw new Error(`EOS_ENGINE is not an EOS engine: ${override}`)
+      }
+      const bundled = runtimePython(dirname(resolve(override)))
+      const python = process.env.EOS_PYTHON || (existsSync(bundled) ? bundled : systemPython())
+      return { engine: override, python, source: "EOS_ENGINE", version: "" }
+    }
+    return activeEngine(process.env.EOS_HOME ||
+      join(process.env.USERPROFILE || process.env.HOME || "", ".eos"))
+  } catch (error) {
+    return { engine: "", python: "", source: "", version: "", problem: error.message }
+  }
+}
+// ENGINE-RESOLVER END
+
+export function resolveEngine(workspace) {
+  return locateEngine(workspace)
 }
 
 function pythonArgs(engine, workspace, session) {
@@ -1276,7 +1356,9 @@ export function createWriteQueue(ttlMs = 5 * 60 * 1000, limit = 64) {
 
 async function install(ctx, options) {
   const workspace = workspaceOf(ctx, options && options.workspace)
-  const { engine, python } = engineFor(workspace)
+  // Resolved per event, never cached for the session: a session that outlives
+  // an update or a rollback must follow the activated version.
+  const current = () => resolveEngine(workspace)
   const cache = new Map()
   const sessionTasks = new Map()
   const pendingReads = new Map()
@@ -1288,7 +1370,7 @@ async function install(ctx, options) {
   let permissionHookAvailable = false
 
   const taskFor = (sessionID) => sessionTasks.get(sessionKey({ sessionID })) || ""
-  const allowAtomic = async (sessionID, path) => {
+  const allowAtomic = async ({ engine, python }, sessionID, path) => {
     const task = taskFor(sessionID)
     if (!task) return { ok: false, reasons: ["no task text captured for this session"] }
     return askAutoDecision(engine, python, workspace, task, path, sessionID)
@@ -1307,8 +1389,8 @@ async function install(ctx, options) {
     // guard cannot auto-create an ATOMIC decision and will deny instead.
   }
 
-  const decide = async (path, session) => {
-    const key = `${path}|${session || ""}`
+  const decide = async ({ engine, python }, path, session) => {
+    const key = `${engine}|${path}|${session || ""}`
     const cached = cache.get(key)
     if (cached && Date.now() - cached.at < CACHE_MS) return cached.value
     const value = await askEngine(engine, python, workspace, path, session)
@@ -1331,6 +1413,12 @@ async function install(ctx, options) {
       }
     }
 
+    const live = WRITE_TOOLS.has(tool) ? current() : { engine: "", python: "" }
+    const { engine, python } = live
+    if (live.problem) {
+      record(workspace, sessionID, { ...summary, verdict: "DENY", reason: `engine unavailable: ${live.problem}` })
+      throw new Error(`EOS BLOCKED: no verified engine is active (${live.problem})`)
+    }
     if (WRITE_TOOLS.has(tool)) {
       const path = writeTarget(tool, args)
       if (!path) {
@@ -1355,18 +1443,18 @@ async function install(ctx, options) {
           decision: gate.decision || "", risk: gate.risk || "",
           task: taskFor(sessionID),
         })
-        record(workspace, sessionID, { ...summary, verdict: "ALLOW",
+        record(workspace, sessionID, { ...summary, engine, verdict: "ALLOW",
           decision: gate.decision || "", reason: `write gate: map=${gate.map_state}` })
         return
       }
-      const decision = await decide(path, sessionID)
+      const decision = await decide(live, path, sessionID)
       if (!decision.ok) {
-        const auto = await allowAtomic(sessionID, path)
+        const auto = await allowAtomic(live, sessionID, path)
         if (auto.ok) {
           noteWrite(path, sessionID, callIDOf(input), {
             decision: auto.decision, risk: auto.risk, task: taskFor(sessionID),
           })
-          record(workspace, sessionID, { ...summary, verdict: "ALLOW",
+          record(workspace, sessionID, { ...summary, engine, verdict: "ALLOW",
             decision: auto.decision, reason: "auto ATOMIC decision" })
           return
         }
@@ -1382,7 +1470,7 @@ async function install(ctx, options) {
       noteWrite(path, sessionID, callIDOf(input), {
         decision: decision.decision, risk: decision.risk, task: taskFor(sessionID),
       })
-      record(workspace, sessionID, { ...summary, verdict: "ALLOW", decision: decision.decision })
+      record(workspace, sessionID, { ...summary, engine, verdict: "ALLOW", decision: decision.decision })
       return
     }
 
@@ -1408,13 +1496,25 @@ async function install(ctx, options) {
         throw new Error(`EOS ASK: shell command requires approval (${verdict.reason}), ` +
           `but the permission hook is unavailable.`)
       }
-      record(workspace, sessionID, { ...summary, verdict: "ALLOW", reason: verdict.reason })
+      record(workspace, sessionID, { ...summary, engine, verdict: "ALLOW", reason: verdict.reason })
     }
   }
 
   const onPermission = async (input) => {
     if (!input || typeof input !== "object") return
     const verdict = permissionDecision(input, workspace)
+    const gated = verdict.kind === "write" || (verdict.kind === "shell" && verdict.effect === "ask")
+    const live = gated ? current() : { engine: "", python: "" }
+    const { engine, python } = live
+    if (live.problem && verdict.kind === "write") {
+      input.effect = "deny"
+      input.message = `EOS BLOCKED: no verified engine is active (${live.problem})`
+      record(workspace, input.sessionID, {
+        kind: "permission", action: "write", resource: verdict.resource || "",
+        verdict: "DENY", reason: `engine unavailable: ${live.problem}`,
+      })
+      return
+    }
     if (verdict.kind === "shell") {
       if (verdict.effect === "deny") {
         input.effect = "deny"
@@ -1431,6 +1531,10 @@ async function install(ctx, options) {
         let allAllowed = true
         let decision = ""
         for (const target of verdict.targets) {
+          if (live.problem) {
+            allAllowed = false
+            break
+          }
           const gate = await askWriteGate(engine, python, workspace, target,
                                           input.sessionID)
           if (!gate.allow) {
@@ -1492,7 +1596,7 @@ async function install(ctx, options) {
           `${(gate.reasons || []).join("; ").slice(0, MAX_REASON)}. ` +
           `Next: python "${join(engine, "tools", "recovery.py")}" diagnose --path "${path}"`
         record(workspace, input.sessionID, {
-          kind: "permission", action: "write", resource: path,
+          kind: "permission", action: "write", resource: path, engine,
           verdict: "DENY", reason: gate.reasons || [],
         })
         await recordBlocked(engine, python, workspace, input.sessionID, path,
@@ -1505,21 +1609,21 @@ async function install(ctx, options) {
           task: taskFor(input.sessionID),
         })
         record(workspace, input.sessionID, {
-          kind: "permission", action: "write", resource: path,
+          kind: "permission", action: "write", resource: path, engine,
           verdict: "ALLOW", decision: gate.decision || "",
           reason: `write gate: map=${gate.map_state}`,
         })
         return
       }
-      const decision = await decide(path, input.sessionID)
+      const decision = await decide(live, path, input.sessionID)
       if (!decision.ok) {
-        const auto = await allowAtomic(input.sessionID, path)
+        const auto = await allowAtomic(live, input.sessionID, path)
         if (auto.ok) {
           noteWrite(path, input.sessionID, callIDOf(input), {
             decision: auto.decision, risk: auto.risk, task: taskFor(input.sessionID),
           })
           record(workspace, input.sessionID, {
-            kind: "permission", action: "write", resource: path,
+            kind: "permission", action: "write", resource: path, engine,
             verdict: "ALLOW", decision: auto.decision, reason: "auto ATOMIC decision",
           })
           return
@@ -1529,7 +1633,7 @@ async function install(ctx, options) {
           `${(auto.reasons || decision.reasons || []).join("; ").slice(0, MAX_REASON)}. ` +
           `Next: python "${join(engine, "tools", "recovery.py")}" diagnose --path "${path}"`
         record(workspace, input.sessionID, {
-          kind: "permission", action: "write", resource: path,
+          kind: "permission", action: "write", resource: path, engine,
           verdict: "DENY", reason: auto.reasons || decision.reasons || [],
         })
         await recordBlocked(engine, python, workspace, input.sessionID, path,
@@ -1542,7 +1646,7 @@ async function install(ctx, options) {
         task: taskFor(input.sessionID),
       })
       record(workspace, input.sessionID, {
-        kind: "permission", action: "write", resource: path,
+        kind: "permission", action: "write", resource: path, engine,
         verdict: "ALLOW", decision: decision.decision,
       })
     }
@@ -1572,6 +1676,7 @@ async function install(ctx, options) {
             verdict: "NO_WORK_STATE", reason: "the write tool did not succeed",
           })
         } else if (pending) {
+          const { engine, python } = current()
           touched = await touchWrite(engine, python, workspace, pending.path,
                                      input && input.sessionID)
           record(workspace, input && input.sessionID, {
@@ -1626,8 +1731,11 @@ async function install(ctx, options) {
     enforcement = `unavailable: ${error && error.message ? error.message : error}`
   }
 
+  const started = current()
   record(workspace, "guard", {
-    kind: "capability", enforcement, hooks, engine,
+    kind: "capability", enforcement, hooks,
+    engine: started.engine, engine_source: started.source,
+    engine_version: started.version, engine_problem: started.problem || "",
     pid: process.pid,
   })
   if (process.env.EOS_GUARD_DEBUG) {

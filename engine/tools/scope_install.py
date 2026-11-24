@@ -69,13 +69,15 @@ def source_dir() -> str:
     candidates = [os.path.join(ep.ENGINE_ROOT, "host-plugins", "opencode")]
     workspace = ep.resolve_workspace()
     candidates.append(os.path.join(workspace, "engineering-os", "engine", "host-plugins", "opencode"))
-    versions = os.path.join(ep.EOS_HOME, "versions")
+    # The activated version, never "the newest directory": a rolled-back version
+    # can still be on disk.
     try:
-        newest = sorted(os.listdir(versions))[-1]
-    except (OSError, IndexError):
-        newest = ""
-    if newest:
-        candidates.append(os.path.join(versions, newest, "engine", "host-plugins", "opencode"))
+        active = str(read_json(os.path.join(ep.EOS_HOME, "config.json"))["active_version"] or "")
+    except (OSError, ValueError, KeyError, TypeError):
+        active = ""
+    if active:
+        candidates.append(os.path.join(ep.EOS_HOME, "versions", active, "engine",
+                                       "host-plugins", "opencode"))
     override = os.environ.get("EOS_HOST_PLUGINS")
     if override:
         candidates.insert(0, override)

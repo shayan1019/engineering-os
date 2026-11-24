@@ -11,7 +11,7 @@
 //!     engine/**                    Python engineering core (hashed)
 //!     runtime/python/**            bundled interpreter, when packaged
 //!     install-manifest.json        per-file SHA-256 + manifest hash
-//!   versions/<version>/install-manifest.json
+//!   inactive/<version>/            parked versions (see activation.rs)
 //!   evidence/**                    gate + promotion records, per project id
 //!   state/**                       caches (skill index, logs)
 //! ```
@@ -19,6 +19,7 @@
 //! Uninstall removes files that appear in an install manifest, and nothing else.
 //! That is the safety property: it cannot delete a user project.
 
+use crate::activation;
 use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -208,19 +209,44 @@ pub fn install(
     add_to_path: bool,
     force: bool,
 ) -> Result<InstallReport, String> {
-    let version_dir = paths::versions_dir().join(version);
-    if version_dir.exists() {
-        if !force {
+    if !activation::valid_version(version) {
+        return Err(format!("invalid version name: {version}"));
+    }
+    let (guard, _) = activation::begin()?;
+    let cfg = activation::strict_config()?;
+    let final_dir = paths::versions_dir().join(version);
+    for existing in [final_dir.clone(), activation::inactive_dir().join(version)] {
+        if existing.exists() && !force {
             return Err(format!(
                 "version {version} is already installed at {}. Use --force to reinstall.",
-                version_dir.display()
+                existing.display()
             ));
         }
+    }
+    // Built out of sight: a directory under `versions/` is visible to guards up
+    // to 1.0.2 the moment it exists, long before it is complete.
+    let version_dir = paths::eos_home().join("staging").join(version);
+    if version_dir.exists() {
         fs::remove_dir_all(&version_dir)
             .map_err(|e| format!("cannot clear {}: {e}", version_dir.display()))?;
     }
     fs::create_dir_all(&version_dir)
         .map_err(|e| format!("cannot create {}: {e}", version_dir.display()))?;
+    let outcome = build_and_activate(source, version, add_to_path, &version_dir, &final_dir, cfg, &guard);
+    let _ = fs::remove_dir_all(&version_dir);
+    let _ = fs::remove_dir(paths::eos_home().join("staging"));
+    outcome
+}
+
+fn build_and_activate(
+    source: &Path,
+    version: &str,
+    add_to_path: bool,
+    version_dir: &Path,
+    final_dir: &Path,
+    mut cfg: paths::Config,
+    guard: &activation::Guard,
+) -> Result<InstallReport, String> {
 
     // 1. the CLI binary itself, so the version is self-contained
     let me = std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
@@ -273,14 +299,7 @@ pub fn install(
     manifest.manifest_sha256 = paths::sha256_bytes(feed.as_bytes());
     paths::write_json(&version_dir.join("install-manifest.json"), &manifest)?;
 
-    // 5. activate
-    //
-    // Everything from here on can fail. A failed activation must not leave a
-    // version directory behind: `eos rollback` would happily switch to a
-    // half-installed version, and a broken version that answers to its own
-    // name is worse than no version at all.
-    let activated = (|| -> Result<InstallReport, String> {
-    let mut cfg = paths::load_config();
+    // 5. activate, as one transaction (see activation.rs)
     let previous = cfg.active_version.clone();
     // Re-installing the version that is already active is not a rollback
     // target. The recorded previous version is kept, otherwise a repair of the
@@ -289,61 +308,47 @@ pub fn install(
         Some(p) if p == version => cfg.previous_version.clone(),
         other => other,
     };
-    let runtime_used = if runtime_mode == "bundled" {
-        "bundled".to_string()
-    } else {
-        "system".to_string()
-    };
     cfg.versions.retain(|v| v.version != version);
     cfg.versions.push(paths::VersionRecord {
         version: version.to_string(),
-        dir: version_dir.display().to_string(),
+        dir: final_dir.display().to_string(),
         installed_at: paths::now_iso(),
         engine_files: engine_entries.len(),
         engine_manifest_sha256: engine_manifest_sha256.clone(),
-        runtime_mode: runtime_used,
+        runtime_mode: runtime_mode.clone(),
     });
     cfg.previous_version = previous.clone();
-    cfg.active_version = Some(version.to_string());
-    let mut path_entry = None;
+    let mut path_entry = cfg.path_entry.clone().filter(|_| cfg.path_entry_added);
+    let mut path_added = false;
     if add_to_path {
+        let had = cfg.path_entry_added;
         path_entry = Some(add_path_entry()?);
+        path_added = !had;
         cfg.path_entry_added = true;
         cfg.path_entry = path_entry.clone();
-    } else if cfg.path_entry_added {
-        path_entry = cfg.path_entry.clone();
     }
-    paths::save_config(&cfg)?;
-
-    let bin = paths::bin_dir().join(if cfg!(windows) { "eos.exe" } else { "eos" });
-    publish_launcher(&dest_exe)?;
-
+    if let Err(e) = activation::activate(guard, cfg, version, Some(version_dir)) {
+        if path_added {
+            let _ = remove_path_entry();
+        }
+        return Err(e);
+    }
     // A gate refuses to run without a baseline, and the installed engine is the
     // thing that must not drift. Record its manifest as a baseline so
     // `eos gate run` works on a machine that has no workspace at all.
-    write_engine_baseline(&version_dir, version, &engine_entries)?;
-
+    write_engine_baseline(final_dir, version, &engine_entries)
+        .map_err(|e| format!("version {version} is active and verified, but its gate baseline failed: {e}"))?;
     Ok(InstallReport {
         version: version.to_string(),
-        version_dir: version_dir.display().to_string(),
+        version_dir: final_dir.display().to_string(),
         runtime_mode,
         engine_files: engine_entries.len(),
         engine_manifest_sha256,
-        bin: bin.display().to_string(),
+        bin: activation::launcher_path().display().to_string(),
         path_entry,
         switched_from: previous,
         total_bytes,
     })
-    })();
-    match activated {
-        Ok(report) => Ok(report),
-        Err(e) => {
-            // The version directory is removed so a failed install cannot
-            // become a rollback target later.
-            let _ = fs::remove_dir_all(&version_dir);
-            Err(e)
-        }
-    }
 }
 
 /// Verify every file in the install manifest. Returns (ok, missing, changed).
@@ -354,9 +359,15 @@ pub fn verify_install(version: &str) -> Result<(usize, Vec<String>, Vec<String>)
         .iter()
         .find(|v| v.version == version)
         .ok_or_else(|| format!("version {version} is not installed"))?;
-    let dir = PathBuf::from(&record.dir);
+    verify_dir(&PathBuf::from(&record.dir), version)
+}
+
+pub fn verify_dir(dir: &Path, version: &str) -> Result<(usize, Vec<String>, Vec<String>), String> {
     let manifest: InstallManifest = paths::read_json(&dir.join("install-manifest.json"))
         .map_err(|e| format!("cannot read install manifest: {e}"))?;
+    if manifest.version != version {
+        return Err(format!("{} holds version {}, not {version}", dir.display(), manifest.version));
+    }
     let mut ok = 0usize;
     let mut missing = Vec::new();
     let mut changed = Vec::new();
@@ -484,6 +495,14 @@ pub fn uninstall(purge_config: bool, keep_versions: bool) -> Result<Vec<String>,
                 )),
             }
         }
+        for dir in [activation::inactive_dir(), paths::eos_home().join("staging")] {
+            if dir.is_dir() {
+                match fs::remove_dir_all(&dir) {
+                    Ok(()) => actions.push(format!("removed {}", dir.display())),
+                    Err(e) => actions.push(format!("could not remove {}: {e}", dir.display())),
+                }
+            }
+        }
     } else {
         actions.push("installed versions kept (--keep-versions)".into());
     }
@@ -513,25 +532,16 @@ pub fn uninstall(purge_config: bool, keep_versions: bool) -> Result<Vec<String>,
     Ok(actions)
 }
 
-/// Install a newer version and activate it only if `doctor` passes on it.
+/// Install a newer version. Verification happens inside the activation
+/// transaction, so a failure restores the version that was active before: engine,
+/// launcher, host plugins and config together.
 pub fn update(source: &Path, version: &str, force: bool) -> Result<InstallReport, String> {
-    let report = install(source, version, false, force)?;
-    let (ok, missing, changed) = verify_install(version)?;
-    if !missing.is_empty() || !changed.is_empty() {
-        // Roll back immediately: an update that fails verification must not be
-        // the active version.
-        let _ = rollback();
-        return Err(format!(
-            "update rolled back: {ok} file(s) verified but {} missing and {} changed",
-            missing.len(),
-            changed.len()
-        ));
-    }
-    Ok(report)
+    install(source, version, false, force)
 }
 
 pub fn rollback() -> Result<String, String> {
-    let mut cfg = paths::load_config();
+    let (guard, _) = activation::begin()?;
+    let mut cfg = activation::strict_config()?;
     let current = cfg
         .active_version
         .clone()
@@ -544,14 +554,26 @@ pub fn rollback() -> Result<String, String> {
         return Err(format!("previous version {target} is no longer installed"));
     }
     cfg.previous_version = Some(current);
-    cfg.active_version = Some(target.clone());
-    paths::save_config(&cfg)?;
-    let record = cfg.versions.iter().find(|v| v.version == target).unwrap().clone();
-    let src = PathBuf::from(&record.dir).join(if cfg!(windows) { "eos.exe" } else { "eos" });
-    if src.is_file() {
-        publish_launcher(&src)?;
-    }
+    activation::activate(&guard, cfg, &target, None)?;
     Ok(target)
+}
+
+/// Undo a version change that was interrupted. Returns whether there was one.
+///
+/// Launchers up to 1.0.2 change only `config.json` and themselves. When one of
+/// them selected a parked version, finishing that selection as a transaction is
+/// the recovery.
+pub fn recover() -> Result<bool, String> {
+    let (guard, recovered) = activation::begin()?;
+    let cfg = activation::strict_config()?;
+    if let Some(active) = cfg.active_version.clone() {
+        let parked = activation::inactive_dir().join(&active);
+        if cfg.versions.iter().any(|v| v.version == active && Path::new(&v.dir) == parked) {
+            activation::activate(&guard, cfg, &active, None)?;
+            return Ok(true);
+        }
+    }
+    Ok(recovered)
 }
 
 /// Publish the launcher into the bin directory.
@@ -560,12 +582,19 @@ pub fn rollback() -> Result<String, String> {
 /// Windows refuses to overwrite a running executable, but it does allow one to
 /// be renamed. The old launcher is moved aside, the new one is put in place,
 /// and the old file is deleted as soon as the operating system releases it.
-fn publish_launcher(src: &Path) -> Result<(), String> {
+pub fn publish_launcher(src: &Path) -> Result<(), String> {
     let bin = paths::bin_dir().join(if cfg!(windows) { "eos.exe" } else { "eos" });
     fs::create_dir_all(paths::bin_dir()).map_err(|e| format!("cannot create bin dir: {e}"))?;
     let name = bin.file_name().unwrap_or_default().to_string_lossy().to_string();
-    let aside = bin.with_file_name(format!("{name}.removing"));
-    let _ = fs::remove_file(&aside);
+    // Unique per call: an earlier one may still be a running image, and one
+    // transaction can publish twice (change, then restore).
+    for entry in fs::read_dir(paths::bin_dir()).map_err(|e| e.to_string())?.flatten() {
+        let stale = entry.file_name().to_string_lossy().to_string();
+        if stale.starts_with(&name) && stale.ends_with(".removing") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    let aside = bin.with_file_name(format!("{name}.{}.removing", uuid::Uuid::new_v4()));
     if bin.is_file() {
         fs::rename(&bin, &aside)
             .map_err(|e| format!("cannot replace the launcher {}: {e}", bin.display()))?;
