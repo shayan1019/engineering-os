@@ -40,7 +40,7 @@ import { join, dirname, resolve } from "node:path"
 
 const MAX_BLOCK_CHARS = 6000
 const MAX_TASK_CHARS = 4000
-const TIMEOUT_MS = 20000
+const TIMEOUT_MS = 60000
 const CACHE_LIMIT = 32
 
 // ENGINE-RESOLVER BEGIN

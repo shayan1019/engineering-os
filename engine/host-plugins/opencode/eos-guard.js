@@ -36,7 +36,9 @@ import { createHash } from "node:crypto"
 import { dirname, join, resolve, sep, isAbsolute } from "node:path"
 import { tmpdir } from "node:os"
 
-const TIMEOUT_MS = 8000
+// A bound on a hung engine, not a performance target: expiry is always DENY, so
+// it has to exceed a cold-cache check of a large project (measured: 32 s).
+const TIMEOUT_MS = 90000
 const CACHE_MS = 1500
 const MAX_REASON = 400
 
@@ -303,7 +305,7 @@ function sessionKey(input) {
  * Only ATOMIC is auto-approved by the engine; STANDARD returns approved=false
  * and CRITICAL always requires a human. The guard never invents an approval.
  */
-function askAutoDecision(engine, python, workspace, task, path, session, timeoutMs = 12000) {
+function askAutoDecision(engine, python, workspace, task, path, session, timeoutMs = TIMEOUT_MS) {
   return new Promise((resolvePromise) => {
     let settled = false
     const done = (value) => {
@@ -356,7 +358,7 @@ function askAutoDecision(engine, python, workspace, task, path, session, timeout
   })
 }
 
-function askWriteGate(engine, python, workspace, path, session, timeoutMs = 12000) {
+function askWriteGate(engine, python, workspace, path, session, timeoutMs = TIMEOUT_MS) {
   return new Promise((resolvePromise) => {
     let settled = false
     const done = (value) => {
@@ -518,7 +520,7 @@ function touchWrite(engine, python, workspace, path, session, timeoutMs = TIMEOU
  * idempotency check. A failure here is evidence, not a failed write.
  */
 function recordAtomic(engine, python, workspace, pending, touched, session,
-                      timeoutMs = 8000) {
+                      timeoutMs = TIMEOUT_MS) {
   if (!pending || !pending.decision || pending.risk !== "ATOMIC") {
     return Promise.resolve({ ok: true, status: "skipped",
                              reason: "not an ATOMIC decision" })

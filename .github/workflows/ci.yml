@@ -39,7 +39,7 @@ jobs:
       - name: Activation plugin test (automatic EOS activation)
         run: node engine/host-plugins/opencode/eos-activation.test.mjs
       - name: Guard and engine-resolution plugin tests
-        run: node --test engine/host-plugins/opencode/eos-guard.test.mjs engine/host-plugins/opencode/engine-resolution.test.mjs
+        run: node --test engine/host-plugins/opencode/eos-guard.test.mjs engine/host-plugins/opencode/engine-resolution.test.mjs engine/host-plugins/opencode/slow-gate.test.mjs
       - name: Secret scan over the engine
         run: python engine/tools/secret_scan.py engine --include-tests
 
