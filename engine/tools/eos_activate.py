@@ -217,6 +217,7 @@ def build(task: str, project: str, host: str, max_skills: int, session: str = ""
         "rationale": rationale,
         "roles": [{"name": n, "purpose": p} for n, p in ROLE_HINTS],
         "gate": gate,
+        "session": session,
         "preflight": preflight_ctx,
         "host": host,
         "engine": ep.ENGINE_ROOT,
@@ -251,8 +252,25 @@ def render(ctx: dict) -> str:
         lines.append(f"preflight: {preflight.get('verdict')} | map={map_state} | "
                      f"work={work.get('state', 'UNKNOWN')} | edr={edr_ctx.get('state', 'UNKNOWN')}")
         if work.get("task"):
-            lines.append(f"work: {work.get('task')} [{work.get('state')}] "
+            # Bounded: a long earlier request must not push everything else out.
+            lines.append(f"work: {str(work.get('task'))[:300]} [{work.get('state')}] "
                          f"next: {work.get('next_action') or 'UNKNOWN'}")
+        if work.get("objective"):
+            # The workspace-relative form is the one the guard recognises unprompted.
+            local = os.path.basename(str(ctx.get("engine") or "")) == ".agents"
+            work_state = ("python .agents/tools/work_state.py" if local
+                          else 'python "' + os.path.join(engine_tools, "work_state.py") + '"')
+            lines.extend(work["objective"])
+            lines.append(
+                "  if the user's message continues this objective, work through its items in the same "
+                "turn; a different explicit request, a stop instruction, a risk gate or a human "
+                "approval always comes first. An unticked item may already be done: check before "
+                "redoing it. Valid reasons to stop: all items done, a human decision is required, or "
+                "a concrete blocker with its error text. Estimated session capacity, context size or "
+                "'next block' is not one: the host compacts context. After each item run "
+                f"{work_state} objective checkpoint --project {project} "
+                f"--session {ctx.get('session') or '<id>'} --done <N> --next <text>; "
+                "end with objective done, or abandon --reason when the user drops it.")
         for blocker in (preflight.get("blockers") or [])[:3]:
             lines.append(f"preflight blocker: {blocker}")
         excerpt = (preflight.get("map") or {}).get("excerpt") or ""

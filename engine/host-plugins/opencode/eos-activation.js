@@ -282,13 +282,12 @@ function activationFor(key, task, cwd, session) {
 
 /**
  * A task text, or "" when the turn carries nothing the router can resolve.
- * An empty turn carries no task, and an oversized message is not a task.
  */
 function taskText(value) {
   if (typeof value !== "string") return ""
-  const text = value.trim()
-  if (!text || text.length > MAX_TASK_CHARS) return ""
-  return text
+  // A long request is still a request: dropping it left exactly the biggest tasks
+  // without EOS context. The router needs its beginning, so it is cut, not skipped.
+  return value.trim().slice(0, MAX_TASK_CHARS)
 }
 
 function partText(part) {

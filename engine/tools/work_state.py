@@ -11,7 +11,18 @@ A conversation is not a durable record. This tool keeps, per project:
 Concurrent sessions are explicit: a different session may not update or close a
 task owned by another session without `--takeover` and a reason.
 
+A multi-step request additionally has a durable objective:
+
+  objective.json the request, its items, what is done, and the next action
+
+One approved file write is a step of it, never its completion. The objective is
+progress, not an ownership lease: it blocks no other session's write, and any
+later session may continue it. Only `objective done` (every item done) or
+`objective abandon --reason` ends it.
+
 Commands:
+  objective open|show|checkpoint|done|abandon --project <id> --session <id>
+            [--done N]... [--next <text>] [--add <item>]... [--reason <text>]
   start   --project <id> --task <text> --session <id> [--owner <name>] [--new]
   update  --project <id> --session <id> [--status ...] [--decision ...] ...
   close   --project <id> --session <id>
@@ -26,6 +37,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -205,6 +217,197 @@ def guard_owner(state: dict, session: str, takeover: bool, reason: str) -> bool:
             raise SystemExit("BLOCKED: takeover requires a reason")
         return True
     return False
+
+
+# ------------------------------------------------------------- durable objective
+ITEM_RE = re.compile(r"^\s{0,6}\d{1,2}[.)]\s+(\S.*)$", re.M)
+MAX_ITEMS = 40
+MAX_ITEM_CHARS = 240
+
+
+def objective_path(workspace: str, project: str) -> str:
+    return os.path.join(root(workspace, project), "objective.json")
+
+
+def task_items(task: str) -> list:
+    """The numbered lines of a request, verbatim and bounded. Bullets are not
+    items: in practice they are pasted status, not work."""
+    return [item.strip()[:MAX_ITEM_CHARS] for item in ITEM_RE.findall(task or "")][:MAX_ITEMS]
+
+
+def is_multi_step(task: str) -> bool:
+    return len(task_items(task)) >= 2
+
+
+def load_objective(workspace: str, project: str) -> dict | None:
+    path = objective_path(workspace, project)
+    if not os.path.isfile(path):
+        return None
+    try:
+        value = read_json(path)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"BLOCKED: objective is unreadable: {exc}")
+    if value.get("kind") != "objective" or state_hash(value) != value.get("state_sha256"):
+        raise SystemExit("BLOCKED: objective hash mismatch")
+    return value
+
+
+def open_objective(workspace: str, project: str) -> dict | None:
+    value = load_objective(workspace, project)
+    return value if value and value.get("status") == "open" else None
+
+
+def pending_items(value: dict) -> list:
+    return [(n, item["text"]) for n, item in enumerate(value.get("items") or [], 1)
+            if not item.get("done")]
+
+
+def derived_next(value: dict) -> str:
+    """Never empty while work is open: a resume must always have a next step."""
+    if value.get("next_action"):
+        return value["next_action"]
+    pending = pending_items(value)
+    if pending:
+        return f"item {pending[0][0]}: {pending[0][1]}"
+    return "verify the result against the request, then: objective done"
+
+
+def save_objective(workspace: str, project: str, value: dict, action: str) -> None:
+    value["updated_at"] = utc_now()
+    value["state_sha256"] = state_hash(value)
+    write_json(objective_path(workspace, project), value)
+    path = os.path.join(root(workspace, project), "objective.log.jsonl")
+    with open(path, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps({"ts": utc_now(), "action": action, "objective": value},
+                                ensure_ascii=True) + "\n")
+
+
+def note_objective(workspace: str, project: str, task: str, session: str,
+                   files: list | None = None, decision: str = "",
+                   explicit: bool = False) -> dict | None:
+    """Create or advance the objective. Caller holds the work-state lock.
+
+    A multi-step request opens one. A short follow-up ("continue") keeps the open
+    one. A different multi-step request becomes current; unfinished items of the
+    previous one are kept, because being interrupted is not being done.
+    """
+    current = open_objective(workspace, project)
+    task = (task or "").strip()
+    if (explicit or is_multi_step(task)) and (not current or current.get("task") != task):
+        closed = load_objective(workspace, project)
+        if not current and closed and closed.get("task") == task:
+            # A late write of a request that was already finished or abandoned.
+            return None
+        carried = list((current or {}).get("carried") or [])
+        if current:
+            carried += [text for _, text in pending_items(current)]
+        new_items = task_items(task) if is_multi_step(task) else [task[:MAX_ITEM_CHARS]]
+        carried = [text for text in dict.fromkeys(carried) if text not in new_items][-MAX_ITEMS:]
+        current = {
+            "schema": SCHEMA, "kind": "objective", "project": project, "status": "open",
+            "task": task, "session_id": session, "created_at": utc_now(),
+            "items": [{"text": text, "done": False} for text in new_items],
+            "carried": carried, "files": [], "decisions": [], "next_action": "",
+        }
+    if not current:
+        return None
+    current["session_id"] = session or current.get("session_id", "")
+    current["files"] = sorted(set(current.get("files") or []) | set(files or []))
+    if decision:
+        current["decisions"] = (current.get("decisions") or [])[-200:] + [decision]
+    save_objective(workspace, project, current, "step" if files else "open")
+    return current
+
+
+def objective_lines(value: dict, limit: int = 12) -> list:
+    items = value.get("items") or []
+    pending = pending_items(value)
+    lines = [f"OPEN OBJECTIVE: {len(items) - len(pending)}/{len(items)} items done; "
+             f"next: {derived_next(value)}"]
+    lines += [f"  [ ] {n}. {text}" for n, text in pending[:limit]]
+    if len(pending) > limit:
+        lines.append(f"  ... {len(pending) - limit} more")
+    if value.get("carried"):
+        lines.append(f"  carried from an interrupted request: {len(value['carried'])} item(s)")
+    return lines
+
+
+def cmd_objective(args) -> int:
+    workspace = ep.resolve_workspace(args.workspace)
+    if args.action == "show":
+        try:
+            value = load_objective(workspace, args.project)
+        except SystemExit as exc:
+            print(exc)
+            return 1
+        if args.json:
+            print(json.dumps(value or {}, ensure_ascii=True))
+        elif not value:
+            print("NONE: no objective")
+        else:
+            print(f"{value['status']}: {value['task'][:200]}")
+            print("\n".join(objective_lines(value, 40)))
+        return 0
+    handle, path, token = acquire_lock(workspace, args.project, args.session, args.session)
+    try:
+        return _objective(args, workspace)
+    finally:
+        release_lock(handle, path, token)
+
+
+def _objective(args, workspace: str) -> int:
+    try:
+        value = open_objective(workspace, args.project)
+        if args.action == "open":
+            if not (args.task or "").strip():
+                print("BLOCKED: --task is required")
+                return 2
+            value = note_objective(workspace, args.project, args.task, args.session, explicit=True)
+            print("OPEN" if value else "SKIPPED: this request was already finished or abandoned")
+            return 0
+        if args.action == "step":
+            # The guard's record of a completed write outside the ATOMIC path.
+            value = note_objective(workspace, args.project, args.task, args.session,
+                                   [os.path.normpath(item) for item in args.file], args.decision)
+            print(json.dumps({"ok": True, "status": "open" if value else "none"}))
+            return 0
+    except SystemExit as exc:
+        print(exc)
+        return 1
+    if not value:
+        print("BLOCKED: no open objective")
+        return 1
+    items = value["items"]
+    for number in args.done or []:
+        if not 1 <= number <= len(items):
+            print(f"BLOCKED: there is no item {number}")
+            return 1
+    for number in args.done or []:
+        items[number - 1].update(done=True, done_at=utc_now(), done_by=args.session)
+    for text in args.add or []:
+        items.append({"text": text.strip()[:MAX_ITEM_CHARS], "done": False})
+    # A next action described work that may now be done; keep it only if restated.
+    if args.next or args.done:
+        value["next_action"] = args.next or ""
+    value["session_id"] = args.session
+    if args.action == "done":
+        pending = pending_items(value)
+        if pending:
+            print(f"BLOCKED: {len(pending)} item(s) are not done")
+            for number, text in pending[:12]:
+                print(f"  [ ] {number}. {text}")
+            return 1
+        value["status"] = "done"
+    elif args.action == "abandon":
+        if not (args.reason or "").strip():
+            print("BLOCKED: abandon requires --reason")
+            return 1
+        value["status"] = "abandoned"
+        value["reason"] = args.reason
+    save_objective(workspace, args.project, value, args.action)
+    print(f"{args.action.upper()}: {len(items) - len(pending_items(value))}/{len(items)} items done; "
+          f"next: {derived_next(value) if value['status'] == 'open' else '-'}")
+    return 0
 
 
 def cmd_start(args) -> int:
@@ -400,6 +603,14 @@ def _record_atomic(args, workspace: str) -> dict:
     # same atomic completion, not a second history record.
     record_id = digest({"project": args.project, "session": args.session,
                         "decision": args.decision, "files": sorted(files)})
+    # One file is a step. The request it belongs to stays open until its items
+    # are done, so an interrupted session has something to resume.
+    try:
+        objective = note_objective(workspace, args.project, args.task, args.session,
+                                   files, args.decision)
+    except SystemExit as exc:
+        return {"ok": False, "status": "blocked", "reason": str(exc)}
+
     history = os.path.join(root(workspace, args.project), "history", record_id + ".json")
     if os.path.isfile(history):
         return {"ok": True, "status": "duplicate", "record_id": record_id}
@@ -421,7 +632,8 @@ def _record_atomic(args, workspace: str) -> dict:
                 "open_session": existing.get("session_id")}
 
     state = new_state(args.project,
-                      args.task or f"atomic write: {', '.join(files) or 'unknown'}",
+                      (f"atomic write: {', '.join(files) or 'unknown'}"
+                       if objective or not args.task else args.task),
                       args.session, args.owner or "eos.atomic")
     state["status"] = "closed"
     state["decision"] = args.decision
@@ -436,6 +648,7 @@ def _record_atomic(args, workspace: str) -> dict:
     os.makedirs(os.path.dirname(history), exist_ok=True)
     write_json(history, state)
     return {"ok": True, "status": "recorded", "record_id": record_id,
+            "objective": "open" if objective else "",
             "state": state_path(workspace, args.project)}
 
 
@@ -490,12 +703,23 @@ def cmd_resume(args) -> int:
     except SystemExit as exc:
         print(exc)
         return 1
-    if not state:
+    try:
+        objective = open_objective(workspace, args.project)
+    except SystemExit as exc:
+        print(exc)
+        return 1
+    if not state and not objective:
         print("MISSING: no work state")
         return 1
     if args.json:
-        print(json.dumps(state, ensure_ascii=True))
-    else:
+        value = dict(state or {})
+        if objective:
+            value["objective"] = {**objective, "next_action": derived_next(objective)}
+        print(json.dumps(value, ensure_ascii=True))
+        return 0
+    if objective:
+        print("\n".join(objective_lines(objective)))
+    if state:
         print(f"{state['status']}: {state['task']}")
         print(f"  session: {state.get('session_id')}  owner: {state.get('owner')}")
         print(f"  decision: {state.get('decision') or '-'}  "
@@ -776,6 +1000,102 @@ def selftest() -> int:
         assert actions.count("atomic_complete") == 2, actions
         return "two sessions"
 
+    MULTI = "Finish the release:\n1. wire the switch\n2. admin UI\n3. run the suite\nGo."
+
+    def step(root, number, task=MULTI, session="s1"):
+        args = atomic_args(root, session=session, decision=f"edr-{number}",
+                           file=f"f{number}.py")
+        args.task = task
+        return cmd_record_atomic(args)
+
+    def objective(root, action, **kw):
+        base = dict(project="demo", session="s1", task="", done=[], add=[], next="", reason="",
+                    json=False, workspace=root, action=action, file=[], decision="")
+        base.update(kw)
+        return cmd_objective(argparse.Namespace(**base))
+
+    @case("one file write never completes a multi-step request")
+    def _():
+        root = workspace()
+        assert step(root, 1) == 0
+        assert step(root, 2) == 0
+        value = open_objective(root, "demo")
+        assert value and value["status"] == "open" and len(value["items"]) == 3, value
+        assert value["files"] == ["f1.py", "f2.py"]
+        assert derived_next(value) == "item 1: wire the switch"
+        assert "admin UI" not in load_state(root, "demo")["task"], "closed under the request's name"
+        return "open"
+
+    @case("a single-step write still closes and opens no objective")
+    def _():
+        root = workspace()
+        assert step(root, 1, task="fix the typo in a.py") == 0
+        assert open_objective(root, "demo") is None
+        assert load_state(root, "demo")["task"] == "fix the typo in a.py"
+        return "unchanged"
+
+    @case("another session resumes with items and a next action and is not locked out")
+    def _():
+        root = workspace()
+        step(root, 1)
+        assert objective(root, "checkpoint", done=[1], next="bind the form") == 0
+        assert step(root, 2, task="devam et", session="s2") == 0
+        value = open_objective(root, "demo")
+        assert value["task"] == MULTI and value["session_id"] == "s2"
+        assert derived_next(value) == "bind the form"
+        assert [n for n, _ in pending_items(value)] == [2, 3]
+        assert objective(root, "checkpoint", session="s2", done=[2]) == 0
+        assert derived_next(open_objective(root, "demo")) == "item 3: run the suite"
+        return "resumed"
+
+    @case("done is refused while an item is open; abandon needs a reason")
+    def _():
+        root = workspace()
+        step(root, 1)
+        assert objective(root, "done") == 1
+        assert objective(root, "abandon") == 1
+        assert objective(root, "checkpoint", done=[9]) == 1
+        assert objective(root, "done", done=[1, 2, 3]) == 0
+        assert open_objective(root, "demo") is None
+        assert step(root, 4) == 0
+        assert open_objective(root, "demo") is None, "a late write reopened a finished request"
+        return "explicit end"
+
+    @case("a new multi-step request keeps the unfinished items of the old one")
+    def _():
+        root = workspace()
+        step(root, 1)
+        objective(root, "checkpoint", done=[1])
+        step(root, 2, task="Also:\n1. run the suite\n2. write notes")
+        value = open_objective(root, "demo")
+        assert [i["text"] for i in value["items"]] == ["run the suite", "write notes"]
+        assert value["carried"] == ["admin UI"], value["carried"]
+        return "carried"
+
+    @case("a STANDARD write advances the objective too, and pasted bullets open none")
+    def _():
+        root = workspace()
+        assert objective(root, "step", task="- PASS a\n- PASS b", file=["x.py"]) == 0
+        assert open_objective(root, "demo") is None
+        assert objective(root, "step", task=MULTI, file=["x.py"], decision="edr-9") == 0
+        assert open_objective(root, "demo")["files"] == ["x.py"]
+        assert objective(root, "open", session="s2", task="migrate the panel") == 0
+        value = open_objective(root, "demo")
+        assert [i["text"] for i in value["items"]] == ["migrate the panel"]
+        assert len(value["carried"]) == 3
+        return "advanced"
+
+    @case("a tampered objective is refused, not silently replaced")
+    def _():
+        root = workspace()
+        step(root, 1)
+        value = read_json(objective_path(root, "demo"))
+        value["items"][0]["done"] = True
+        write_json(objective_path(root, "demo"), value)
+        assert step(root, 2) == 1
+        assert objective(root, "checkpoint", done=[2]) == 1
+        return "fail closed"
+
     @case("concurrent atomic records serialise under the OS lock")
     def _():
         import subprocess
@@ -949,6 +1269,19 @@ def main() -> int:
     p.add_argument("--map-sha", default="")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_record_blocked)
+
+    p = sub.add_parser("objective", parents=[common])
+    p.add_argument("action", choices=["open", "step", "show", "checkpoint", "done", "abandon"])
+    p.add_argument("--file", action="append", default=[])
+    p.add_argument("--decision", default="")
+    p.add_argument("--session", default="")
+    p.add_argument("--task", default="")
+    p.add_argument("--done", type=int, action="append", default=[])
+    p.add_argument("--add", action="append", default=[])
+    p.add_argument("--next", default="")
+    p.add_argument("--reason", default="")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_objective)
 
     p = sub.add_parser("resume", parents=[common])
     p.add_argument("--json", action="store_true")

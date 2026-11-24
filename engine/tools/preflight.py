@@ -126,6 +126,17 @@ def run(task: str, workspace: str, project: str = "", cwd: str = "", session: st
         if state.get("open_errors"):
             notes.append(f"{len(state['open_errors'])} open error(s) from the previous session")
 
+    objective = None
+    try:
+        objective = ws.open_objective(workspace, project)
+    except SystemExit as exc:
+        blockers.append(str(exc))
+    if objective:
+        work["objective"] = ws.objective_lines(objective)
+        work["next_action"] = ws.derived_next(objective)
+        if continuation == "new":
+            continuation = "resume"
+
     active = [item for item in edr.latest_decisions(workspace, project)
               if item.get("state") in ("APPROVED_FOR_EDIT", "IMPLEMENTED")]
     edr_state = {"state": "NONE", "decision": "", "policy": "ATOMIC auto on write; "
@@ -249,6 +260,20 @@ def selftest() -> int:
         assert result["verdict"] == "BLOCKED"
         assert any("MAP_INVALID" in item for item in result["blockers"])
         return "blocked"
+
+    @case("an open objective is reported as resume although the last write closed")
+    def _():
+        workspace = fixture()
+        where = os.path.join(workspace, "proj")
+        run("fix", workspace, "demo", where, "s1", use_route=False)
+        assert ws.cmd_record_atomic(argparse.Namespace(
+            project="demo", task="Do:\n1. first\n2. second", session="s1", decision="edr-1",
+            file=["src/a.py"], map_state="CURRENT", map_sha="", owner="", json=False,
+            workspace=workspace)) == 0
+        result = run("devam et", workspace, "demo", where, "s2", use_route=False)
+        assert result["continuation"] == "resume", result["continuation"]
+        assert result["work"]["next_action"] == "item 1: first", result["work"]
+        return "resume"
 
     @case("active work is reported as resume")
     def _():

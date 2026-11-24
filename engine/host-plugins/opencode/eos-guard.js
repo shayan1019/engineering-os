@@ -1699,6 +1699,14 @@ async function install(ctx, options) {
                 reason: change.ok ? "" : change.reason || "",
               })
             }
+            if (pending.risk !== "ATOMIC" && touched.project) {
+              await runTool(engine, python, workspace, "work_state.py", [
+                "objective", "step", "--workspace", workspace, "--project", touched.project,
+                "--task", String(pending.task || "").slice(0, 4000),
+                "--session", String(input && input.sessionID || ""),
+                "--file", pending.path, "--decision", String(pending.decision || ""), "--json",
+              ])
+            }
             const atomic = await recordAtomic(engine, python, workspace, pending,
                                               touched, input && input.sessionID)
             const status = String(atomic.status ||

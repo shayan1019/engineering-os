@@ -34,6 +34,7 @@ jobs:
           python engine/tools/auto_decision.py selftest
           python engine/tools/write_gate.py selftest
           python engine/tools/work_state.py selftest
+          python engine/tools/preflight.py selftest
           python engine/tools/skill_usage.py selftest
           python engine/tools/recovery.py selftest
       - name: Activation plugin test (automatic EOS activation)
