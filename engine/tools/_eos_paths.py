@@ -155,8 +155,18 @@ def too_broad(directory: str) -> bool:
 
 
 def is_hub(workspace: str) -> bool:
-    """A workspace with its own project registry contains projects."""
-    return os.path.isfile(os.path.join(workspace, ".agents", "registry", "PROJECT_PROFILES.json"))
+    """A workspace with its own project registry contains projects, unless the
+    registry says the workspace itself is one."""
+    import json
+    root = _abs(workspace)
+    try:
+        with open(os.path.join(root, ".agents", "registry", "PROJECT_PROFILES.json"),
+                  encoding="utf-8-sig") as handle:
+            profiles = json.load(handle).get("profiles") or []
+    except (OSError, ValueError, AttributeError):
+        return False
+    return not any(_abs(os.path.join(root, str(item.get("path") or "."))) == root
+                   for item in profiles)
 
 
 def hub_child(workspace: str, path: str) -> str:

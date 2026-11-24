@@ -156,8 +156,13 @@ def git_state(root: str) -> dict:
 
 def source_files(root: str) -> list:
     found = []
+    shallow = ep.is_hub(root)
     for base, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith("_backup"))
+        if shallow:
+            # The hub's own map is its top-level files. Every folder in it is
+            # another project: walking them took longer than any gate may wait.
+            dirs[:] = []
         for name in files:
             if name.lower().endswith(SRC_EXT):
                 found.append(os.path.relpath(os.path.join(base, name), root).replace("\\", "/"))

@@ -1898,6 +1898,12 @@ def selftest() -> int:
         assert list(value["map"]["sources"]["files"]) == ["src/main.py"], "other projects leaked in"
         assert infer_project(root, os.path.join(root, "known", "b.py")) == "known"
         assert infer_project(root, os.path.join(root, "top.py")) == "hub"
+        # Files no project owns use the hub's identity, whose map is shallow.
+        assert infer_project(root, os.path.join(root, ".tmp", "probe.py")) == "hub"
+        open(os.path.join(root, "top.py"), "w").write("X = 1\n")
+        assert list(pm.ensure("hub", root)["map"]["sources"]["files"]) == ["top.py"]
+        open(os.path.join(root, "known", "late.py"), "w").write("X = 1\n")
+        assert pm.verify("hub", root)["state"] == "CURRENT", "a project's file staled the hub"
         return "own project"
 
     @case("unregistered path is denied")

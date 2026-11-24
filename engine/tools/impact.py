@@ -113,8 +113,11 @@ def skipped(name: str) -> bool:
 
 def walk_files(root: str) -> list:
     found = []
+    shallow = ep.is_hub(root)
     for base, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if not skipped(d))
+        if shallow:
+            dirs[:] = []
         rel_base = os.path.relpath(base, root).replace("\\", "/")
         if rel_base != "." and any((rel_base + "/").startswith(prefix) for prefix in SKIP_PREFIXES):
             dirs[:] = []
