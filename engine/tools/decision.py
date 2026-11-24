@@ -174,12 +174,6 @@ def resolve_workspace(explicit: str | None) -> str:
     return os.getcwd()
 
 
-DISCOVERY_FILES = ("pyproject.toml", "setup.py", "package.json", "Cargo.toml",
-                   "go.mod", "pom.xml", "build.gradle", "composer.json",
-                   "Gemfile", "mix.exs", "requirements.txt", "Makefile")
-DISCOVERY_EXT = (".csproj", ".sln")
-
-
 def safe_project(project: str) -> str:
     if not project or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", project):
         raise DecisionError(f"invalid project id: {project!r}")
@@ -193,8 +187,9 @@ def infer_project(workspace: str, path: str) -> str:
     The workspace root's `.eos/project.json` is the *workspace* identity, not a
     project identity: it must never swallow every child project. A marker below
     the root wins; registered profile paths come before the workspace fallback.
-    A workspace with no identity and a real project marker is discovered as
-    `auto-<folder>` so a brand-new folder works without a command.
+    A workspace with no identity is `auto-<folder>`, with or without a marker
+    file, so a brand-new folder works without a command. Drives, the user
+    profile and shared containers are never a project.
     """
     absolute = os.path.abspath(path)
     current = absolute if os.path.isdir(absolute) else os.path.dirname(absolute)
@@ -230,18 +225,16 @@ def infer_project(workspace: str, path: str) -> str:
             root = os.path.abspath(os.path.join(workspace, profile.get("path", "")))
             if absolute == root or absolute.startswith(root + os.sep):
                 return str(profile.get("id") or "")
-    if not workspace_id:
-        try:
-            names = set(os.listdir(workspace_abs))
-        except OSError:
-            names = set()
-        marker = any(name in names for name in DISCOVERY_FILES) or any(
-            name.lower().endswith(DISCOVERY_EXT) for name in names)
-        if marker:
-            slug = re.sub(r"[^A-Za-z0-9._-]+", "-",
-                          os.path.basename(workspace_abs)).strip("-._")
-            if slug:
-                return ("auto-" + slug)[:64]
+    # A folder of a hub that nobody registered is its own project. Giving it the
+    # hub's identity would map, and stale, every other project with it.
+    child = ep.hub_child(workspace_abs, absolute)
+    if child:
+        return ep.auto_project_id(child) or workspace_id
+    if not workspace_id and not ep.is_hub(workspace_abs) and not ep.too_broad(workspace_abs):
+        # The folder the user opened is the project. Requiring a package.json or
+        # similar refused every write in an empty folder, a plain script folder
+        # and an MQL project.
+        return ep.auto_project_id(workspace_abs)
     return workspace_id
 
 
@@ -1861,11 +1854,51 @@ def selftest() -> int:
         assert project.startswith("auto-"), project
         return project
 
-    @case("an empty unregistered folder is not invented as a project")
+    @case("a folder without any marker is a project; a shared container is not")
     def _():
         root = workspace()
-        assert infer_project(root, os.path.join(root, "x.py")) == ""
-        return "empty"
+        new = os.path.join(root, "yeni")
+        os.makedirs(new)
+        assert infer_project(new, os.path.join(new, "x.py")) == "auto-yeni"
+        ids = set()
+        for name in ("T\u00fcrk\u00e7e \u011f\u00fc Proje", "\u041f\u0440\u043e\u0435\u043a\u0442", "\u65b0\u9879\u76ee"):
+            folder = os.path.join(root, name)
+            os.makedirs(folder)
+            ids.add(safe_project(infer_project(folder, os.path.join(folder, "x.py"))))
+        assert len(ids) == 3, ids
+        home = os.path.expanduser("~")
+        for broad in (home, os.path.dirname(home), os.path.join(home, "Desktop"),
+                      os.path.abspath(os.sep), tempfile.gettempdir()):
+            assert infer_project(broad, os.path.join(broad, "x.py")) == "", broad
+        return "opened folder"
+
+    @case("an unregistered folder of a hub is its own project, even before it exists")
+    def _():
+        import project_map as pm  # noqa: PLC0415
+        import impact  # noqa: PLC0415
+        root = workspace()
+        registry = os.path.join(root, ".agents", "registry")
+        os.makedirs(registry)
+        write_json_atomic(os.path.join(registry, "PROJECT_PROFILES.json"),
+                          {"profiles": [{"id": "known", "path": "known"}]})
+        os.makedirs(os.path.join(root, ".eos"))
+        write_json_atomic(os.path.join(root, ".eos", "project.json"), {"schema": 1, "id": "hub"})
+        os.makedirs(os.path.join(root, "known"))
+        open(os.path.join(root, "known", "a.py"), "w").write("X = 1\n")
+        path = os.path.join(root, "oyun", "src", "main.py")
+        project = infer_project(root, path)
+        assert project == "auto-oyun", project
+        assert pm.ensure(project, root)["state"] == "CURRENT"
+        assert impact.project_root(project, root)[0] == os.path.join(root, "oyun")
+        os.makedirs(os.path.dirname(path))
+        open(path, "w").write("X = 1\n")
+        assert pm.update_files(project, root, ["oyun/src/main.py"])["ok"]
+        value = pm.verify(project, root)
+        assert value["state"] == "CURRENT", value["reasons"]
+        assert list(value["map"]["sources"]["files"]) == ["src/main.py"], "other projects leaked in"
+        assert infer_project(root, os.path.join(root, "known", "b.py")) == "known"
+        assert infer_project(root, os.path.join(root, "top.py")) == "hub"
+        return "own project"
 
     @case("unregistered path is denied")
     def _():

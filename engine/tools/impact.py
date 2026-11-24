@@ -93,7 +93,9 @@ def project_root(project: str, workspace: str) -> tuple:
     # project_map already resolves it to the workspace root; impact must agree,
     # or a new folder is writable by the map and blocked by the decision engine.
     if project.startswith("auto-") and os.path.isdir(workspace):
-        return os.path.abspath(workspace), {"id": project, "path": ".", "discovered": True}
+        root = ep.auto_project_root(project, workspace)
+        return root, {"id": project, "path": os.path.relpath(root, workspace).replace("\\", "/"),
+                      "discovered": True}
     marker = os.path.join(workspace, ".eos", "project.json")
     if os.path.isfile(marker):
         try:
@@ -268,7 +270,7 @@ def component_for(topology: dict, rel: str) -> list:
 def build(project: str, workspace: str, files: list, task: str, topology_path: str,
           symbol_limit: int) -> dict:
     root, profile = project_root(project, workspace)
-    if not os.path.isdir(root):
+    if not os.path.isdir(root) and not project.startswith("auto-"):
         raise SystemExit(f"BLOCKED: project path does not exist: {root}")
 
     notes = []

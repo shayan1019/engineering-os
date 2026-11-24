@@ -237,6 +237,10 @@ def selftest() -> int:
     def fixture() -> str:
         root = tempfile.mkdtemp(prefix="eos-auto-")
         os.makedirs(os.path.join(root, ".agents", "evidence"), exist_ok=True)
+        # These cases decide for project `eos`, so the workspace has to be it.
+        os.makedirs(os.path.join(root, ".eos"), exist_ok=True)
+        with open(os.path.join(root, ".eos", "project.json"), "w", encoding="utf-8") as handle:
+            json.dump({"schema": 1, "id": "eos"}, handle)
         with open(os.path.join(root, "app.py"), "w", encoding="utf-8", newline="\n") as handle:
             handle.write("print('ok')\n")
         return root

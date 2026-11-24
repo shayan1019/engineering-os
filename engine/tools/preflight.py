@@ -92,6 +92,10 @@ def run(task: str, workspace: str, project: str = "", cwd: str = "", session: st
     route = route_task(task, cwd, workspace) if use_route else {}
     resolved = route.get("resolved") or {}
     project = project or resolved.get("project_id") or ""
+    if not project or project.startswith("auto-"):
+        # One identity for activation and the write gate; the router's own slug
+        # differs for upper-case and non-ASCII folder names.
+        project = edr.infer_project(workspace, os.path.join(cwd, "_")) or project
     blockers, notes = [], []
     if not scope["in_scope"] and scope.get("mode") != "unconfigured":
         blockers.append(f"OUT_OF_SCOPE: {scope.get('reason')}")

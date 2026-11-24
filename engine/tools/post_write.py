@@ -123,7 +123,7 @@ def selftest() -> int:
 
     @case("touch without an inferable project is refused")
     def _():
-        root = tempfile.mkdtemp(prefix="eos-pw-empty-")
+        root = os.path.expanduser("~")  # a profile is never a project
         result = touch(root, ["x.py"], "", "s1")
         assert result["ok"] is False
         return "refused"

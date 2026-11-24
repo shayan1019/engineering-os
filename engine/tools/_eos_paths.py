@@ -115,6 +115,79 @@ def _first_dir(*candidates: str) -> str:
     return candidates[-1] if candidates else ""
 
 
+# ------------------------------------------------------- unregistered projects
+def auto_project_id(directory: str) -> str:
+    """A stable id for a folder nobody registered. A name with no usable ASCII
+    letter gets a digest, so it is never empty and two names never share one."""
+    import hashlib
+    import re
+    name = os.path.basename(_abs(directory))
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")
+    if not name.isascii():
+        slug = f"{slug[:40]}-{hashlib.sha256(name.encode('utf-8')).hexdigest()[:8]}".strip("-")
+    return ("auto-" + slug)[:64] if slug else ""
+
+
+def too_broad(directory: str) -> bool:
+    """A drive, the profile or a shared container is a place projects live in,
+    never a project: treating it as one would authorise writes across it."""
+    def key(path: str) -> str:
+        return os.path.normcase(os.path.realpath(path))
+    current = key(directory)
+    home = os.path.expanduser("~")
+    if os.path.dirname(current) == current:
+        return True
+    if key(home) == current or key(home).startswith(current.rstrip("\\/") + os.sep):
+        return True
+    broad = [os.path.join(home, item) for item in
+             ("Desktop", "Documents", "Downloads", "OneDrive", "AppData", "AppData/Local",
+              "AppData/Roaming", "AppData/Local/Temp", ".config", ".eos")]
+    for name in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "TEMP", "TMP",
+                 "PUBLIC", "TMPDIR"):
+        if os.environ.get(name):
+            broad.append(os.environ[name])
+    if os.name != "nt":
+        broad += ["/tmp", "/usr", "/etc", "/opt", "/var", "/home"]
+    system = [key(os.environ[n]) for n in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)")
+              if os.environ.get(n)]
+    return (current in {key(item) for item in broad}
+            or any(current.startswith(item + os.sep) for item in system))
+
+
+def is_hub(workspace: str) -> bool:
+    """A workspace with its own project registry contains projects."""
+    return os.path.isfile(os.path.join(workspace, ".agents", "registry", "PROJECT_PROFILES.json"))
+
+
+def hub_child(workspace: str, path: str) -> str:
+    """The first-level folder of a hub that owns `path`, or ""."""
+    root, absolute = _abs(workspace), _abs(path)
+    if not is_hub(root) or not absolute.startswith(root + os.sep):
+        return ""
+    parts = os.path.relpath(absolute, root).split(os.sep)
+    child = os.path.join(root, parts[0])
+    if parts[0].startswith(".") or (len(parts) == 1 and not os.path.isdir(child)):
+        return ""
+    return child
+
+
+def auto_project_root(project: str, workspace: str) -> str:
+    """The folder an `auto-` id names. A hub child may not exist yet: the first
+    write creates it."""
+    root = _abs(workspace)
+    if not is_hub(root) or auto_project_id(root) == project:
+        return root
+    try:
+        names = os.listdir(root)
+    except OSError:
+        names = []
+    for name in sorted(names):
+        child = os.path.join(root, name)
+        if not name.startswith(".") and os.path.isdir(child) and auto_project_id(child) == project:
+            return child
+    return os.path.join(root, project[len("auto-"):])
+
+
 # ------------------------------------------------------------- program files
 REGISTRY = os.path.join(ENGINE_ROOT, "registry")
 EOS_DIR = os.path.join(ENGINE_ROOT, "eos")

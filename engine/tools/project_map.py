@@ -92,6 +92,10 @@ def resolve_root(project: str, workspace: str, explicit_path: str = "") -> tuple
         root = os.path.normpath(os.path.join(workspace, explicit_path))
         if os.path.isdir(root):
             return root, {"id": project, "path": explicit_path}
+        if project.startswith("auto-"):
+            # Not created yet, or created under its real (non-ASCII) name.
+            root = ep.auto_project_root(project, workspace)
+            return root, {"id": project, "path": explicit_path, "discovered": True}
         raise SystemExit(f"BLOCKED: project path does not exist: {root}")
     path = os.path.join(registry_dir(workspace), "PROJECT_PROFILES.json")
     if os.path.isfile(path):
@@ -114,7 +118,9 @@ def resolve_root(project: str, workspace: str, explicit_path: str = "") -> tuple
                 if os.path.isdir(root):
                     return root, item
     if project.startswith("auto-") and os.path.isdir(workspace):
-        return os.path.abspath(workspace), {"id": project, "path": ".", "discovered": True}
+        root = ep.auto_project_root(project, workspace)
+        return root, {"id": project, "path": os.path.relpath(root, workspace).replace("\\", "/"),
+                      "discovered": True}
     marker = os.path.join(workspace, ".eos", "project.json")
     if os.path.isfile(marker):
         try:
@@ -209,7 +215,8 @@ def resolve_js(root: str, from_rel: str, spec: str) -> str:
 def build(project: str, workspace: str, previous: dict | None = None,
           project_path: str = "") -> dict:
     root, profile = project_root(project, workspace, project_path)
-    if not os.path.isdir(root):
+    # A new project in a hub has no folder until its first write creates it.
+    if not os.path.isdir(root) and not project.startswith("auto-"):
         raise SystemExit(f"BLOCKED: project path does not exist: {root}")
     files = source_files(root)
     hashes = {}
