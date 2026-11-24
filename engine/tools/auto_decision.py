@@ -45,12 +45,32 @@ def _high_hit(text: str, word: str) -> bool:
     return bool(re.search(r"(?<!\w)" + re.escape(word), text))
 
 
+SECRET_FILE = re.compile(
+    r"(^|/)(\.env(\.(?!(example|sample|template|dist)$)[^/]*)?|id_(rsa|dsa|ecdsa|ed25519)|"
+    r"[^/]*\.(pem|key|pfx|p12|jks|keystore|kdbx)|(credentials|secrets?)\.(json|ya?ml|toml|ini|txt)|"
+    r"\.(npmrc|pypirc|netrc))$", re.I)
+
+
+def classify_normal(workspace: str, scope: list) -> tuple:
+    """Everything else. A word in the request is not evidence of risk: "delete",
+    "order", "password" and "migration" describe ordinary features, and an edit to
+    a source file is reversible. Commands that act on the world are judged by the
+    shell guard. What an edit can destroy for good is an existing secret."""
+    hit = [rel for rel in scope if SECRET_FILE.search(rel.replace("\\", "/"))
+           and os.path.exists(os.path.join(os.path.realpath(workspace), rel))]
+    if hit:
+        return "CRITICAL", [f"existing secret file: {rel}" for rel in hit[:3]]
+    if len(scope) == 1:
+        return "ATOMIC", ["one file", "no strict profile"]
+    return "STANDARD", [f"{len(scope)} files"]
+
+
 def classify(task: str, scope: list, impact: dict | None, impact_required: bool = False) -> tuple:
     text = task.lower()
     high = any(_high_hit(text, word) for word in HIGH_WORDS)
     sensitive = any(any(token in item.lower() for token in SENSITIVE) for item in scope)
     cross = bool((impact or {}).get("cross_process"))
-    impact_missing = impact_required and impact is None
+    impact_missing = impact_required and (impact is None or bool(impact.get("truncated")))
     reasons = [reason for reason, hit in (
         ("high-risk wording", high), ("sensitive surface", sensitive),
         ("cross-process change", cross), ("more than three files", len(scope) > 3),
@@ -69,6 +89,10 @@ def safe_scope(workspace: str, values: list) -> tuple:
     scope, problems = [], []
     workspace_real = os.path.realpath(os.path.abspath(workspace))
     for raw in values:
+        problem = edr.scope_input_problem(workspace_real, raw)
+        if problem:
+            problems.append(problem)
+            continue
         candidate = raw if os.path.isabs(raw) else os.path.join(workspace_real, raw)
         absolute = os.path.realpath(os.path.abspath(candidate))
         if not (absolute == workspace_real or absolute.startswith(workspace_real + os.sep)):
@@ -86,6 +110,11 @@ def safe_scope(workspace: str, values: list) -> tuple:
 def prepare(workspace: str, project: str, task: str, scope_values: list,
             approve: bool = False, use_impact: bool = True, session: str = "") -> dict:
     scope, problems = safe_scope(workspace, scope_values)
+    # All-or-nothing: a valid covered path must never mask a rejected sibling.
+    # Check before EDR reuse, impact discovery or auto-approval.
+    if problems:
+        return {"verdict": "BLOCKED", "problems": problems,
+                "next": "correct each scope and retry; authorization was not changed"}
     if not scope:
         return {"verdict": "BLOCKED", "problems": problems or ["no scope"],
                 "next": "pass --scope with the file(s) the change touches"}
@@ -121,7 +150,7 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
                 "missing": [], "next": "write inside the scope",
                 "human_approval_required": False, "reused": True}
 
-    conflicts = edr.active_conflicts(workspace, project, scope)
+    conflicts = edr.active_conflicts(workspace, project, scope, session=session)
     if conflicts:
         return {
             "verdict": "BLOCKED",
@@ -140,31 +169,32 @@ def prepare(workspace: str, project: str, task: str, scope_values: list,
     if use_impact:
         try:
             import impact as impact_tool
-            impact = impact_tool.build(project, workspace, scope, "", "", 40)
+            impact = impact_tool.build(project, workspace, scope, "", "", 40, budget_s=15)
             impact_note = impact.get("verdict", "UNKNOWN")
         except (SystemExit, Exception) as exc:  # noqa: BLE001 - impact must not block an ATOMIC fix
             impact_note = f"UNKNOWN: {type(exc).__name__}: {exc}"
-    risk, reasons = classify(task, scope, impact, impact_required=use_impact)
+    if edr.is_strict(workspace, project):
+        risk, reasons = classify(task, scope, impact, impact_required=use_impact)
+    else:
+        risk, reasons = classify_normal(workspace, scope)
     if risk == "CRITICAL":
         reasons.append("critical never auto-approves")
     if risk in ("STANDARD", "CRITICAL") and not (session or "").strip():
         return {"verdict": "BLOCKED",
                 "problems": ["session is required for STANDARD/CRITICAL decisions"],
                 "risk": risk, "reasons": reasons}
-    if problems:
-        return {"verdict": "BLOCKED", "problems": problems,
-                "risk": risk, "reasons": reasons}
-
     args = argparse.Namespace(project=project, task=task, risk=risk, scope=scope,
                               suite="", actor="eos.auto", approve=False,
-                              session=session, workspace=workspace)
+                              session=session, workspace=workspace,
+                              host_pid=os.getppid())
     # cmd_open prints; suppress its prose by calling the same primitives is not
     # worth a second implementation. The JSON result below is the contract.
-    before = {item.get("id") for item in edr.latest_decisions(workspace, project)}
-    assert edr.cmd_open(args) == 0
-    after = [item for item in edr.latest_decisions(workspace, project)
-             if item.get("id") not in before]
-    record = after[0] if after else edr.latest_decisions(workspace, project)[0]
+    # The id of the record opened here, never "the newest one": two tool calls in
+    # one message otherwise filled in and approved each other's decision.
+    if edr.cmd_open(args) != 0:
+        return {"verdict": "BLOCKED", "problems": ["the decision could not be opened"],
+                "risk": risk, "reasons": reasons}
+    record = edr.load(workspace, project, args.opened_id)
     decision_id = record["id"]
 
     edges = (impact or {}).get("edges") or []
@@ -232,6 +262,10 @@ def selftest() -> int:
     def fixture() -> str:
         root = tempfile.mkdtemp(prefix="eos-auto-")
         os.makedirs(os.path.join(root, ".agents", "evidence"), exist_ok=True)
+        # These cases decide for project `eos`, so the workspace has to be it.
+        os.makedirs(os.path.join(root, ".eos"), exist_ok=True)
+        with open(os.path.join(root, ".eos", "project.json"), "w", encoding="utf-8") as handle:
+            json.dump({"schema": 1, "id": "eos"}, handle)
         with open(os.path.join(root, "app.py"), "w", encoding="utf-8", newline="\n") as handle:
             handle.write("print('ok')\n")
         return root
@@ -310,6 +344,77 @@ def selftest() -> int:
         assert danger[0] == "CRITICAL", danger
         return "word start"
 
+    @case("ordinary words do not block an ordinary project; a strict one keeps its tiers")
+    def _():
+        root = tempfile.mkdtemp(prefix="eos-auto-normal-")
+        for index, task in enumerate(("todo app with delete", "orders and payment", "password login",
+                                      "sort in ascending order", "database migration", "silme ekrani")):
+            result = prepare(root, "", task, [f"f{index}.go"], approve=True, session="s1")
+            assert result["verdict"] == "READY" and result["approved"], result
+        for name in ("Dockerfile", "EA.mq5", ".env", "deploy/values.yaml"):
+            assert prepare(root, "", "add", [name], approve=True, session="s1")["approved"], name
+        for name in (".env", "server.key", "credentials.json", ".env.local"):
+            open(os.path.join(root, name), "w").write("K=1")
+            result = prepare(root, "", "edit it", [name], approve=True, session="s2")
+            assert result["verdict"] == "BLOCKED", (name, result)
+        open(os.path.join(root, ".env.example"), "w").write("K=")
+        assert prepare(root, "", "edit it", [".env.example"], approve=True, session="s1")["approved"]
+        registry = os.path.join(root, ".agents", "registry")
+        os.makedirs(registry, exist_ok=True)
+        os.makedirs(os.path.join(root, "live"))
+        with open(os.path.join(registry, "PROJECT_PROFILES.json"), "w") as handle:
+            json.dump({"profiles": [{"id": "live", "path": "live", "invariants": ["money"]}]}, handle)
+        for task, name in (("delete it", "live/a.py"), ("fix", "live/EA.mq5")):
+            result = prepare(root, "", task, [name], approve=True, session="s1")
+            assert result["risk"] == "CRITICAL" and not result["approved"], result
+        return "normal open, strict kept"
+
+    @case("the next session can edit a finished file; a write in progress and a strict lease hold")
+    def _():
+        root = tempfile.mkdtemp(prefix="eos-auto-next-")
+        first = prepare(root, "", "add", ["a.go"], approve=True, session="s1")
+        assert first["approved"], first
+        assert prepare(root, "", "add", ["a.go"], approve=True, session="s2")["verdict"] == "BLOCKED"
+        record = edr.load(root, first["project"], first["decision"])
+        record["change"] = {"files": ["a.go"], "diff_sha256": ""}
+        edr.save(root, record)
+        assert not edr.holds_surface(record, "s2", False)
+        assert edr.holds_surface(record, "s2", True)
+        assert prepare(root, "", "add", ["a.go"], approve=True, session="s2")["approved"]
+        record["change"] = {"files": []}
+        gone = __import__("subprocess").Popen([sys.executable, "-c", ""])
+        gone.wait()
+        record["host_pid"] = gone.pid
+        assert not edr.holds_surface(record, "s2", True), "a dead host still owned the file"
+        record["risk"] = "STANDARD"
+        assert edr.holds_surface(record, "s2", False), "a reviewed decision must hold"
+        record["updated_at"] = "2020-01-01T00:00:00+00:00"
+        assert not edr.holds_surface(record, "s1", False), "an expired decision held the file"
+        return "lease"
+
+    @case("parallel tool calls neither crash nor approve each other's decision")
+    def _():
+        import subprocess
+        root = tempfile.mkdtemp(prefix="eos-auto-par-")
+        here = os.path.abspath(__file__)
+        running = [(name, subprocess.Popen(
+            [sys.executable, "-B", here, "prepare", "--workspace", root, "--task", "add",
+             "--scope", name, "--session", "s1", "--approve", "--json"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+            errors="replace")) for name in (f"p{i}.go" for i in range(6))]
+        ids = set()
+        for name, process in running:
+            out, err = process.communicate(timeout=120)
+            assert out.strip(), err[-400:]
+            value = json.loads(out.strip().splitlines()[-1]) if not out.strip().startswith("{\n") \
+                else json.loads(out)
+            assert value.get("approved"), (name, value)
+            record = edr.load(root, value["project"], value["decision"])
+            assert edr.scope_list(record) == [name], (name, edr.scope_list(record))
+            ids.add(value["decision"])
+        assert len(ids) == 6, ids
+        return "6/6"
+
     @case("impact failure prevents ATOMIC")
     def _():
         risk, reasons = classify("fix a typo", ["app.py"], None, impact_required=True)
@@ -343,6 +448,62 @@ def selftest() -> int:
         result = prepare(root, "eos", "fix", ["link/x.py"], approve=True, use_impact=False)
         assert result["verdict"] == "BLOCKED", result
         return "blocked"
+
+    @case("comma-joined scope is rejected before auto-EDR creation")
+    def _():
+        root = fixture()
+        os.makedirs(os.path.join(root, "6.0_final_merge"))
+        os.makedirs(os.path.join(root, "_canonical"))
+        before = len(edr.latest_decisions(root, "eos"))
+        result = prepare(root, "eos", "canonical publication",
+                         ["6.0_final_merge,_canonical"],
+                         approve=True, use_impact=False, session="ses_test")
+        assert result["verdict"] == "BLOCKED", result
+        assert any("comma-joined" in p for p in result.get("problems", [])), result
+        assert len(edr.latest_decisions(root, "eos")) == before
+        return "invalid scope has no EDR"
+
+    @case("invalid sibling cannot be dropped during approved EDR reuse")
+    def _():
+        root = fixture()
+        for name in ("6.0_final_merge", "_canonical"):
+            os.makedirs(os.path.join(root, name))
+        with open(os.path.join(root, "app.py"), "w", encoding="utf-8") as handle:
+            handle.write("x = 1\n")
+        args = argparse.Namespace(project="eos", task="approved file",
+                                  risk="ATOMIC", scope=["app.py"], suite="unit",
+                                  actor="eos.test", approve=True,
+                                  workspace=root, session="ses_test")
+        assert edr.cmd_open(args) == 0
+        existing = [item["id"] for item in edr.latest_decisions(root, "eos")]
+        result = prepare(root, "eos", "retry with malformed extra scope",
+                         ["app.py", "6.0_final_merge,_canonical"],
+                         approve=True, use_impact=False, session="ses_test")
+        assert result["verdict"] == "BLOCKED", result
+        assert not result.get("reused"), result
+        assert [item["id"] for item in edr.latest_decisions(root, "eos")] == existing
+        return "no partial authorization"
+
+    @case("a wrong workspace root is rejected and a corrected scope reuses the EDR")
+    def _():
+        root = fixture()
+        args = argparse.Namespace(project="eos", task="approved file",
+                                  risk="ATOMIC", scope=["app.py"], suite="unit",
+                                  actor="eos.test", approve=True,
+                                  workspace=root, session="")
+        assert edr.cmd_open(args) == 0
+        decision = edr.latest_decisions(root, "eos")[0]["id"]
+        outside = os.path.join(tempfile.mkdtemp(prefix="eos-outside-"), "x.py")
+        result = prepare(root, "eos", "retry with a wrong root",
+                         ["app.py", outside], approve=True, use_impact=False, session="")
+        assert result["verdict"] == "BLOCKED", result
+        assert not result.get("reused"), result
+        assert [item["id"] for item in edr.latest_decisions(root, "eos")] == [decision]
+        result = prepare(root, "eos", "retry with the corrected scope",
+                         ["app.py"], approve=True, use_impact=False, session="")
+        assert result.get("reused") is True, result
+        assert result["decision"] == decision, result
+        return "reused after correction"
 
     @case("control-plane evidence cannot be an edit scope")
     def _():

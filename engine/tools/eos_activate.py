@@ -169,6 +169,7 @@ def build(task: str, project: str, host: str, max_skills: int, session: str = ""
         {
             "name": name,
             "trust": (ranked.get(name) or {}).get("trust"),
+            "path": (ranked.get(name) or {}).get("path"),
             "reasons": (ranked.get(name) or {}).get("reasons"),
         }
         for name in primary
@@ -216,6 +217,7 @@ def build(task: str, project: str, host: str, max_skills: int, session: str = ""
         "rationale": rationale,
         "roles": [{"name": n, "purpose": p} for n, p in ROLE_HINTS],
         "gate": gate,
+        "session": session,
         "preflight": preflight_ctx,
         "host": host,
         "engine": ep.ENGINE_ROOT,
@@ -229,6 +231,7 @@ def render(ctx: dict) -> str:
     how an agent framework becomes unusable.
     """
     lines = ["<eos-context>"]
+    engine_tools = os.path.join(str(ctx.get("engine") or ""), "tools")
     project = ctx.get("project")
     if project:
         lines.append(f"project: {project} (matched by {ctx.get('project_source') or 'unknown'})"
@@ -249,8 +252,25 @@ def render(ctx: dict) -> str:
         lines.append(f"preflight: {preflight.get('verdict')} | map={map_state} | "
                      f"work={work.get('state', 'UNKNOWN')} | edr={edr_ctx.get('state', 'UNKNOWN')}")
         if work.get("task"):
-            lines.append(f"work: {work.get('task')} [{work.get('state')}] "
+            # Bounded: a long earlier request must not push everything else out.
+            lines.append(f"work: {str(work.get('task'))[:300]} [{work.get('state')}] "
                          f"next: {work.get('next_action') or 'UNKNOWN'}")
+        if work.get("objective"):
+            # The workspace-relative form is the one the guard recognises unprompted.
+            local = os.path.basename(str(ctx.get("engine") or "")) == ".agents"
+            work_state = ("python .agents/tools/work_state.py" if local
+                          else 'python "' + os.path.join(engine_tools, "work_state.py") + '"')
+            lines.extend(work["objective"])
+            lines.append(
+                "  if the user's message continues this objective, work through its items in the same "
+                "turn; a different explicit request, a stop instruction, a risk gate or a human "
+                "approval always comes first. An unticked item may already be done: check before "
+                "redoing it. Valid reasons to stop: all items done, a human decision is required, or "
+                "a concrete blocker with its error text. Estimated session capacity, context size or "
+                "'next block' is not one: the host compacts context. After each item run "
+                f"{work_state} objective checkpoint --project {project} "
+                f"--session {ctx.get('session') or '<id>'} --done <N> --next <text>; "
+                "end with objective done, or abandon --reason when the user drops it.")
         for blocker in (preflight.get("blockers") or [])[:3]:
             lines.append(f"preflight blocker: {blocker}")
         excerpt = (preflight.get("map") or {}).get("excerpt") or ""
@@ -264,7 +284,14 @@ def render(ctx: dict) -> str:
             for s in ctx["skills"][:8]
         )
         lines.append("relevant skills: " + names)
-        lines.append("  read a skill file only when the task actually needs it")
+        lines.append("  selection is not usage: if a skill is required, read only its SKILL.md "
+                     "with the host read/skill tool; the guard records the read. If not required, "
+                     "record an explicit SKIPPED reason with "
+                     f'python "{engine_tools}\\skill_usage.py" skipped --skill <name> --reason <why>. '
+                     "Do not load every skill.")
+        for skill in ctx["skills"][:3]:
+            if skill.get("path"):
+                lines.append(f"  skill source: {skill['name']} -> {skill['path']}")
     if ctx.get("specialists"):
         lines.append("orchestrator: host session (EOS Core coordinates; no Chief mode required)")
         lines.append("specialists to use: " + ", ".join(ctx["specialists"]))
@@ -281,6 +308,14 @@ def render(ctx: dict) -> str:
             lines.append(f"gate: {ctx['gate']['suite']} is NOT_CONFIGURED - report BLOCKED, never PASS")
         else:
             lines.append(f"gate for this project: eos gate run --project {ctx['project']} --suite {ctx['gate']['suite']}")
+    lines.append("scope input: every approved path must be workspace-relative; "
+                 "pass multiple paths as repeated --scope arguments or a JSON scope array, "
+                 "never as a comma-joined string")
+    lines.append("recovery after BLOCKED: run "
+                 f'python "{engine_tools}\\recovery.py" diagnose --path <path> --task <task>; '
+                 "apply only the returned safe next step, retry at most twice, preserve sealed "
+                 "EDR history, and never bypass another session's ownership, a reviewer, or a "
+                 "CRITICAL human gate")
     lines.append("permissions: only the implementer may write; the others are read-only")
     lines.append("write gate: EOS prepares the EDR automatically; ATOMIC is auto-approved, "
                  "STANDARD needs specialist review, CRITICAL needs a human")

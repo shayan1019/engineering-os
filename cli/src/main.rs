@@ -14,6 +14,7 @@
 //! reports what happened, with the engine's exit code intact.
 
 mod hosts;
+mod activation;
 mod install;
 mod paths;
 mod workspace;
@@ -235,6 +236,7 @@ Product
   repair  [--source D] [--version V]
   update  [--source D] [--version V] [--force]
   rollback
+  recover                                    resolve an incomplete version change
   doctor [--product] [--json]          core readiness, or product readiness
   version
 
@@ -1134,6 +1136,23 @@ fn cmd_update(args: &Args) -> i32 {
     }
 }
 
+fn cmd_recover() -> i32 {
+    match install::recover() {
+        Ok(true) => {
+            say!("PASS: an incomplete version change was resolved");
+            0
+        }
+        Ok(false) => {
+            say!("PASS: nothing to recover");
+            0
+        }
+        Err(e) => {
+            warn!("BLOCKED: {e}");
+            1
+        }
+    }
+}
+
 fn cmd_rollback() -> i32 {
     match install::rollback() {
         Ok(version) => {
@@ -1177,6 +1196,7 @@ fn main() -> ExitCode {
         "repair" => cmd_repair(&args),
         "update" => cmd_update(&args),
         "rollback" => cmd_rollback(),
+        "recover" => cmd_recover(),
         // Install runs before the engine is required: a machine with no engine
         // is exactly the machine that has to be able to install one.
         "install" => cmd_install(&args),

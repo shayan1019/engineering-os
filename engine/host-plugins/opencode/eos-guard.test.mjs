@@ -7,7 +7,7 @@ import assert from "node:assert/strict"
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import guard, { classifyShell, summaryOf, permissionDecision, createWriteQueue } from "./eos-guard.js"
+import guard, { classifyShell, summaryOf, permissionDecision, createWriteQueue, skillFromReadOutput, skillFromPath, readTarget } from "./eos-guard.js"
 
 test("read-only shell commands are allowed", () => {
   for (const command of [
@@ -305,7 +305,10 @@ test("a denied write never touches the map", async () => {
     await assert.rejects(() => host.before(input, output), /EOS BLOCKED/)
     await host.after(input, { output: "" })
     assert.equal(existsSync(host.log), false, "a denied write touched the map")
-    assert.equal(existsSync(host.workLog), false, "a denied write recorded work state")
+    assert.equal(existsSync(host.workLog), true, "a denied write left no blocked evidence")
+    const blocked = readFileSync(host.workLog, "utf8")
+    assert.doesNotMatch(blocked, /record-atomic|close/, "a denied write closed a task")
+    assert.match(blocked, /record-blocked/, "a denied write did not record blocked evidence")
   } finally {
     host.restore()
   }
@@ -340,4 +343,27 @@ test("a successful ATOMIC write records a closed work state", async () => {
   } finally {
     host.restore()
   }
+})
+
+test("a read of a real SKILL.md becomes skill evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "eos-skill-read-"))
+  const dir = join(root, ".agents", "skills", "demo")
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, "SKILL.md")
+  writeFileSync(file, "---\nname: demo\n---\nbody\n", "utf8")
+  const info = skillFromReadOutput(`Read file ${file}, lines 1-3\n---\n`, root)
+  assert.equal(info.skill, "demo")
+  assert.equal(info.path, ".agents/skills/demo/SKILL.md")
+  assert.equal(info.sha256.length, 64)
+  const relative = skillFromReadOutput("Read file .agents/skills/demo/SKILL.md, lines 1-3\n---\n", root)
+  assert.equal(relative.skill, "demo")
+  assert.equal(relative.path, ".agents/skills/demo/SKILL.md")
+  assert.equal(skillFromPath(".agents/skills/demo/SKILL.md", root).skill, "demo")
+  assert.equal(readTarget("read", { path: ".agents/skills/demo/SKILL.md" }), ".agents/skills/demo/SKILL.md")
+  assert.equal(skillFromReadOutput(`Read file ${join(root, "a.py")}, lines 1-1\n`, root), null)
+})
+
+test("EOS engine tools are allowed by absolute path", () => {
+  const verdict = classifyShell('python "C:\\eos\\engine\\tools\\recovery.py" diagnose --path a.py', "C:\\proj")
+  assert.equal(verdict.effect, "allow")
 })

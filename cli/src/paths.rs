@@ -221,6 +221,30 @@ pub fn is_engine(dir: &Path) -> bool {
 }
 
 pub fn resolve_engine() -> Result<PathBuf, String> {
+    // A config that exists but cannot be honoured must not fall through to some
+    // other engine. EOS_ENGINE stays an explicit operator override.
+    if env::var_os("EOS_ENGINE").is_none() && config_path().exists() {
+        let cfg: Config = read_json(&config_path())?;
+        if let Some(active) = cfg.active_version.as_ref() {
+            let engine = cfg
+                .versions
+                .iter()
+                .find(|v| &v.version == active)
+                .map(|v| PathBuf::from(&v.dir).join("engine"));
+            if engine.as_deref().is_some_and(|e| e.starts_with(eos_home().join("inactive"))) {
+                return Err(format!(
+                    "active version {active} was selected by an older launcher and is not fully \
+                     activated. Run: eos recover"
+                ));
+            }
+            if !engine.as_deref().is_some_and(is_engine) {
+                return Err(format!(
+                    "active version {active} in {} has no usable engine",
+                    config_path().display()
+                ));
+            }
+        }
+    }
     let candidates = candidate_engines();
     for c in &candidates {
         let canon = fs::canonicalize(c).unwrap_or_else(|_| c.clone());

@@ -174,16 +174,15 @@ def resolve_workspace(explicit: str | None) -> str:
     return os.getcwd()
 
 
-DISCOVERY_FILES = ("pyproject.toml", "setup.py", "package.json", "Cargo.toml",
-                   "go.mod", "pom.xml", "build.gradle", "composer.json",
-                   "Gemfile", "mix.exs", "requirements.txt", "Makefile")
-DISCOVERY_EXT = (".csproj", ".sln")
-
-
 def safe_project(project: str) -> str:
     if not project or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", project):
         raise DecisionError(f"invalid project id: {project!r}")
     return project
+
+
+def _inside(path: str, root: str) -> bool:
+    path, root = (os.path.normcase(os.path.abspath(item)) for item in (path, root))
+    return path == root or path.startswith(root.rstrip("\/") + os.sep)
 
 
 def infer_project(workspace: str, path: str) -> str:
@@ -193,8 +192,9 @@ def infer_project(workspace: str, path: str) -> str:
     The workspace root's `.eos/project.json` is the *workspace* identity, not a
     project identity: it must never swallow every child project. A marker below
     the root wins; registered profile paths come before the workspace fallback.
-    A workspace with no identity and a real project marker is discovered as
-    `auto-<folder>` so a brand-new folder works without a command.
+    A workspace with no identity is `auto-<folder>`, with or without a marker
+    file, so a brand-new folder works without a command. Drives, the user
+    profile and shared containers are never a project.
     """
     absolute = os.path.abspath(path)
     current = absolute if os.path.isdir(absolute) else os.path.dirname(absolute)
@@ -222,6 +222,10 @@ def infer_project(workspace: str, path: str) -> str:
         profiles = os.path.join(registry, "PROJECT_PROFILES.json")
         if not os.path.isfile(profiles):
             continue
+        if registry == ep.REGISTRY and not _inside(ep.REGISTRY, workspace_abs):
+            # The registry shipped with an installed engine describes someone
+            # else's folders: a user's own `tools` or `alpha` is not in it.
+            continue
         try:
             data = read_json(profiles)
         except (OSError, json.JSONDecodeError):
@@ -230,18 +234,16 @@ def infer_project(workspace: str, path: str) -> str:
             root = os.path.abspath(os.path.join(workspace, profile.get("path", "")))
             if absolute == root or absolute.startswith(root + os.sep):
                 return str(profile.get("id") or "")
-    if not workspace_id:
-        try:
-            names = set(os.listdir(workspace_abs))
-        except OSError:
-            names = set()
-        marker = any(name in names for name in DISCOVERY_FILES) or any(
-            name.lower().endswith(DISCOVERY_EXT) for name in names)
-        if marker:
-            slug = re.sub(r"[^A-Za-z0-9._-]+", "-",
-                          os.path.basename(workspace_abs)).strip("-._")
-            if slug:
-                return ("auto-" + slug)[:64]
+    # A folder of a hub that nobody registered is its own project. Giving it the
+    # hub's identity would map, and stale, every other project with it.
+    child = ep.hub_child(workspace_abs, absolute)
+    if child:
+        return ep.auto_project_id(child) or workspace_id
+    if not workspace_id and not ep.is_hub(workspace_abs) and not ep.too_broad(workspace_abs):
+        # The folder the user opened is the project. Requiring a package.json or
+        # similar refused every write in an empty folder, a plain script folder
+        # and an MQL project.
+        return ep.auto_project_id(workspace_abs)
     return workspace_id
 
 
@@ -266,15 +268,15 @@ def new_id() -> str:
 
 def write_json_atomic(path: str, value) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = ep.temp_name(path)
     with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(value, handle, indent=2, ensure_ascii=True)
         handle.write("\n")
-    os.replace(tmp, path)
+    ep.replace(tmp, path)
 
 
 def read_json(path: str):
-    with open(path, encoding="utf-8") as handle:
+    with ep.open_text(path, "utf-8") as handle:
         return json.load(handle)
 
 
@@ -295,6 +297,42 @@ def scope_pattern(pattern: str) -> str:
     if norm.startswith("/") or re.match(r"^[A-Za-z]:", norm):
         raise DecisionError(f"scope must be workspace-relative: {pattern}")
     return norm
+
+
+def scope_input_problem(workspace: str, raw: str) -> str:
+    """Diagnose an accidentally comma-joined set of existing scope paths.
+
+    Never split or grant permission automatically: a comma can be part of a
+    legitimate filename. Diagnose only if the exact literal path is absent and
+    every independently specified component exists inside this workspace.
+    The caller must resubmit an explicit scope list before any EDR is opened.
+    """
+    if not isinstance(raw, str):
+        return ""
+    value = normalise_rel(raw)
+    if "," not in value or any(char in value for char in "*?["):
+        return ""
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) < 2 or any(not part for part in parts):
+        return ""
+    root = os.path.realpath(os.path.abspath(workspace))
+    literal = os.path.join(root, value.replace("/", os.sep))
+    if os.path.lexists(literal):
+        return ""
+    for part in parts:
+        try:
+            scope_pattern(part)
+        except DecisionError:
+            return ""
+        candidate = os.path.realpath(os.path.join(root, part.replace("/", os.sep)))
+        if not (candidate == root or candidate.startswith(root + os.sep)):
+            return ""
+        if not os.path.exists(candidate):
+            return ""
+    suggestion = " ".join(f'--scope "{part}"' for part in parts)
+    return (f"ambiguous comma-joined scope {value!r}; no authorization created. "
+            f"If these are separate scopes, pass {suggestion}. "
+            "A literal comma filename must already exist to disambiguate.")
 
 
 def _pattern_regex(pattern: str) -> re.Pattern:
@@ -414,14 +452,67 @@ def scopes_overlap(first: str, second: str) -> bool:
     return _segments_overlap(first, second)
 
 
-def active_conflicts(workspace: str, project: str, scope: list, ignore_id: str = "") -> list:
+MAX_AGE_H = 24.0
+# How long another session's automatic one-file authorization blocks a file.
+INFLIGHT_S = 120
+STRICT_LEASE_S = 1800
+
+
+def is_strict(workspace: str, project: str) -> bool:
+    """A registered project that declares invariants, or `"risk": "strict"`, keeps
+    the full review tiers. `"risk": "normal"` opts out. An unreadable registry is
+    strict."""
+    import project_map as pm  # noqa: PLC0415
+    try:
+        profile = pm.project_root(project, workspace)[1]
+    except SystemExit:
+        return False  # registered nowhere
+    except (OSError, ValueError, AttributeError, TypeError):
+        return True
+    risk = str(profile.get("risk") or "").lower()
+    if risk in ("strict", "normal"):
+        return risk == "strict"
+    return bool(profile.get("invariants"))
+
+
+def holds_surface(record: dict, session: str, strict: bool) -> bool:
+    """Does this approved decision still keep another writer off its files?
+
+    An automatic one-file approval is a write in progress, not a reservation.
+    It used to hold the file for ever: the next session, or the same one a day
+    later, could never edit it again. A reviewed decision holds until it is
+    closed, superseded or too old to authorise a write itself.
+    """
+    updated = parse_time(record.get("updated_at", ""))
+    age = (datetime.now(timezone.utc) - updated).total_seconds() if updated else 0.0
+    if age > MAX_AGE_H * 3600:
+        return False
+    if (record.get("approval") or {}).get("mode") != "auto" or record.get("risk") != "ATOMIC":
+        return True
+    owner = str(record.get("session_id") or "")
+    if not owner or not session:
+        return True
+    if owner == session:
+        return False
+    if not ep.pid_alive(record.get("host_pid")):
+        return False
+    if strict:
+        return age < STRICT_LEASE_S
+    return age < INFLIGHT_S and not (record.get("change") or {}).get("files")
+
+
+def active_conflicts(workspace: str, project: str, scope: list, ignore_id: str = "",
+                     session: str = "") -> list:
     conflicts = []
-    for other in latest_decisions(workspace, project):
+    strict = is_strict(workspace, project)
+    for other in latest_decisions(workspace, project, MAX_AGE_H):
         if other.get("id") == ignore_id:
             continue
         if other.get("state") not in ("APPROVED_FOR_EDIT", "IMPLEMENTED"):
             continue
         if integrity(other):
+            continue
+        if not holds_surface(other, session, strict):
             continue
         for new_scope in scope or []:
             for old_scope in scope_list(other):
@@ -524,6 +615,10 @@ def cmd_open(args) -> int:
         return 2
     scope = []
     for raw in args.scope or []:
+        problem = scope_input_problem(workspace, raw)
+        if problem:
+            print(f"BLOCKED: {problem}")
+            return 2
         try:
             scope.append(scope_pattern(raw))
         except DecisionError as exc:
@@ -559,6 +654,7 @@ def cmd_open(args) -> int:
         "workspace": ep.store_path(workspace, workspace),
         "base_commit": base_commit,
         "session_id": getattr(args, "session", "") or "",
+        "host_pid": getattr(args, "host_pid", 0) or 0,
         "fields": {},
         "approval": None,
         "gate": None,
@@ -593,6 +689,7 @@ def cmd_open(args) -> int:
         fields["rollback"] = {"value": "git revert of the change; no data migration", "evidence": []}
 
     path = save(workspace, record)
+    args.opened_id = record["id"]
     _record_contract_open(workspace, record["id"], args.risk)
     print(f"OPEN: {record['id']} ({project}, {args.risk}, DRAFT)")
     print(f"  record: {ep.store_path(path, workspace)}")
@@ -658,6 +755,12 @@ def cmd_set(args) -> int:
         except json.JSONDecodeError as exc:
             print(f"BLOCKED: --value looks like JSON but does not parse: {exc}")
             return 2
+    if args.field == "scope":
+        for raw in value if isinstance(value, list) else [value]:
+            problem = scope_input_problem(workspace, raw)
+            if problem:
+                print(f"BLOCKED: {problem}")
+                return 2
     try:
         set_field(record, args.field, value, args.evidence)
     except DecisionError as exc:
@@ -817,7 +920,8 @@ def approve_record(workspace: str, record: dict, actor: str, role: str, auto: bo
         print(f"BLOCKED: approval lock unavailable: {exc}")
         return 1
     try:
-        conflicts = active_conflicts(workspace, record["project"], scope_list(record), record["id"])
+        conflicts = active_conflicts(workspace, record["project"], scope_list(record), record["id"],
+                                     str(record.get("session_id") or ""))
         if conflicts:
             print("BLOCKED: another active write authorization covers this surface")
             for conflict in conflicts[:5]:
@@ -919,6 +1023,13 @@ def cmd_implement(args) -> int:
     for item in files:
         if item not in known:
             known.append(item)
+    hashes = dict((record.get("change") or {}).get("hashes") or {})
+    for item in known:
+        full_path = ep.load_stored_path(item, workspace)
+        try:
+            hashes[item] = sha256_file(full_path)
+        except OSError:
+            continue
     stamps = []
     for item in known:
         full_path = ep.load_stored_path(item, workspace)
@@ -930,12 +1041,89 @@ def cmd_implement(args) -> int:
     # the agent got around to recording it. File mtime is the only honest clock
     # available here; `implement` may legitimately run after the gate.
     recorded_at = iso_from_timestamp(max(stamps)) if stamps else utc_now()
-    record["change"] = {"files": known, "diff_sha256": "", "recorded_at": recorded_at}
+    record["change"] = {"files": known, "hashes": hashes,
+                        "diff_sha256": sha256_bytes(canonical(hashes)),
+                        "recorded_at": recorded_at}
     save(workspace, record)
     if record["state"] == "APPROVED_FOR_EDIT":
         return transition(workspace, record, "IMPLEMENTED", args.actor or "implementer",
                           "implementation recorded")
     print(f"IMPLEMENTED: {record['id']} ({len(known)} file(s))")
+    return 0
+
+
+def cmd_record_change(args) -> int:
+    """Attach the real changed files and hashes to the decision that allowed them.
+
+    Authorization-only EDRs were a known audit gap: the write receipt lived in
+    the work state and the guard log, not in the EDR. This command records the
+    exact file content hashes without changing the decision state or gate.
+    """
+    workspace = resolve_workspace(args.workspace)
+    if not args.project:
+        first = (args.file or [""])[0]
+        absolute = os.path.abspath(first if os.path.isabs(first)
+                                   else os.path.join(workspace, first))
+        args.project = infer_project(workspace, absolute) or ""
+        if not args.project:
+            print("BLOCKED: project could not be inferred for the change evidence")
+            return 1
+    record = load(workspace, args.project, args.id)
+    problems = integrity(record)
+    if problems:
+        print("BLOCKED: decision record is not trustworthy")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 1
+    if record["state"] not in ("APPROVED_FOR_EDIT", "IMPLEMENTED"):
+        print(f"BLOCKED: {record['state']} is not a writable state")
+        return 1
+    owner = str(record.get("session_id") or "")
+    if owner and args.session and owner != args.session:
+        print(f"BLOCKED: {record['id']} is owned by session {owner}")
+        return 1
+    files = []
+    hashes = {}
+    problems = []
+    for raw in args.file or []:
+        absolute = os.path.abspath(raw if os.path.isabs(raw)
+                                   else os.path.join(workspace, raw))
+        if not (absolute == workspace or absolute.startswith(workspace + os.sep)):
+            problems.append(f"outside the workspace: {raw}")
+            continue
+        rel = ep.store_path(absolute, workspace)
+        if not covers(scope_list(record), rel):
+            problems.append(f"outside the approved scope: {rel}")
+            continue
+        if not os.path.isfile(absolute):
+            problems.append(f"changed file does not exist: {rel}")
+            continue
+        files.append(rel)
+        hashes[rel] = sha256_file(absolute)
+    if problems:
+        print("BLOCKED: change evidence rejected")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 1
+    if not files:
+        print("BLOCKED: no changed file was recorded")
+        return 2
+    record["change"] = {
+        "files": files,
+        "hashes": hashes,
+        "diff_sha256": sha256_bytes(canonical(hashes)),
+        "recorded_at": utc_now(),
+        "session": args.session or owner,
+    }
+    save(workspace, record)
+    result = {"ok": True, "decision": record["id"], "files": files,
+              "hashes": hashes, "diff_sha256": record["change"]["diff_sha256"],
+              "state": record["state"]}
+    if args.json:
+        print(json.dumps(result, ensure_ascii=True))
+    else:
+        print(f"CHANGE: {record['id']} ({len(files)} file(s)) "
+              f"diff={record['change']['diff_sha256'][:12]}")
     return 0
 
 
@@ -1041,7 +1229,10 @@ def cmd_close(args) -> int:
                       args.reason or "promotion sealed")
 
 
-def latest_decisions(workspace: str, project: str | None = None) -> list:
+def latest_decisions(workspace: str, project: str | None = None,
+                     max_age_hours: float = 0.0) -> list:
+    """Newest first. With `max_age_hours`, files not touched for that long are not
+    even opened: a long-lived project has thousands."""
     root = decisions_root(workspace)
     if not os.path.isdir(root):
         return []
@@ -1053,10 +1244,14 @@ def latest_decisions(workspace: str, project: str | None = None) -> list:
         directory = os.path.join(root, name)
         if not os.path.isdir(directory):
             continue
-        for entry in os.listdir(directory):
+        cutoff = time.time() - max_age_hours * 3600 - 60 if max_age_hours else 0
+        for item in sorted(os.scandir(directory), key=lambda value: value.name):
+            entry = item.name
             if not entry.endswith(".json"):
                 continue
             try:
+                if cutoff and item.stat().st_mtime < cutoff:
+                    continue
                 record = read_json(os.path.join(directory, entry))
             except (OSError, json.JSONDecodeError):
                 continue
@@ -1073,7 +1268,7 @@ def check_edit(workspace: str, project: str | None, path: str,
     if project is None:
         project = infer_project(workspace, path) or None
     reasons = []
-    for record in latest_decisions(workspace, project):
+    for record in latest_decisions(workspace, project, max_age_hours):
         problems = integrity(record)
         if problems:
             reasons.append(f"{record.get('id')}: untrusted record ({problems[0]})")
@@ -1338,6 +1533,64 @@ def selftest() -> int:
         assert inside["ok"], inside
         assert not outside["ok"], outside
         return inside["decision"]
+
+    @case("a successful write records the changed file hash on the decision")
+    def _():
+        root = workspace()
+        target = os.path.join(root, "engine", "tools", "x.py")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("x = 1\n")
+        open_args = argparse.Namespace(
+            project="eos", task="hash evidence", risk="ATOMIC",
+            scope=["engine/tools/x.py"], suite="unit", actor="eos.test",
+            approve=True, workspace=root, session="owner",
+        )
+        assert cmd_open(open_args) == 0
+        decision_id = latest_decisions(root, "eos")[0]["id"]
+        args = argparse.Namespace(project="eos", id=decision_id,
+                                  file=["engine/tools/x.py"], session="owner",
+                                  workspace=root, json=True)
+        assert cmd_record_change(args) == 0
+        record_value = load(root, "eos", decision_id)
+        assert record_value["change"]["files"] == ["engine/tools/x.py"], record_value
+        assert len(record_value["change"]["hashes"]["engine/tools/x.py"]) == 64
+        assert len(record_value["change"]["diff_sha256"]) == 64
+        args.session = "other"
+        assert cmd_record_change(args) == 1
+        args.session = "owner"
+        args.file = ["engine/tools/y.py"]
+        with open(os.path.join(root, "engine", "tools", "y.py"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            handle.write("y = 1\n")
+        assert cmd_record_change(args) == 1
+        return "hash attached"
+
+    @case("accidentally comma-joined scope is rejected before an EDR opens")
+    def _():
+        root = workspace()
+        os.makedirs(os.path.join(root, "6.0_final_merge"))
+        os.makedirs(os.path.join(root, "_canonical"))
+        raw = "6.0_final_merge,_canonical"
+        problem = scope_input_problem(root, raw)
+        assert "comma-joined" in problem and '--scope "_canonical"' in problem, problem
+        before = len(latest_decisions(root, "eos"))
+        args = argparse.Namespace(project="eos", task="repair scope",
+                                  risk="ATOMIC", scope=[raw], suite="unit",
+                                  actor="eos.test", approve=True,
+                                  workspace=root, session="")
+        assert cmd_open(args) == 2
+        assert len(latest_decisions(root, "eos")) == before
+        return "no ambiguous EDR"
+
+    @case("real comma filename does not trigger joined-scope diagnosis")
+    def _():
+        root = workspace()
+        for name in ("part", "other", "part,other"):
+            os.makedirs(os.path.join(root, name))
+        assert not scope_input_problem(root, "part,other")
+        assert not scope_input_problem(root, "new,not-yet-existing")
+        return "literal commas preserved"
 
     @case("directory scope covers descendants without a trailing slash")
     def _():
@@ -1673,11 +1926,57 @@ def selftest() -> int:
         assert project.startswith("auto-"), project
         return project
 
-    @case("an empty unregistered folder is not invented as a project")
+    @case("a folder without any marker is a project; a shared container is not")
     def _():
         root = workspace()
-        assert infer_project(root, os.path.join(root, "x.py")) == ""
-        return "empty"
+        new = os.path.join(root, "yeni")
+        os.makedirs(new)
+        assert infer_project(new, os.path.join(new, "x.py")) == "auto-yeni"
+        ids = set()
+        for name in ("T\u00fcrk\u00e7e \u011f\u00fc Proje", "\u041f\u0440\u043e\u0435\u043a\u0442", "\u65b0\u9879\u76ee"):
+            folder = os.path.join(root, name)
+            os.makedirs(folder)
+            ids.add(safe_project(infer_project(folder, os.path.join(folder, "x.py"))))
+        assert len(ids) == 3, ids
+        home = os.path.expanduser("~")
+        for broad in (home, os.path.dirname(home), os.path.join(home, "Desktop"),
+                      os.path.abspath(os.sep), tempfile.gettempdir()):
+            assert infer_project(broad, os.path.join(broad, "x.py")) == "", broad
+        return "opened folder"
+
+    @case("an unregistered folder of a hub is its own project, even before it exists")
+    def _():
+        import project_map as pm  # noqa: PLC0415
+        import impact  # noqa: PLC0415
+        root = workspace()
+        registry = os.path.join(root, ".agents", "registry")
+        os.makedirs(registry)
+        write_json_atomic(os.path.join(registry, "PROJECT_PROFILES.json"),
+                          {"profiles": [{"id": "known", "path": "known"}]})
+        os.makedirs(os.path.join(root, ".eos"))
+        write_json_atomic(os.path.join(root, ".eos", "project.json"), {"schema": 1, "id": "hub"})
+        os.makedirs(os.path.join(root, "known"))
+        open(os.path.join(root, "known", "a.py"), "w").write("X = 1\n")
+        path = os.path.join(root, "oyun", "src", "main.py")
+        project = infer_project(root, path)
+        assert project == "auto-oyun", project
+        assert pm.ensure(project, root)["state"] == "CURRENT"
+        assert impact.project_root(project, root)[0] == os.path.join(root, "oyun")
+        os.makedirs(os.path.dirname(path))
+        open(path, "w").write("X = 1\n")
+        assert pm.update_files(project, root, ["oyun/src/main.py"])["ok"]
+        value = pm.verify(project, root)
+        assert value["state"] == "CURRENT", value["reasons"]
+        assert list(value["map"]["sources"]["files"]) == ["src/main.py"], "other projects leaked in"
+        assert infer_project(root, os.path.join(root, "known", "b.py")) == "known"
+        assert infer_project(root, os.path.join(root, "top.py")) == "hub"
+        # Files no project owns use the hub's identity, whose map is shallow.
+        assert infer_project(root, os.path.join(root, ".tmp", "probe.py")) == "hub"
+        open(os.path.join(root, "top.py"), "w").write("X = 1\n")
+        assert list(pm.ensure("hub", root)["map"]["sources"]["files"]) == ["top.py"]
+        open(os.path.join(root, "known", "late.py"), "w").write("X = 1\n")
+        assert pm.verify("hub", root)["state"] == "CURRENT", "a project's file staled the hub"
+        return "own project"
 
     @case("unregistered path is denied")
     def _():
@@ -1904,6 +2203,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--file", action="append", default=[])
     p.add_argument("--actor", default="implementer")
     p.set_defaults(func=cmd_implement)
+
+    p = sub.add_parser("record-change", parents=[common])
+    p.add_argument("--id", required=True)
+    p.add_argument("--file", action="append", default=[])
+    p.add_argument("--session", default="")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_record_change, project="")
 
     p = sub.add_parser("verify", parents=[common])
     p.add_argument("--id", required=True)

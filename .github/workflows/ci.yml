@@ -28,8 +28,21 @@ jobs:
         run: python engine/tools/skill_index.py discover
       - name: Skill doctor
         run: python engine/tools/skill_index.py doctor || true
+      - name: Scope, EDR and work-state regression selftests
+        run: |
+          python engine/tools/decision.py selftest
+          python engine/tools/auto_decision.py selftest
+          python engine/tools/write_gate.py selftest
+          python engine/tools/work_state.py selftest
+          python engine/tools/project_map.py selftest
+          python engine/tools/post_write.py selftest
+          python engine/tools/preflight.py selftest
+          python engine/tools/skill_usage.py selftest
+          python engine/tools/recovery.py selftest
       - name: Activation plugin test (automatic EOS activation)
         run: node engine/host-plugins/opencode/eos-activation.test.mjs
+      - name: Guard and engine-resolution plugin tests
+        run: node --test engine/host-plugins/opencode/eos-guard.test.mjs engine/host-plugins/opencode/engine-resolution.test.mjs engine/host-plugins/opencode/slow-gate.test.mjs engine/host-plugins/opencode/shell-policy.test.mjs
       - name: Secret scan over the engine
         run: python engine/tools/secret_scan.py engine --include-tests
 
@@ -41,6 +54,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --manifest-path cli/Cargo.toml
+      - name: Version transaction tests
+        run: cargo test --manifest-path cli/Cargo.toml -- --test-threads=1
       - name: CLI smoke test
         run: |
           ./cli/target/release/eos version

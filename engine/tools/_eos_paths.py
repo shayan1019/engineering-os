@@ -80,6 +80,75 @@ def acquire_file_lock(path: str, timeout: float = 15.0) -> int:
             time.sleep(0.05)
 
 
+def temp_name(path: str) -> str:
+    """A temporary name no other writer uses. A shared `<path>.tmp` made two
+    tool calls of one session crash each other."""
+    return f"{path}.{os.getpid()}.{os.urandom(3).hex()}.tmp"
+
+
+def replace(tmp: str, path: str, timeout: float = 10.0) -> None:
+    """`os.replace`, waiting for a reader or scanner that has the target open:
+    Windows refuses the rename for those milliseconds."""
+    deadline = time.time() + timeout
+    delay = 0.01
+    while True:
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if time.time() >= deadline:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
+
+
+def open_text(path: str, encoding: str = "utf-8-sig", timeout: float = 5.0):
+    """Open for reading, waiting out a concurrent `replace`."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            return open(path, encoding=encoding)
+        except PermissionError:
+            if time.time() >= deadline or os.path.isdir(path):
+                raise
+            time.sleep(0.02)
+
+
+def pid_alive(pid) -> bool:
+    """False only when the process is known to be gone."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            pass
+        return True
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return ctypes.get_last_error() != 87
+    code = wintypes.DWORD()
+    ok = kernel.GetExitCodeProcess(handle, ctypes.byref(code))
+    kernel.CloseHandle(handle)
+    return not ok or code.value == 259
+
+
 def is_control_plane(rel: str) -> bool:
     """True when the path is EOS control-plane state, at any depth.
 
@@ -113,6 +182,89 @@ def _first_dir(*candidates: str) -> str:
         if candidate and os.path.isdir(candidate):
             return candidate
     return candidates[-1] if candidates else ""
+
+
+# ------------------------------------------------------- unregistered projects
+def auto_project_id(directory: str) -> str:
+    """A stable id for a folder nobody registered. A name with no usable ASCII
+    letter gets a digest, so it is never empty and two names never share one."""
+    import hashlib
+    import re
+    name = os.path.basename(_abs(directory))
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")
+    if not name.isascii():
+        slug = f"{slug[:40]}-{hashlib.sha256(name.encode('utf-8')).hexdigest()[:8]}".strip("-")
+    return ("auto-" + slug)[:64] if slug else ""
+
+
+def too_broad(directory: str) -> bool:
+    """A drive, the profile or a shared container is a place projects live in,
+    never a project: treating it as one would authorise writes across it."""
+    def key(path: str) -> str:
+        return os.path.normcase(os.path.realpath(path))
+    current = key(directory)
+    home = os.path.expanduser("~")
+    if os.path.dirname(current) == current:
+        return True
+    if key(home) == current or key(home).startswith(current.rstrip("\\/") + os.sep):
+        return True
+    broad = [os.path.join(home, item) for item in
+             ("Desktop", "Documents", "Downloads", "OneDrive", "AppData", "AppData/Local",
+              "AppData/Roaming", "AppData/Local/Temp", ".config", ".eos")]
+    for name in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "TEMP", "TMP",
+                 "PUBLIC", "TMPDIR"):
+        if os.environ.get(name):
+            broad.append(os.environ[name])
+    if os.name != "nt":
+        broad += ["/tmp", "/usr", "/etc", "/opt", "/var", "/home"]
+    system = [key(os.environ[n]) for n in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)")
+              if os.environ.get(n)]
+    return (current in {key(item) for item in broad}
+            or any(current.startswith(item + os.sep) for item in system))
+
+
+def is_hub(workspace: str) -> bool:
+    """A workspace with its own project registry contains projects, unless the
+    registry says the workspace itself is one."""
+    import json
+    root = _abs(workspace)
+    try:
+        with open(os.path.join(root, ".agents", "registry", "PROJECT_PROFILES.json"),
+                  encoding="utf-8-sig") as handle:
+            profiles = json.load(handle).get("profiles") or []
+    except (OSError, ValueError, AttributeError):
+        return False
+    return not any(_abs(os.path.join(root, str(item.get("path") or "."))) == root
+                   for item in profiles)
+
+
+def hub_child(workspace: str, path: str) -> str:
+    """The first-level folder of a hub that owns `path`, or ""."""
+    root, absolute = _abs(workspace), _abs(path)
+    if not is_hub(root) or not absolute.startswith(root + os.sep):
+        return ""
+    parts = os.path.relpath(absolute, root).split(os.sep)
+    child = os.path.join(root, parts[0])
+    if parts[0].startswith(".") or (len(parts) == 1 and not os.path.isdir(child)):
+        return ""
+    return child
+
+
+def auto_project_root(project: str, workspace: str) -> str:
+    """The folder an `auto-` id names. A hub child may not exist yet: the first
+    write creates it."""
+    root = _abs(workspace)
+    if not is_hub(root) or auto_project_id(root) == project:
+        return root
+    try:
+        names = os.listdir(root)
+    except OSError:
+        names = []
+    for name in sorted(names):
+        child = os.path.join(root, name)
+        if not name.startswith(".") and os.path.isdir(child) and auto_project_id(child) == project:
+            return child
+    return os.path.join(root, project[len("auto-"):])
 
 
 # ------------------------------------------------------------- program files

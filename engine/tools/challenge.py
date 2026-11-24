@@ -81,11 +81,11 @@ def path_for(workspace: str, project: str, ledger_id: str) -> str:
 
 def write_json(path: str, value) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = ep.temp_name(path)
     with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(value, handle, indent=2, ensure_ascii=True)
         handle.write("\n")
-    os.replace(tmp, path)
+    ep.replace(tmp, path)
 
 
 def load(workspace: str, project: str, ledger_id: str) -> dict:
