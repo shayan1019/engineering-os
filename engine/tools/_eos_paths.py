@@ -80,6 +80,75 @@ def acquire_file_lock(path: str, timeout: float = 15.0) -> int:
             time.sleep(0.05)
 
 
+def temp_name(path: str) -> str:
+    """A temporary name no other writer uses. A shared `<path>.tmp` made two
+    tool calls of one session crash each other."""
+    return f"{path}.{os.getpid()}.{os.urandom(3).hex()}.tmp"
+
+
+def replace(tmp: str, path: str, timeout: float = 10.0) -> None:
+    """`os.replace`, waiting for a reader or scanner that has the target open:
+    Windows refuses the rename for those milliseconds."""
+    deadline = time.time() + timeout
+    delay = 0.01
+    while True:
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if time.time() >= deadline:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
+
+
+def open_text(path: str, encoding: str = "utf-8-sig", timeout: float = 5.0):
+    """Open for reading, waiting out a concurrent `replace`."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            return open(path, encoding=encoding)
+        except PermissionError:
+            if time.time() >= deadline or os.path.isdir(path):
+                raise
+            time.sleep(0.02)
+
+
+def pid_alive(pid) -> bool:
+    """False only when the process is known to be gone."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            pass
+        return True
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return ctypes.get_last_error() != 87
+    code = wintypes.DWORD()
+    ok = kernel.GetExitCodeProcess(handle, ctypes.byref(code))
+    kernel.CloseHandle(handle)
+    return not ok or code.value == 259
+
+
 def is_control_plane(rel: str) -> bool:
     """True when the path is EOS control-plane state, at any depth.
 

@@ -31,6 +31,8 @@ import os
 import re
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,10 +41,15 @@ import impact as impact_tool  # noqa: E402
 
 SCHEMA = 1
 KIND = "project_map"
-MAX_FILES = 5000
-SRC_EXT = (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mq4", ".mq5", ".mqh",
-           ".go", ".rs", ".java", ".cs", ".c", ".cpp", ".h", ".dart", ".ino")
-SKIP = {".git", ".venv", ".venv-win", ".venv-qc", "venv", "node_modules", "__pycache__",
+MAX_FILES = 30000
+SRC_EXT = (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte", ".astro",
+           ".mq4", ".mq5", ".mqh", ".pine", ".go", ".rs", ".java", ".kt", ".kts", ".scala",
+           ".groovy", ".cs", ".fs", ".vb", ".razor", ".c", ".cc", ".cpp", ".cxx", ".h", ".hh",
+           ".hpp", ".m", ".mm", ".swift", ".dart", ".ino", ".php", ".rb", ".ex", ".exs", ".erl",
+           ".hs", ".clj", ".lua", ".pl", ".pm", ".r", ".jl", ".zig", ".sol", ".sql", ".graphql",
+           ".proto", ".prisma", ".sh", ".ps1", ".tf", ".gd", ".html", ".css", ".scss")
+SKIP = {"Pods", "DerivedData", "bower_components", "htmlcov", "obj",
+        ".git", ".venv", ".venv-win", ".venv-qc", "venv", "node_modules", "__pycache__",
         "site-packages", "dist", "build", "target", "graphify-out", ".pytest_cache",
         "backups", ".agents", ".eos", ".opencode", ".claude", ".codex"}
 
@@ -68,17 +75,17 @@ def sha256_file(path: str) -> str:
 
 
 def read_json(path: str):
-    with open(path, encoding="utf-8-sig") as handle:
+    with ep.open_text(path, "utf-8-sig") as handle:
         return json.load(handle)
 
 
 def write_json(path: str, value) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = ep.temp_name(path)
     with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(value, handle, indent=2, ensure_ascii=True)
         handle.write("\n")
-    os.replace(tmp, path)
+    ep.replace(tmp, path)
 
 
 def registry_dir(workspace: str) -> str:
@@ -154,20 +161,64 @@ def git_state(root: str) -> dict:
     return {"head": head, "branch": branch, "dirty": dirty}
 
 
+def skip_dir(name: str) -> bool:
+    """Dependencies, build output, caches and tool state: never a project's own
+    source. Dot folders (.next, .gradle, .dart_tool, .terraform ...) are tool state."""
+    return name in SKIP or name.startswith((".", "_backup"))
+
+
+def mappable(rel: str) -> bool:
+    """One rule for the full walk and the incremental update. Two rules made a
+    written file appear, or not, depending on which one saw it last, and the map
+    then read STALE after the first write of a Go, Rust, Java, C or Vue file."""
+    parts = rel.split("/")
+    return (parts[-1].lower().endswith(SRC_EXT)
+            and not any(part == ".." or skip_dir(part) for part in parts[:-1]))
+
+
+# A file whose mtime is this old when hashed can be trusted by size and mtime.
+# A younger one may change again inside the clock tick, so it is always hashed.
+SETTLED_NS = 2_000_000_000
+
+
+def fingerprint(path: str) -> dict:
+    before = os.stat(path)
+    value = {"sha256": sha256_file(path), "bytes": before.st_size}
+    if time.time_ns() - before.st_mtime_ns > SETTLED_NS:
+        value["mtime_ns"] = before.st_mtime_ns
+    return value
+
+
+def unchanged(path: str, meta: dict) -> bool:
+    stat = os.stat(path)
+    if meta.get("mtime_ns") == stat.st_mtime_ns and meta.get("bytes") == stat.st_size:
+        return True
+    return sha256_file(path) == meta.get("sha256")
+
+
+def tail_index(module_to_file: dict) -> dict:
+    """First module per last dotted segment. Scanning every module for every
+    import was quadratic in the size of the project."""
+    tails = {}
+    for module, rel in module_to_file.items():
+        tails.setdefault(module.rsplit(".", 1)[-1], rel)
+    return tails
+
+
 def source_files(root: str) -> list:
     found = []
     shallow = ep.is_hub(root)
     for base, dirs, files in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith("_backup"))
+        dirs[:] = sorted(d for d in dirs if not skip_dir(d))
         if shallow:
             # The hub's own map is its top-level files. Every folder in it is
             # another project: walking them took longer than any gate may wait.
             dirs[:] = []
-        for name in files:
+        for name in sorted(files):
             if name.lower().endswith(SRC_EXT):
                 found.append(os.path.relpath(os.path.join(base, name), root).replace("\\", "/"))
                 if len(found) >= MAX_FILES:
-                    return found
+                    return sorted(found)
     return sorted(found)
 
 
@@ -178,41 +229,83 @@ MQL_DEF_RE = re.compile(r"^\s*(?:void|int|uint|long|ulong|double|float|bool|stri
                         r"([A-Za-z_]\w*)\s*\(", re.M)
 
 
-def js_index(root: str, files: list) -> dict:
-    index = {}
-    for rel in files:
-        if not rel.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")):
-            continue
-        text = impact_tool.read_text(os.path.join(root, rel))
-        imports = [{"module": spec, "names": []} for spec in sorted(set(JS_IMPORT_RE.findall(text)))]
-        defs = [{"name": name, "kind": "symbol"} for name in sorted(set(JS_DEF_RE.findall(text)))]
-        index[rel] = {"module": rel, "parse": "OK" if text else "EMPTY",
-                      "imports": imports, "defs": defs,
-                      "dynamic": "import(" in text or "require(" in text}
-    return index
+JS_EXT = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")
+MQL_EXT = (".mq4", ".mq5", ".mqh")
 
 
-def mql_index(root: str, files: list) -> dict:
-    index = {}
-    for rel in files:
-        if not rel.lower().endswith((".mq4", ".mq5", ".mqh")):
-            continue
-        text = impact_tool.read_text(os.path.join(root, rel))
-        includes = [{"module": item, "names": []} for item in sorted(set(MQL_INCLUDE_RE.findall(text)))]
-        defs = [{"name": name, "kind": "function"} for name in sorted(set(MQL_DEF_RE.findall(text)))]
-        index[rel] = {"module": rel, "parse": "PARTIAL", "imports": includes, "defs": defs,
-                      "dynamic": False}
-    return index
+def parse_js(rel: str, text: str) -> dict:
+    return {"module": rel, "parse": "OK" if text else "EMPTY",
+            "imports": [{"module": spec, "names": []} for spec in sorted(set(JS_IMPORT_RE.findall(text)))],
+            "defs": [{"name": name, "kind": "symbol"} for name in sorted(set(JS_DEF_RE.findall(text)))],
+            "dynamic": "import(" in text or "require(" in text}
 
 
-def resolve_js(root: str, from_rel: str, spec: str) -> str:
+def parse_mql(rel: str, text: str) -> dict:
+    return {"module": rel, "parse": "PARTIAL",
+            "imports": [{"module": item, "names": []} for item in sorted(set(MQL_INCLUDE_RE.findall(text)))],
+            "defs": [{"name": name, "kind": "function"} for name in sorted(set(MQL_DEF_RE.findall(text)))],
+            "dynamic": False}
+
+
+def parser_of(rel: str) -> str:
+    low = rel.lower()
+    return ("python-ast" if low.endswith(".py") else "js-regex-v1" if low.endswith(JS_EXT) else
+            "mql-lexical-v1" if low.endswith(MQL_EXT) else "")
+
+
+# Reading a file costs milliseconds on a machine with an on-access scanner, so a
+# large tree is read in parallel, once per file, and never past this limit: the
+# caller is a gate that will be killed. What was not reached is fingerprinted by
+# size and mtime, reported, and read by later refreshes.
+BUILD_BUDGET_S = 35
+
+
+def scan_file(root: str, rel: str, old: dict, known_module: dict | None, deadline: float) -> tuple:
+    """(fingerprint, parsed module or None)."""
+    path = os.path.join(root, rel)
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return {"sha256": "", "bytes": 0}, None
+    parser = parser_of(rel)
+    wanted = bool(parser) and not (parser == "python-ast" and impact_tool.excluded(rel))
+    meta = old.get(rel) or {}
+    if meta.get("sha256") and meta.get("mtime_ns") == stat.st_mtime_ns \
+            and meta.get("bytes") == stat.st_size and (known_module or not wanted):
+        return meta, known_module
+    if time.monotonic() > deadline:
+        return {"sha256": "", "bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}, None
+    if not wanted or stat.st_size > impact_tool.MAX_FILE_BYTES:
+        try:
+            return fingerprint(path), (known_module if not wanted else
+                                       None if parser == "python-ast" else
+                                       (parse_js if parser == "js-regex-v1" else parse_mql)(rel, ""))
+        except OSError:
+            return {"sha256": "", "bytes": stat.st_size}, None
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError:
+        return {"sha256": "", "bytes": stat.st_size}, None
+    value = {"sha256": hashlib.sha256(data).hexdigest().upper(), "bytes": len(data)}
+    if time.time_ns() - stat.st_mtime_ns > SETTLED_NS and len(data) == stat.st_size:
+        value["mtime_ns"] = stat.st_mtime_ns
+    if known_module and value["sha256"] == meta.get("sha256"):
+        return value, known_module
+    text = data.decode("utf-8-sig", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    if parser == "python-ast":
+        return value, impact_tool.parse_python(rel, text) if text else None
+    return value, (parse_js if parser == "js-regex-v1" else parse_mql)(rel, text)
+
+
+def resolve_js(root: str, from_rel: str, spec: str, known=None) -> str:
     if not spec.startswith("."):
         return ""
     base = os.path.dirname(from_rel)
     target = os.path.normpath(os.path.join(base, spec)).replace("\\", "/")
     for ext in ("", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", "/index.ts", "/index.js"):
         candidate = target + ext
-        if os.path.isfile(os.path.join(root, candidate)):
+        if candidate in known if known is not None else os.path.isfile(os.path.join(root, candidate)):
             return candidate
     return ""
 
@@ -224,22 +317,38 @@ def build(project: str, workspace: str, previous: dict | None = None,
     if not os.path.isdir(root) and not project.startswith("auto-"):
         raise SystemExit(f"BLOCKED: project path does not exist: {root}")
     files = source_files(root)
-    hashes = {}
-    for rel in files:
-        try:
-            hashes[rel] = {"sha256": sha256_file(os.path.join(root, rel)),
-                           "bytes": os.path.getsize(os.path.join(root, rel))}
-        except OSError:
-            hashes[rel] = {"sha256": "", "bytes": 0}
+    # A refresh reads and parses only what changed.
+    old, known_modules = {}, {}
+    if previous:
+        old = (previous.get("sources") or {}).get("files") or {}
+        mark = "dynamic import/getattr: "
+        dynamic = {str(item)[len(mark):] for item in previous.get("unknowns") or []
+                   if str(item).startswith(mark)}
+        for item in previous.get("modules") or []:
+            rel = item.get("path")
+            known_modules[rel] = {"module": item.get("module"), "parse": item.get("parse"),
+                                  "imports": item.get("imports") or [],
+                                  "defs": item.get("defs") or [], "dynamic": rel in dynamic}
+    deadline = time.monotonic() + BUILD_BUDGET_S
+    hashes, py, js, mql, unread = {}, {}, {}, {}, 0
+    groups = {"python-ast": py, "js-regex-v1": js, "mql-lexical-v1": mql}
 
-    py = impact_tool.python_index(root)
-    js = js_index(root, files)
-    mql = mql_index(root, files)
+    def scan(rel):
+        return scan_file(root, rel, old, known_modules.get(rel), deadline)
+
+    with ThreadPoolExecutor(max_workers=min(32, 4 * (os.cpu_count() or 4))) as pool:
+        for rel, (meta, info) in zip(files, pool.map(scan, files)):
+            hashes[rel] = meta
+            unread += not meta["sha256"]
+            if info:
+                groups[parser_of(rel)][rel] = info
+    known = set(files)
     index = {**py, **js, **mql}
     modules = []
     module_to_file = {}
     for rel, info in index.items():
         module_to_file[info.get("module", rel)] = rel
+    tails = tail_index(module_to_file)
     edges = []
     unknowns = []
     tests = []
@@ -272,13 +381,10 @@ def build(project: str, workspace: str, previous: dict | None = None,
             target = imp.get("module") or ""
             target_file = module_to_file.get(target)
             if not target_file and target.startswith("."):
-                target_file = resolve_js(root, rel, target)
+                target_file = resolve_js(root, rel, target, known)
             if not target_file and target:
                 target_tail = target.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[-1]
-                for candidate, candidate_file in module_to_file.items():
-                    if candidate.endswith("." + target_tail) or candidate == target_tail:
-                        target_file = candidate_file
-                        break
+                target_file = tails.get(target_tail)
             if target_file and target_file != rel:
                 edges.append({"from": rel, "to": target_file, "kind": "import",
                               "confidence": "HIGH" if target_file == module_to_file.get(target) else "MEDIUM",
@@ -313,6 +419,8 @@ def build(project: str, workspace: str, previous: dict | None = None,
     }
     supported = set(py) | set(js) | set(mql)
     unsupported = [rel for rel in files if rel not in supported]
+    if unread:
+        unknowns.append(f"{unread} source file(s) not read within {BUILD_BUDGET_S}s; a refresh continues")
     if unsupported:
         unknowns.append(f"{len(unsupported)} source file(s) have no parser adapter")
     if not files:
@@ -365,7 +473,11 @@ def verify(project: str, workspace: str) -> dict:
                 "reasons": ["no project map has been created"]}
     try:
         value = read_json(path)
-    except (OSError, json.JSONDecodeError) as exc:
+    except ValueError as exc:
+        # Cut short by a crash or a full disk. The map is derived: build it again.
+        return {"state": "MISSING", "project": project, "path": path,
+                "reasons": [f"map is unreadable: {exc}"]}
+    except OSError as exc:
         return {"state": "INVALID", "project": project, "path": path,
                 "reasons": [f"map is unreadable: {exc}"]}
     if value.get("schema") != SCHEMA or value.get("kind") != KIND:
@@ -402,11 +514,11 @@ def verify(project: str, workspace: str) -> dict:
               [f"missing: {rel}" for rel in missing_files[:20]]
     for rel, meta in (value.get("sources") or {}).get("files", {}).items():
         full = os.path.join(root, rel)
-        if not os.path.isfile(full):
-            changed.append(f"missing: {rel}")
+        if rel not in current_files:
+            # A path the walk no longer lists was reported above.
             continue
         try:
-            if sha256_file(full) != meta.get("sha256"):
+            if not unchanged(full, meta):
                 changed.append(f"changed: {rel}")
         except OSError:
             changed.append(f"unreadable: {rel}")
@@ -443,38 +555,17 @@ def excerpt(project: str, workspace: str, max_lines: int = 30) -> str:
 
 
 def parse_entry(root: str, rel: str):
-    if rel.lower().endswith(".py"):
-        text = impact_tool.read_text(os.path.join(root, rel))
-        if not text:
-            return {"module": rel, "parse": "EMPTY", "imports": [], "defs": [], "dynamic": False}
-        try:
-            tree = ast.parse(text)
-        except (SyntaxError, ValueError):
-            return {"module": rel, "parse": "FAILED", "imports": [], "defs": [], "dynamic": False}
-        imports = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.append({"module": alias.name, "names": []})
-            elif isinstance(node, ast.ImportFrom):
-                imports.append({"module": node.module or "",
-                                "names": [a.name for a in node.names]})
-        defs = []
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                defs.append({"name": node.name, "kind": type(node).__name__})
-            elif isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id.isupper():
-                        defs.append({"name": target.id, "kind": "constant"})
-        return {"module": rel[:-3].replace("/", ".").replace(".__init__", ""),
-                "parse": "OK", "imports": imports, "defs": defs,
-                "dynamic": any(token in text for token in ("importlib", "__import__(", "getattr("))}
-    if rel.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")):
-        return js_index(root, [rel]).get(rel)
-    if rel.lower().endswith((".mq4", ".mq5", ".mqh")):
-        return mql_index(root, [rel]).get(rel)
-    return None
+    parser = parser_of(rel)
+    if not parser:
+        return None
+    text = impact_tool.read_text(os.path.join(root, rel))
+    if parser == "js-regex-v1":
+        return parse_js(rel, text)
+    if parser == "mql-lexical-v1":
+        return parse_mql(rel, text)
+    if not text:
+        return {"module": rel, "parse": "EMPTY", "imports": [], "defs": [], "dynamic": False}
+    return impact_tool.parse_python(rel, text)
 
 
 def update_files(project: str, workspace: str, files: list) -> dict:
@@ -521,7 +612,9 @@ def _update_files(project: str, workspace: str, files: list) -> dict:
             continue
         rel = os.path.relpath(absolute, root).replace("\\", "/")
         entry = parse_entry(root, rel) if os.path.isfile(absolute) else None
-        if rel not in sources and entry is None:
+        if rel not in sources and (not mappable(rel) or not os.path.isfile(absolute)
+                                   or len(sources) >= MAX_FILES
+                                   or (ep.is_hub(root) and "/" in rel)):
             # Evidence, artifacts and logs live inside the project tree but are
             # not project sources. They dirty the tree; they must not pollute the
             # module table (0.3.4).
@@ -535,7 +628,7 @@ def _update_files(project: str, workspace: str, files: list) -> dict:
             sources.pop(rel, None)
             modules.pop(rel, None)
             continue
-        sources[rel] = {"sha256": sha256_file(absolute), "bytes": os.path.getsize(absolute)}
+        sources[rel] = fingerprint(absolute)
         if entry:
             parser = ("python-ast" if rel.endswith(".py") else
                       "js-regex-v1" if rel.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")) else
@@ -568,6 +661,8 @@ def _update_files(project: str, workspace: str, files: list) -> dict:
             modules.pop(rel, None)
 
     module_to_file = {item.get("module", rel): rel for rel, item in modules.items()}
+    tails = tail_index(module_to_file)
+    known = set(sources)
     edges = []
     for rel, item in modules.items():
         module = item.get("module", rel)
@@ -575,13 +670,10 @@ def _update_files(project: str, workspace: str, files: list) -> dict:
             target = imp.get("module") or ""
             target_file = module_to_file.get(target)
             if not target_file and target.startswith("."):
-                target_file = resolve_js(root, rel, target)
+                target_file = resolve_js(root, rel, target, known)
             if not target_file and target:
                 target_tail = target.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[-1]
-                for candidate, candidate_file in module_to_file.items():
-                    if candidate.endswith("." + target_tail) or candidate == target_tail:
-                        target_file = candidate_file
-                        break
+                target_file = tails.get(target_tail)
             if target_file and target_file != rel:
                 edges.append({"from": rel, "to": target_file, "kind": "import",
                               "confidence": "HIGH" if target_file == module_to_file.get(target) else "MEDIUM",
@@ -675,15 +767,28 @@ def _mark_dirty(project: str, workspace: str, files: list) -> dict:
 
 
 def ensure(project: str, workspace: str, project_path: str = "") -> dict:
+    """Bring the map up to the files. Writers of one map take turns, and a file
+    that lands while it is being built is picked up by another round."""
     result = verify(project, workspace)
-    if result["state"] == "MISSING":
-        value = build(project, workspace, None, project_path)
-        write_json(store_path(workspace, project), value)
-        result = verify(project, workspace)
-    elif result["state"] == "STALE":
-        value = build(project, workspace, result.get("map"), project_path)
-        write_json(store_path(workspace, project), value)
-        result = verify(project, workspace)
+    for attempt in range(4):
+        if result["state"] not in ("MISSING", "STALE"):
+            return result
+        try:
+            handle = ep.acquire_file_lock(store_path(workspace, project) + ".lock", timeout=60)
+        except TimeoutError:
+            return result
+        try:
+            result = verify(project, workspace)
+            if result["state"] in ("MISSING", "STALE"):
+                value = build(project, workspace, result.get("map"), project_path)
+                write_json(store_path(workspace, project), value)
+                result = verify(project, workspace)
+        finally:
+            ep.unlock_handle(handle)
+            try:
+                os.close(handle)
+            except OSError:
+                pass
     return result
 
 

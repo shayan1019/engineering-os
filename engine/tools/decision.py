@@ -180,6 +180,11 @@ def safe_project(project: str) -> str:
     return project
 
 
+def _inside(path: str, root: str) -> bool:
+    path, root = (os.path.normcase(os.path.abspath(item)) for item in (path, root))
+    return path == root or path.startswith(root.rstrip("\/") + os.sep)
+
+
 def infer_project(workspace: str, path: str) -> str:
     """Which project owns this path? A decision from another project must not
     authorise it.
@@ -216,6 +221,10 @@ def infer_project(workspace: str, path: str) -> str:
     for registry in (os.path.join(workspace, ".agents", "registry"), ep.REGISTRY):
         profiles = os.path.join(registry, "PROJECT_PROFILES.json")
         if not os.path.isfile(profiles):
+            continue
+        if registry == ep.REGISTRY and not _inside(ep.REGISTRY, workspace_abs):
+            # The registry shipped with an installed engine describes someone
+            # else's folders: a user's own `tools` or `alpha` is not in it.
             continue
         try:
             data = read_json(profiles)
@@ -259,15 +268,15 @@ def new_id() -> str:
 
 def write_json_atomic(path: str, value) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = ep.temp_name(path)
     with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(value, handle, indent=2, ensure_ascii=True)
         handle.write("\n")
-    os.replace(tmp, path)
+    ep.replace(tmp, path)
 
 
 def read_json(path: str):
-    with open(path, encoding="utf-8") as handle:
+    with ep.open_text(path, "utf-8") as handle:
         return json.load(handle)
 
 
@@ -443,14 +452,67 @@ def scopes_overlap(first: str, second: str) -> bool:
     return _segments_overlap(first, second)
 
 
-def active_conflicts(workspace: str, project: str, scope: list, ignore_id: str = "") -> list:
+MAX_AGE_H = 24.0
+# How long another session's automatic one-file authorization blocks a file.
+INFLIGHT_S = 120
+STRICT_LEASE_S = 1800
+
+
+def is_strict(workspace: str, project: str) -> bool:
+    """A registered project that declares invariants, or `"risk": "strict"`, keeps
+    the full review tiers. `"risk": "normal"` opts out. An unreadable registry is
+    strict."""
+    import project_map as pm  # noqa: PLC0415
+    try:
+        profile = pm.project_root(project, workspace)[1]
+    except SystemExit:
+        return False  # registered nowhere
+    except (OSError, ValueError, AttributeError, TypeError):
+        return True
+    risk = str(profile.get("risk") or "").lower()
+    if risk in ("strict", "normal"):
+        return risk == "strict"
+    return bool(profile.get("invariants"))
+
+
+def holds_surface(record: dict, session: str, strict: bool) -> bool:
+    """Does this approved decision still keep another writer off its files?
+
+    An automatic one-file approval is a write in progress, not a reservation.
+    It used to hold the file for ever: the next session, or the same one a day
+    later, could never edit it again. A reviewed decision holds until it is
+    closed, superseded or too old to authorise a write itself.
+    """
+    updated = parse_time(record.get("updated_at", ""))
+    age = (datetime.now(timezone.utc) - updated).total_seconds() if updated else 0.0
+    if age > MAX_AGE_H * 3600:
+        return False
+    if (record.get("approval") or {}).get("mode") != "auto" or record.get("risk") != "ATOMIC":
+        return True
+    owner = str(record.get("session_id") or "")
+    if not owner or not session:
+        return True
+    if owner == session:
+        return False
+    if not ep.pid_alive(record.get("host_pid")):
+        return False
+    if strict:
+        return age < STRICT_LEASE_S
+    return age < INFLIGHT_S and not (record.get("change") or {}).get("files")
+
+
+def active_conflicts(workspace: str, project: str, scope: list, ignore_id: str = "",
+                     session: str = "") -> list:
     conflicts = []
-    for other in latest_decisions(workspace, project):
+    strict = is_strict(workspace, project)
+    for other in latest_decisions(workspace, project, MAX_AGE_H):
         if other.get("id") == ignore_id:
             continue
         if other.get("state") not in ("APPROVED_FOR_EDIT", "IMPLEMENTED"):
             continue
         if integrity(other):
+            continue
+        if not holds_surface(other, session, strict):
             continue
         for new_scope in scope or []:
             for old_scope in scope_list(other):
@@ -592,6 +654,7 @@ def cmd_open(args) -> int:
         "workspace": ep.store_path(workspace, workspace),
         "base_commit": base_commit,
         "session_id": getattr(args, "session", "") or "",
+        "host_pid": getattr(args, "host_pid", 0) or 0,
         "fields": {},
         "approval": None,
         "gate": None,
@@ -626,6 +689,7 @@ def cmd_open(args) -> int:
         fields["rollback"] = {"value": "git revert of the change; no data migration", "evidence": []}
 
     path = save(workspace, record)
+    args.opened_id = record["id"]
     _record_contract_open(workspace, record["id"], args.risk)
     print(f"OPEN: {record['id']} ({project}, {args.risk}, DRAFT)")
     print(f"  record: {ep.store_path(path, workspace)}")
@@ -856,7 +920,8 @@ def approve_record(workspace: str, record: dict, actor: str, role: str, auto: bo
         print(f"BLOCKED: approval lock unavailable: {exc}")
         return 1
     try:
-        conflicts = active_conflicts(workspace, record["project"], scope_list(record), record["id"])
+        conflicts = active_conflicts(workspace, record["project"], scope_list(record), record["id"],
+                                     str(record.get("session_id") or ""))
         if conflicts:
             print("BLOCKED: another active write authorization covers this surface")
             for conflict in conflicts[:5]:
@@ -1164,7 +1229,10 @@ def cmd_close(args) -> int:
                       args.reason or "promotion sealed")
 
 
-def latest_decisions(workspace: str, project: str | None = None) -> list:
+def latest_decisions(workspace: str, project: str | None = None,
+                     max_age_hours: float = 0.0) -> list:
+    """Newest first. With `max_age_hours`, files not touched for that long are not
+    even opened: a long-lived project has thousands."""
     root = decisions_root(workspace)
     if not os.path.isdir(root):
         return []
@@ -1176,10 +1244,14 @@ def latest_decisions(workspace: str, project: str | None = None) -> list:
         directory = os.path.join(root, name)
         if not os.path.isdir(directory):
             continue
-        for entry in os.listdir(directory):
+        cutoff = time.time() - max_age_hours * 3600 - 60 if max_age_hours else 0
+        for item in sorted(os.scandir(directory), key=lambda value: value.name):
+            entry = item.name
             if not entry.endswith(".json"):
                 continue
             try:
+                if cutoff and item.stat().st_mtime < cutoff:
+                    continue
                 record = read_json(os.path.join(directory, entry))
             except (OSError, json.JSONDecodeError):
                 continue
@@ -1196,7 +1268,7 @@ def check_edit(workspace: str, project: str | None, path: str,
     if project is None:
         project = infer_project(workspace, path) or None
     reasons = []
-    for record in latest_decisions(workspace, project):
+    for record in latest_decisions(workspace, project, max_age_hours):
         problems = integrity(record)
         if problems:
             reasons.append(f"{record.get('id')}: untrusted record ({problems[0]})")

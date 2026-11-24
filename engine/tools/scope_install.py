@@ -100,11 +100,11 @@ def read_json(path: str):
 
 def write_json(path: str, value) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = ep.temp_name(path)
     with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(value, handle, indent=2, ensure_ascii=True)
         handle.write("\n")
-    os.replace(tmp, path)
+    ep.replace(tmp, path)
 
 
 def backup(path: str) -> str:

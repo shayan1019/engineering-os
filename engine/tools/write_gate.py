@@ -75,7 +75,11 @@ def check(workspace: str, path: str, session: str = "", project: str = "") -> di
                 "reasons": ["project could not be inferred"]}
 
     map_result = pm.verify(project, workspace)
-    if map_result["state"] == "MISSING":
+    if map_result["state"] in ("MISSING", "STALE"):
+        # The map is derived from the files. A package install, a git command or
+        # the user's own editor changes them mid-session; refusing every write
+        # until the next prompt repaired nothing. Re-read, then decide. A map
+        # edited outside EOS is INVALID and stays refused.
         map_result = pm.ensure(project, workspace)
     map_state = map_result["state"]
     map_value = map_result.get("map") or {}
@@ -172,6 +176,41 @@ def selftest() -> int:
         assert result["map_generated_at"], result
         assert any("sha256=" in reason for reason in result["reasons"]), result
         return "map sha recorded"
+
+    @case("every language: a second write after the first is not refused as STALE")
+    def _():
+        root = tempfile.mkdtemp(prefix="eos-gate-lang-")
+        names = ["a.go", "b.rs", "C.java", "d.c", "e.cpp", "F.cs", "g.dart", "h.vue", "i.svelte",
+                 "j.ino", "k.kt", "l.swift", "m.php", "n.rb", "o.sql", "p.html", "q.txt", "r.py",
+                 "s.ts", ".github/workflows/t.yml", "node_modules/u.js"]
+        for name in names:
+            assert check(root, name, "s1")["map_state"] == "CURRENT", name
+            full = os.path.join(root, name)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            for text in ("1", "2"):
+                open(full, "w").write(text)
+                project = edr.infer_project(root, full)
+                assert pm.update_files(project, root, [name])["ok"], name
+                assert pm.verify(project, root)["state"] == "CURRENT", name
+        return f"{len(names)} files"
+
+    @case("a map staled by git, an install or the user's editor is re-read, not refused")
+    def _():
+        root = tempfile.mkdtemp(prefix="eos-gate-stale-")
+        open(os.path.join(root, "a.go"), "w").write("1")
+        assert check(root, "a.go", "s1")["map_state"] == "CURRENT"
+        open(os.path.join(root, "a.go"), "w").write("22")
+        open(os.path.join(root, "new.rs"), "w").write("1")
+        result = check(root, "a.go", "s1")
+        assert result["map_state"] == "CURRENT" and result["needs_decision"], result
+        path = pm.store_path(root, result["project"])
+        open(path, "w").write("{cut")
+        assert check(root, "a.go", "s1")["map_state"] == "CURRENT"
+        value = pm.read_json(path)
+        value["modules"] = [{"path": "forged"}]
+        pm.write_json(path, value)
+        assert check(root, "a.go", "s1")["map_state"] == "INVALID"
+        return "refreshed; a forged map stays refused"
 
     @case("a relative path is resolved against the workspace")
     def _():

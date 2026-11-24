@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -134,6 +135,20 @@ def walk_files(root: str) -> list:
 _TEXT_CACHE = {}
 
 
+class Budget:
+    """A write waits for this analysis. On a very large tree it stops and says so
+    instead of outliving the gate's timeout; callers treat `spent` as incomplete."""
+
+    def __init__(self, seconds: float = 0):
+        self.end = time.monotonic() + seconds if seconds else 0
+        self.spent = False
+
+    def over(self) -> bool:
+        if self.end and time.monotonic() > self.end:
+            self.spent = True
+        return self.spent
+
+
 def read_text(path: str) -> str:
     # The cache key includes mtime and size: an incremental update in the same
     # process must see the bytes the write just produced, not the previous
@@ -167,39 +182,62 @@ def module_name(rel: str) -> str:
     return ".".join(parts)
 
 
-def python_index(root: str) -> dict:
+def statements(tree):
+    """Every statement, without the expressions inside them: an import is a
+    statement, and walking expressions was most of the cost of a large map."""
+    queue = [tree]
+    for node in queue:
+        for field in ("body", "orelse", "handlers", "finalbody", "cases"):
+            value = getattr(node, field, None)
+            if isinstance(value, list):
+                queue.extend(value)
+        if not isinstance(node, ast.Module):
+            yield node
+
+
+def parse_python(rel: str, text: str) -> dict:
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return {"module": module_name(rel), "parse": "FAILED", "imports": [],
+                "defs": [], "dynamic": False}
+    imports = []
+    for node in statements(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.append({"module": alias.name, "names": [], "line": node.lineno})
+        elif isinstance(node, ast.ImportFrom):
+            imports.append({"module": node.module or "", "names": [a.name for a in node.names],
+                            "line": node.lineno, "level": node.level})
+    defs = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defs.append({"name": node.name, "kind": type(node).__name__, "line": node.lineno})
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id.isupper():
+                    defs.append({"name": target.id, "kind": "constant", "line": node.lineno})
+    return {"module": module_name(rel), "parse": "OK", "imports": imports, "defs": defs,
+            "dynamic": any(token in text for token in ("importlib", "__import__(", "getattr("))}
+
+
+def excluded(rel: str) -> bool:
+    """The path rule `walk_files` applies, for one file."""
+    parts = rel.split("/")[:-1]
+    base = "/".join(parts) + "/"
+    return any(skipped(part) for part in parts) or any(base.startswith(p) for p in SKIP_PREFIXES)
+
+
+def python_index(root: str, budget: Budget | None = None) -> dict:
     files = {}
     for rel in walk_files(root):
         if not rel.endswith(PY_EXT):
             continue
+        if budget and budget.over():
+            break
         text = read_text(os.path.join(root, rel))
-        if not text:
-            continue
-        try:
-            tree = ast.parse(text)
-        except (SyntaxError, ValueError):
-            files[rel] = {"module": module_name(rel), "parse": "FAILED", "imports": [],
-                          "defs": [], "dynamic": False}
-            continue
-        imports = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.append({"module": alias.name, "names": [], "line": node.lineno})
-            elif isinstance(node, ast.ImportFrom):
-                imports.append({"module": node.module or "", "names": [a.name for a in node.names],
-                                "line": node.lineno, "level": node.level})
-        defs = []
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                defs.append({"name": node.name, "kind": type(node).__name__, "line": node.lineno})
-            elif isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id.isupper():
-                        defs.append({"name": target.id, "kind": "constant", "line": node.lineno})
-        dynamic = any(token in text for token in ("importlib", "__import__(", "getattr("))
-        files[rel] = {"module": module_name(rel), "parse": "OK", "imports": imports,
-                      "defs": defs, "dynamic": dynamic}
+        if text:
+            files[rel] = parse_python(rel, text)
     return files
 
 
@@ -271,7 +309,7 @@ def component_for(topology: dict, rel: str) -> list:
 
 
 def build(project: str, workspace: str, files: list, task: str, topology_path: str,
-          symbol_limit: int) -> dict:
+          symbol_limit: int, budget_s: float = 0) -> dict:
     root, profile = project_root(project, workspace)
     if not os.path.isdir(root) and not project.startswith("auto-"):
         raise SystemExit(f"BLOCKED: project path does not exist: {root}")
@@ -297,7 +335,8 @@ def build(project: str, workspace: str, files: list, task: str, topology_path: s
                 "notes": notes, "files": [], "edges": [], "tests": [], "contracts": [],
                 "components": [], "coverage": {"ast": "NONE", "lexical": "NONE", "topology": "MISSING"}}
 
-    py = python_index(root)
+    budget = Budget(budget_s)
+    py = python_index(root, budget)
     topology, topology_used = load_topology(project, topology_path)
 
     owners = {}
@@ -368,10 +407,17 @@ def build(project: str, workspace: str, files: list, task: str, topology_path: s
                         break
         elif entry["language"] == "js":
             text = read_text(os.path.join(root, rel))
-            for other_rel in walk_files(root):
+            stem = os.path.basename(rel).rsplit(".", 1)[0]
+            if stem == "index":
+                stem = os.path.basename(os.path.dirname(rel))
+            for other_rel in walk_files(root) if entry["exists"] else ():
                 if other_rel == rel or not other_rel.endswith(JS_EXT):
                     continue
+                if budget.over():
+                    break
                 other_text = read_text(os.path.join(root, other_rel))
+                if stem not in other_text:
+                    continue
                 for spec in js_imports(other_text):
                     if resolve_js(other_rel, spec).endswith(rel):
                         edges.append({"from": other_rel, "to": rel, "kind": "import",
@@ -404,6 +450,8 @@ def build(project: str, workspace: str, files: list, task: str, topology_path: s
             for other_rel in py:
                 if other_rel == rel:
                     continue
+                if budget.over():
+                    break
                 text = read_text(os.path.join(root, other_rel))
                 if text and pattern.search(text):
                     refs.append(other_rel)
@@ -448,8 +496,10 @@ def build(project: str, workspace: str, files: list, task: str, topology_path: s
         unknowns.append("changed files span more than one process; any in-memory object "
                         "shared between them is an invalid assumption")
 
+    if budget.spent:
+        unknowns.append("impact analysis stopped at its time budget; edges are incomplete")
     coverage = {
-        "ast": "FULL" if py else "NONE",
+        "ast": "PARTIAL" if budget.spent else "FULL" if py else "NONE",
         "lexical": "PARTIAL" if any(e["kind"] == "reference" for e in edges) else "NONE",
         "topology": "DECLARED" if topology else "MISSING",
         "graphify": "MISSING (provider not installed; this report does not use graph evidence)",
@@ -461,6 +511,7 @@ def build(project: str, workspace: str, files: list, task: str, topology_path: s
         verdict = "PARTIAL"
 
     return {
+        "truncated": budget.spent,
         "schema": 1,
         "project": project,
         "project_path": profile.get("path"),

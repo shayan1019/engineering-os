@@ -9,7 +9,18 @@ survives a reboot, and portability that survives a directory move.
 
 Built on OpenCode V2 (runtime), FABLE 5.1 and GRAPHIFY (methodology and graph).
 
-## Status: ALPHA, Windows, unsigned
+## Current release: 1.0.8, Windows x64, unsigned
+
+Works in any folder without registration. Verified with real OpenCode sessions on
+empty, small, multi-project and very large (53,000 file) projects; see
+`release/RELEASE_NOTES-1.0.8.md`. Enforcement is verified for OpenCode only. There
+is no macOS build of this release.
+
+A project registered with `invariants` (or `"risk": "strict"`) keeps the full review
+tiers; every other project is approved one file at a time, automatically, except
+for overwriting an existing secret file.
+
+## Historical status of 0.2.5 (ALPHA, Windows, unsigned)
 
 Readiness is reported as four separate claims. One passing does not imply the
 others.

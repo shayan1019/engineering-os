@@ -1051,6 +1051,62 @@ function dotnetVerdict(args) {
   return shellVerdict("ask", `dotnet ${sub || "command"} requires approval`)
 }
 
+/**
+ * Build, test and lint commands of other ecosystems, at the same trust as
+ * `npm test`, `cargo build` or `go test`: they run the project's own code.
+ * Installing packages, publishing, deploying and running containers still ask.
+ */
+const BUILD_VERBS = {
+  yarn: ["test", "build", "lint", "typecheck"], pnpm: ["test", "build", "lint", "typecheck"],
+  bun: ["test"], deno: ["test", "check", "lint"],
+  make: ["", "all", "build", "test", "check", "lint"], ctest: null,
+  mvn: ["compile", "test", "package", "verify"], mvnw: ["compile", "test", "package", "verify"],
+  gradle: ["build", "test", "check", "assemble"], gradlew: ["build", "test", "check", "assemble"],
+  flutter: ["test", "build", "analyze"], dart: ["test", "analyze"], swift: ["build", "test"],
+  mix: ["test", "compile"], sbt: ["compile", "test"], zig: ["build", "test"],
+  phpunit: null, rspec: null, jest: null, vitest: null, mocha: null, tsc: null,
+  eslint: null, ruff: ["check"], mypy: null, pyright: null, flake8: null,
+  gcc: null, "g++": null, clang: null, "clang++": null, javac: null, kotlinc: null, rustc: null,
+  cmake: ["--build", "-b", "-s"], terraform: ["validate"],
+}
+const BUILD_WRITE_FLAGS = /^(--fix|--write|--init|-i|--in-place|--config|-c=|--rootdir|--output-file|--update-?snapshots?|-u)/i
+
+function buildVerdict(head, args, workspace) {
+  if (!Object.prototype.hasOwnProperty.call(BUILD_VERBS, head)) return null
+  const values = args.map(unquote)
+  const allowed = BUILD_VERBS[head]
+  const sub = (values[0] || "").toLowerCase()
+  // Every goal has to be a known one: `mvn test deploy` is a deploy.
+  const goals = values.filter((value) => value && !value.startsWith("-") && !value.includes("="))
+  if (allowed && allowed[0] && !allowed[0].startsWith("-") &&
+      !allowed.includes(goals.map((goal) => goal.toLowerCase()).find((goal) => goal !== "clean") || sub)) return null
+  if (allowed && allowed.includes("") && !goals.every((goal) => allowed.includes(goal.toLowerCase()))) return null
+  if (["mvn", "mvnw", "gradle", "gradlew", "sbt"].includes(head) &&
+      !goals.every((goal) => allowed.includes(goal.toLowerCase()) || goal.toLowerCase() === "clean")) return null
+  if (head === "cmake" && !allowed.includes(sub)) return null
+  if (head === "make" && values.some((value) => /^-(f|c|e)|^--(file|directory|eval)|=/i.test(value))) return null
+  if (["jest", "vitest", "eslint", "ruff"].includes(head) &&
+      values.some((value) => BUILD_WRITE_FLAGS.test(value))) return null
+  // A compiler writes where -o says; that has to stay inside the workspace.
+  if (values.some((value) => /(^|[=/\\]|^-[a-z])\.\.([/\\]|$)/i.test(value) ||
+      /^(-[a-z])?([a-z]:[\\/]|[\\/]{1,2}[^-])/i.test(value) || /^~/.test(value) || /[%$]/.test(value))) return null
+  const out = values.findIndex((value) => /^-o/.test(value) || value === "-d" || value === "--outDir")
+  if (["gcc", "g++", "clang", "clang++", "rustc", "javac", "kotlinc"].includes(head) && out >= 0) {
+    const target = values[out].length > 2 && values[out].startsWith("-o") ? values[out].slice(2) : values[out + 1] || ""
+    // Only a build product: `gcc -o main.c` would destroy a source file.
+    if (/\.(?!exe$|o$|obj$|out$|so$|dll$|a$|lib$|jar$|wasm$)[a-z0-9]+$/i.test(target)) return null
+    if (/^\.(git|agents|eos|opencode)([/\\]|$)/i.test(target)) return null
+  }
+  return shellVerdict("allow", `project build/test command: ${head}${sub ? " " + sub : ""}`)
+}
+
+/** `cd <folder inside the workspace>` moves, it does not write. */
+function cdVerdict(args, workspace) {
+  const target = unquote(args[0] || "")
+  if (args.length !== 1 || !target || /^[~\\/]|^[a-z]:|\.\.|[%$]/i.test(target) || target === "-") return null
+  return { ...shellVerdict("allow", "change directory inside the workspace"), moved: true }
+}
+
 function analyzeSegment(segment, workspace) {
   const { text, opaque } = unwrapShell(segment)
   if (opaque) return shellVerdict("deny", "encoded command is not inspectable")
@@ -1103,6 +1159,15 @@ function analyzeSegment(segment, workspace) {
   if (head === "cargo") return cargoVerdict(args)
   if (head === "go") return goVerdict(args)
   if (head === "dotnet") return dotnetVerdict(args)
+  if (["cd", "pushd", "set-location"].includes(head)) {
+    const moved = cdVerdict(args, workspace)
+    if (moved) return moved
+  }
+  // A program named by its path is whatever that file is, not the tool.
+  const named = rawHead === head || !/[/]/.test(rawHead.split(String.fromCharCode(92)).join("/")) ||
+    ["./gradlew", "./mvnw"].includes(rawHead.split(String.fromCharCode(92)).join("/").replace(/[.](bat|cmd)$/i, ""))
+  const build = named && buildVerdict(head.replace(/\.(bat|cmd|exe)$/i, ""), args, workspace)
+  if (build) return build
   if (["pip", "pip3"].includes(head)) {
     return shellVerdict("ask", "package installation requires approval")
   }
@@ -1157,14 +1222,22 @@ export function classifyShell(command, workspace = "") {
   let effect = "allow"
   const reasons = []
   const targets = []
+  let inspectable = true
   for (const part of parts) {
     const verdict = analyzeSegment(part, workspace)
     if (verdict.effect === "deny") return verdict
-    if (verdict.effect === "ask") effect = "ask"
+    if (verdict.effect === "ask") {
+      effect = "ask"
+      // Covered write targets may answer for the writes, never for another
+      // segment of the same line: `npm install x && echo y > covered.txt`.
+      if (!(verdict.targets || []).length) inspectable = false
+    }
+    // After `cd` a relative target names a different file than the one checked.
+    if (verdict.moved) inspectable = false
     reasons.push(verdict.reason)
     targets.push(...(verdict.targets || []))
   }
-  return shellVerdict(effect, reasons.join("; "), targets)
+  return shellVerdict(effect, reasons.join("; "), inspectable ? targets : [])
 }
 
 const WRITE_ACTIONS = new Set(["write", "edit", "patch", "multiedit", "apply_patch"])
