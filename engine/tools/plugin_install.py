@@ -1,28 +1,20 @@
 #!/usr/bin/env python3
-"""Install the EOS host plugin into a project (and remove it again).
+"""Install the EOS OpenCode plugins.
 
-The plugin is what makes EOS intelligence automatic: the host calls it on its
-own session lifecycle (`prompt` at admission, `context` before a model request),
-and EOS answers with the project, the rules, the relevant skills, the
-specialist set and the gate. The user keeps using the host's own Plan or Build
-mode. A V1 host that only offers `chat.params` is still served by `server()`.
+Two files, two jobs:
 
-Rules this installer follows
-----------------------------
-* It never overwrites a file it did not write. If a plugin with the same name
-  exists and is not in the manifest, the install is refused.
-* The previous version is backed up next to the plugin, outside the directory
-  the host scans for plugins.
-* The install is reversible: `uninstall` removes exactly what the manifest
-  lists and restores the backup.
-* The plugin is *additive*. It adds no tool and no permission; it only adds a
-  context block to the session.
+  eos-activation.js  injects the bounded EOS context block (always-on)
+  eos-guard.js       denies a write that has no approved decision, and denies a
+                     shell command that can write (permission layer)
 
-Usage
------
-    python plugin_install.py install   [--project <dir>] [--host opencode]
-    python plugin_install.py status    [--project <dir>]
-    python plugin_install.py uninstall [--project <dir>]
+They are installed together and backed up together. The guard is not optional:
+installing activation without the guard would make EOS look active while the
+write contract is unenforced.
+
+Usage:
+  plugin_install.py install   [--project DIR] [--host opencode] [--force]
+  plugin_install.py uninstall [--project DIR] [--host opencode]
+  plugin_install.py status    [--project DIR] [--host opencode]
 """
 from __future__ import annotations
 
@@ -36,15 +28,35 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _eos_paths as ep  # noqa: E402
 
-PLUGIN_NAME = "eos-activation.js"
-CANONICAL = os.path.join(ep.ENGINE_ROOT, "host-plugins", "opencode", PLUGIN_NAME)
+PLUGINS = ("eos-activation.js", "eos-guard.js")
+PLUGIN_NAME = PLUGINS[0]  # kept for callers that imported the old constant
 MANIFEST_DIR = ep.STATE_DIR
 
 
 def plugin_dir(project: str, host: str) -> str:
     if host == "opencode":
+        return os.path.join(project, ".opencode", "plugins")
+    return os.path.join(project, f".{host}", "plugins")
+
+
+def legacy_plugin_dir(project: str, host: str) -> str:
+    """The retired singular path. Read only to remove it safely."""
+    if host == "opencode":
         return os.path.join(project, ".opencode", "plugin")
     return os.path.join(project, f".{host}", "plugin")
+
+
+def global_plugin_dir(host: str) -> str:
+    if host != "opencode":
+        return ""
+    config = os.environ.get("OPENCODE_CONFIG_DIR")
+    if not config:
+        config = os.path.join(os.path.expanduser("~"), ".config", "opencode")
+    return os.path.join(config, "plugins")
+
+
+def canonical(name: str) -> str:
+    return os.path.join(ep.ENGINE_ROOT, "host-plugins", "opencode", name)
 
 
 def manifest_path() -> str:
@@ -70,20 +82,31 @@ def stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def install(project: str, host: str, force: bool) -> int:
-    if not os.path.isfile(CANONICAL):
-        print(f"BLOCKED: the plugin is not in this engine ({CANONICAL})")
+def install_one(project: str, host: str, force: bool, name: str) -> int:
+    source = canonical(name)
+    if not os.path.isfile(source):
+        print(f"BLOCKED: {name} is not in this engine ({source})")
         return 1
     target_dir = plugin_dir(project, host)
-    target = os.path.join(target_dir, PLUGIN_NAME)
+    target = os.path.join(target_dir, name)
+    legacy = os.path.join(legacy_plugin_dir(project, host), name)
+    if os.path.isfile(legacy):
+        os.remove(legacy)
+        print(f"  retired legacy plugin: {legacy}")
+    global_dir = global_plugin_dir(host)
+    if global_dir and os.path.abspath(target_dir) != os.path.abspath(global_dir):
+        global_target = os.path.join(global_dir, name)
+        if os.path.isfile(global_target):
+            print(f"SKIP: global plugin already provides {name}; workspace copy not created")
+            return 0
     manifest = load_manifest()
     key = os.path.abspath(target)
 
     if os.path.isfile(target):
         existing = open(target, "r", encoding="utf-8", errors="replace").read()
-        canonical = open(CANONICAL, "r", encoding="utf-8", errors="replace").read()
-        if existing == canonical:
-            print(f"PASS: plugin already current at {target}")
+        current = open(source, "r", encoding="utf-8", errors="replace").read()
+        if existing == current:
+            print(f"PASS: {name} already current at {target}")
             manifest["installed"].setdefault(key, {})["status"] = "current"
             save_manifest(manifest)
             return 0
@@ -97,69 +120,96 @@ def install(project: str, host: str, force: bool) -> int:
     if os.path.isfile(target):
         # The backup lives outside the plugin directory: the host scans that
         # directory and would load a backup as a second plugin.
-        backup = os.path.join(os.path.dirname(target_dir), f"_eos-backup-{stamp()}", PLUGIN_NAME)
+        backup = os.path.join(os.path.dirname(target_dir), f"_eos-backup-{stamp()}", name)
         os.makedirs(os.path.dirname(backup), exist_ok=True)
         shutil.copyfile(target, backup)
 
-    shutil.copyfile(CANONICAL, target)
+    shutil.copyfile(source, target)
     manifest.setdefault("installed", {})[key] = {
         "status": "installed",
         "host": host,
         "project": os.path.abspath(project),
         "backup": backup,
         "installed_at": stamp(),
-        "source": CANONICAL,
+        "source": source,
     }
     save_manifest(manifest)
-    print(f"PASS: plugin installed at {target}")
+    print(f"PASS: {name} installed at {target}")
     if backup:
         print(f"  previous version backed up to {backup}")
+    return 0
+
+
+def install(project: str, host: str, force: bool) -> int:
+    for name in PLUGINS:
+        rc = install_one(project, host, force, name)
+        if rc != 0:
+            return rc
     print(f"  manifest: {manifest_path()}")
     return 0
 
 
 def uninstall(project: str, host: str) -> int:
     target_dir = plugin_dir(project, host)
-    target = os.path.join(target_dir, PLUGIN_NAME)
     manifest = load_manifest()
-    key = os.path.abspath(target)
-    entry = manifest.get("installed", {}).get(key)
-    if not entry:
-        print(f"PASS: no EOS plugin recorded for {target}")
-        return 0
-    if os.path.isfile(target):
-        os.remove(target)
-    backup = entry.get("backup")
-    if backup and os.path.isfile(backup):
-        shutil.copyfile(backup, target)
-        print(f"  previous version restored from {backup}")
-    manifest["installed"].pop(key, None)
+    for name in PLUGINS:
+        target = os.path.join(target_dir, name)
+        key = os.path.abspath(target)
+        entry = manifest.get("installed", {}).get(key)
+        if not entry:
+            print(f"PASS: no EOS plugin recorded for {target}")
+            continue
+        if os.path.isfile(target):
+            os.remove(target)
+        backup = entry.get("backup")
+        if backup and os.path.isfile(backup):
+            shutil.copyfile(backup, target)
+            print(f"  previous version restored from {backup}")
+        manifest["installed"].pop(key, None)
+        print(f"PASS: {name} removed from {target}")
     save_manifest(manifest)
+    legacy_dir = legacy_plugin_dir(project, host)
+    for name in PLUGINS:
+        legacy = os.path.join(legacy_dir, name)
+        if os.path.isfile(legacy):
+            os.remove(legacy)
+            print(f"PASS: retired legacy plugin removed: {legacy}")
     try:
         os.rmdir(target_dir)  # only succeeds when the host's directory is empty
     except OSError:
         pass
-    print(f"PASS: plugin removed from {target}")
+    try:
+        os.rmdir(legacy_dir)
+    except OSError:
+        pass
     return 0
 
 
 def status(project: str, host: str) -> int:
-    target = os.path.join(plugin_dir(project, host), PLUGIN_NAME)
+    target_dir = plugin_dir(project, host)
+    global_dir = global_plugin_dir(host)
     manifest = load_manifest()
-    key = os.path.abspath(target)
-    entry = manifest.get("installed", {}).get(key)
-    exists = os.path.isfile(target)
-    current = False
-    if exists and os.path.isfile(CANONICAL):
-        current = (open(target, "r", encoding="utf-8", errors="replace").read()
-                   == open(CANONICAL, "r", encoding="utf-8", errors="replace").read())
-    print(f"plugin path   : {target}")
-    print(f"present       : {exists}")
-    print(f"current       : {current}")
-    print(f"eos managed   : {bool(entry)}")
-    if entry:
-        print(f"installed at  : {entry.get('installed_at')}")
-    return 0 if (exists and current) else 1
+    ok = True
+    for name in PLUGINS:
+        target = os.path.join(target_dir, name)
+        entry = manifest.get("installed", {}).get(os.path.abspath(target))
+        exists = os.path.isfile(target)
+        provided_by_global = bool(global_dir) and os.path.isfile(os.path.join(global_dir, name))
+        source = canonical(name)
+        current = False
+        if exists and os.path.isfile(source):
+            current = (open(target, "r", encoding="utf-8", errors="replace").read()
+                       == open(source, "r", encoding="utf-8", errors="replace").read())
+        print(f"{name}")
+        print(f"  path        : {target}")
+        print(f"  present     : {exists}")
+        print(f"  current     : {current}")
+        print(f"  global      : {provided_by_global}")
+        print(f"  eos managed : {bool(entry)}")
+        if entry:
+            print(f"  installed at: {entry.get('installed_at')}")
+        ok = ok and (current or provided_by_global)
+    return 0 if ok else 1
 
 
 def main() -> int:
@@ -169,7 +219,6 @@ def main() -> int:
     ap.add_argument("--host", default="opencode")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
-
     project = os.path.abspath(args.project) if args.project else ep.resolve_workspace()
     if args.action == "install":
         return install(project, args.host, args.force)
@@ -180,3 +229,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
