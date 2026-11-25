@@ -32,11 +32,11 @@
 // shapes share the same core, and neither imports anything the host has to
 // provide.
 
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, realpathSync, statSync, existsSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
-import { join, dirname, resolve } from "node:path"
+import { join, dirname, resolve, isAbsolute } from "node:path"
 
 const MAX_BLOCK_CHARS = 6000
 const MAX_TASK_CHARS = 4000
@@ -64,8 +64,28 @@ const samePath = (a, b) => {
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""))
 const digest = (data) => createHash("sha256").update(data).digest("hex").toUpperCase()
 
+function usablePython(candidate) {
+  if (!candidate) return false
+  try {
+    const probe = spawnSync(candidate, ["-c", "import sys; print(sys.version_info[0])"], {
+      windowsHide: true, timeout: 1500, encoding: "utf8",
+    })
+    return probe.status === 0 && /^3\s*$/.test(String(probe.stdout || "").trim())
+  } catch { return false }
+}
+
 function systemPython() {
-  return process.env.EOS_PYTHON || (process.platform === "win32" ? "python" : "python3")
+  const configured = process.env.EOS_PYTHON || ""
+  if (configured && isAbsolute(configured)) return configured
+  const candidates = configured ? [configured] : []
+  if (process.platform === "win32") {
+    try {
+      const located = spawnSync("where.exe", ["python"], { windowsHide: true, encoding: "utf8" })
+      candidates.push(...String(located.stdout || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean))
+    } catch {}
+  }
+  candidates.push(process.platform === "win32" ? "python" : "python3")
+  return candidates.find(usablePython) || candidates[0]
 }
 
 function runtimePython(prefix) {
@@ -430,3 +450,5 @@ export default {
     }
   },
 }
+
+
