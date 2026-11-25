@@ -31,7 +31,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _eos_paths as ep  # noqa: E402
 
 ROOT = ep.ENGINE_ROOT
-CANONICAL = ep.AGENTS_CANONICAL
+# Installed engines are immutable and may be read-only. Rendered agent files
+# are generated user state, so keep them outside the versioned engine and make
+# upgrades/rollback independent of filesystem permissions.
+CANONICAL = os.path.join(ep.STATE_DIR, "agents-canonical")
 GLOBAL_TARGET = os.path.expanduser(os.path.join("~", ".config", "opencode", "agents"))
 # Project installs target the project being operated on. `--project <dir>` (or
 # EOS_WORKSPACE, or cwd) selects it; the engine's own directory is never used.
@@ -630,4 +633,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
