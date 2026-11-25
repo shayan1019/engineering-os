@@ -32,15 +32,134 @@
 // shapes share the same core, and neither imports anything the host has to
 // provide.
 
-import { spawn } from "node:child_process"
-import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync } from "node:fs"
+import { spawn, spawnSync } from "node:child_process"
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, realpathSync, statSync, existsSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
-import { join, dirname, resolve } from "node:path"
+import { join, dirname, resolve, isAbsolute } from "node:path"
 
-const MAX_BLOCK_CHARS = 2400
+const MAX_BLOCK_CHARS = 6000
 const MAX_TASK_CHARS = 4000
-const TIMEOUT_MS = 20000
+const TIMEOUT_MS = 60000
 const CACHE_LIMIT = 32
+
+// ENGINE-RESOLVER BEGIN
+// This block is identical in eos-guard.js and eos-activation.js (a test enforces
+// it). It is duplicated because the host loads every file in the plugin
+// directory as a plugin, so a shared helper module cannot live there.
+//
+// Order, and nothing else:
+//   1. <workspace>/.agents     the project's own control plane, explicit
+//   2. EOS_ENGINE              explicit operator override
+//   3. EOS_HOME/config.json    active_version, verified against its manifest
+// Anything invalid returns `problem` and an empty engine. There is no fallback
+// to another installed version: running an engine nobody activated is worse
+// than refusing to run.
+const VERSION_NAME = /^[0-9A-Za-z][0-9A-Za-z._+-]*$/
+const samePath = (a, b) => {
+  const left = realpathSync.native(a)
+  const right = realpathSync.native(b)
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
+}
+const readJson = (path) => JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""))
+const digest = (data) => createHash("sha256").update(data).digest("hex").toUpperCase()
+
+function usablePython(candidate) {
+  if (!candidate) return false
+  try {
+    const probe = spawnSync(candidate, ["-c", "import sys; print(sys.version_info[0])"], {
+      windowsHide: true, timeout: 1500, encoding: "utf8",
+    })
+    return probe.status === 0 && /^3\s*$/.test(String(probe.stdout || "").trim())
+  } catch { return false }
+}
+
+function systemPython() {
+  const configured = process.env.EOS_PYTHON || ""
+  if (configured && isAbsolute(configured)) return configured
+  const candidates = configured ? [configured] : []
+  if (process.platform === "win32") {
+    try {
+      const located = spawnSync("where.exe", ["python"], { windowsHide: true, encoding: "utf8" })
+      candidates.push(...String(located.stdout || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean))
+    } catch {}
+  }
+  candidates.push(process.platform === "win32" ? "python" : "python3")
+  return candidates.find(usablePython) || candidates[0]
+}
+
+function runtimePython(prefix) {
+  return join(prefix, "runtime", "python", process.platform === "win32" ? "python.exe" : "bin/python3")
+}
+
+function activeEngine(home) {
+  if (existsSync(join(home, "state", "activation-txn.json"))) {
+    throw new Error("an EOS version change was interrupted; run: eos recover")
+  }
+  let config
+  try {
+    config = readJson(join(home, "config.json"))
+  } catch (error) {
+    throw new Error(`config.json is missing or invalid: ${error.message}`)
+  }
+  const active = config && config.active_version
+  if (typeof active !== "string" || !VERSION_NAME.test(active)) {
+    throw new Error("config.json has no valid active_version")
+  }
+  const records = (Array.isArray(config.versions) ? config.versions : [])
+    .filter((item) => item && item.version === active)
+  if (records.length !== 1) {
+    throw new Error(`config.json has ${records.length} record(s) for active_version ${active}`)
+  }
+  const dir = join(home, "versions", active)
+  if (!samePath(String(records[0].dir), dir)) {
+    throw new Error(`active_version ${active} is not recorded at ${dir}`)
+  }
+  const manifest = readJson(join(dir, "install-manifest.json"))
+  if (manifest.version !== active || !Array.isArray(manifest.entries)) {
+    throw new Error(`install manifest does not describe ${active}`)
+  }
+  const entries = manifest.entries.filter((item) => String(item.rel).startsWith("engine/"))
+  const feed = entries.map((item) => `${item.rel.slice(7)}:${item.sha256}\n`).join("")
+  if (digest(feed) !== String(records[0].engine_manifest_sha256).toUpperCase()) {
+    throw new Error(`install manifest hash does not match config.json for ${active}`)
+  }
+  for (const item of entries) {
+    if (!/^engine\/tools\/[^/]+\.py$/.test(item.rel)) continue
+    if (digest(readFileSync(join(dir, item.rel))) !== item.sha256) {
+      throw new Error(`installed engine file was changed: ${item.rel}`)
+    }
+  }
+  let python = process.env.EOS_PYTHON || ""
+  if (!python && manifest.runtime_mode === "bundled") {
+    python = runtimePython(dir)
+    if (!existsSync(python)) throw new Error(`bundled runtime is missing for ${active}`)
+  }
+  return { engine: join(dir, "engine"), python: python || systemPython(), source: "active_version", version: active }
+}
+
+function locateEngine(workspace) {
+  try {
+    const local = workspace ? join(workspace, ".agents") : ""
+    if (local && ["decision.py", "eos_activate.py"].some((name) => existsSync(join(local, "tools", name)))) {
+      return { engine: local, python: systemPython(), source: "workspace", version: "" }
+    }
+    const override = process.env.EOS_ENGINE
+    if (override) {
+      if (!["decision.py", "eos_activate.py"].every((name) => existsSync(join(override, "tools", name)))) {
+        throw new Error(`EOS_ENGINE is not an EOS engine: ${override}`)
+      }
+      const bundled = runtimePython(dirname(resolve(override)))
+      const python = process.env.EOS_PYTHON || (existsSync(bundled) ? bundled : systemPython())
+      return { engine: override, python, source: "EOS_ENGINE", version: "" }
+    }
+    return activeEngine(process.env.EOS_HOME ||
+      join(process.env.USERPROFILE || process.env.HOME || "", ".eos"))
+  } catch (error) {
+    return { engine: "", python: "", source: "", version: "", problem: error.message }
+  }
+}
+// ENGINE-RESOLVER END
 
 /**
  * The command that produces the context block.
@@ -50,7 +169,7 @@ const CACHE_LIMIT = 32
  * of them may reach a command interpreter. `EOS_ACTIVATE_COMMAND` (a JSON
  * array) exists so the test can substitute a fake engine.
  */
-function activateCommand() {
+function activateCommand(cwd) {
   const override = process.env.EOS_ACTIVATE_COMMAND
   if (override) {
     try {
@@ -60,40 +179,9 @@ function activateCommand() {
       // A broken override is ignored; the normal resolution continues.
     }
   }
-  const home = process.env.EOS_HOME || (process.env.USERPROFILE || process.env.HOME || "") + "/.eos"
-  const versions = join(home, "versions")
-  let python = process.env.EOS_PYTHON || ""
-  let activeVersion = ""
-  if (!python) {
-    // Read the active version from config.json instead of picking the newest
-    // by name. After a rollback the active version is the older one, and
-    // picking by name would silently use the newer (rolled-back-from) engine.
-    try {
-      const configRaw = readFileSync(join(home, "config.json"), "utf8")
-      const config = JSON.parse(configRaw)
-      activeVersion = config.active_version || config.current || ""
-      if (!activeVersion) {
-        // Config exists but no active version: degraded
-        console.error("EOS: config.json has no active_version; activation degraded")
-        activeVersion = ""
-      }
-    } catch {
-      // No config or unreadable: do NOT fall back to newest by name.
-      // This could mask a rollback failure. Report degraded and skip.
-      console.error("EOS: cannot read config.json; activation degraded (no silent fallback)")
-      activeVersion = ""
-    }
-    if (activeVersion) {
-      python = join(versions, activeVersion, "runtime", "python", process.platform === "win32" ? "python.exe" : "bin/python3")
-    }
-  }
-  if (!python) python = process.platform === "win32" ? "python" : "python3"
-  let engine = process.env.EOS_ENGINE || ""
-  if (!engine && activeVersion) {
-    engine = resolve(versions, activeVersion, "engine")
-  }
-  if (!engine) engine = join(home, "engine")
-  return [python, join(engine, "tools", "eos_activate.py")]
+  const live = locateEngine(cwd)
+  if (live.problem) throw new Error(live.problem)
+  return [live.python, join(live.engine, "tools", "eos_activate.py")]
 }
 
 function run(args, cwd) {
@@ -143,7 +231,7 @@ function debug(error) {
   console.error("EOS activation error:", error && error.stack ? error.stack : error)
 }
 
-async function activateBlock(task, cwd) {
+async function activateBlock(task, cwd, session) {
   let taskFile = null
   try {
     // The task is handed over in a file, never on a command line: a task may
@@ -152,18 +240,36 @@ async function activateBlock(task, cwd) {
     const dir = mkdtempSync(join(tmpdir(), "eos-task-"))
     taskFile = join(dir, "task.txt")
     writeFileSync(taskFile, task, "utf8")
-    const block = await run([...activateCommand(), "--task-file", taskFile], cwd)
-    if (!block) return ""
+    const args = [...activateCommand(cwd), "--task-file", taskFile]
+    if (session) args.push("--session", String(session))
+    const block = await run(args, cwd)
+    if (!block) return unavailableBlock("the engine returned no context")
     return block.length > MAX_BLOCK_CHARS ? block.slice(0, MAX_BLOCK_CHARS) : block
   } catch (error) {
     debug(error)
-    return ""
+    return unavailableBlock(error && error.message ? error.message : "unknown error")
   } finally {
     if (taskFile) {
       try {
         rmSync(dirname(taskFile), { recursive: true, force: true })
       } catch {}
     }
+  }
+}
+
+function unavailableBlock(reason) {
+  const text = String(reason || "unknown").slice(0, 300)
+  return "<eos-context status=\"UNAVAILABLE\">EOS activation failed: " + text +
+    ". Do not assume EOS is active. The write guard still enforces decisions.</eos-context>"
+}
+
+function contextEpoch(cwd) {
+  try {
+    const path = join(cwd, ".agents", "state", "context.epoch")
+    if (!existsSync(path)) return "0"
+    return String(statSync(path).mtimeMs) + ":" + readFileSync(path, "utf8").trim()
+  } catch {
+    return "0"
   }
 }
 
@@ -178,12 +284,14 @@ async function activateBlock(task, cwd) {
  */
 const activations = new Map()
 
-function activationFor(key, task, cwd) {
+function activationFor(key, task, cwd, session) {
+  const live = locateEngine(cwd)
+  const epoch = `${contextEpoch(cwd)}|${live.engine}|${live.problem || ""}`
   const known = activations.get(key)
-  if (known && known.task === task) return known.block
-  const block = activateBlock(task, cwd)
+  if (known && known.task === task && known.epoch === epoch) return known.block
+  const block = activateBlock(task, cwd, session || key)
   activations.delete(key)
-  activations.set(key, { task, block })
+  activations.set(key, { task, epoch, block })
   while (activations.size > CACHE_LIMIT) {
     const oldest = activations.keys().next().value
     if (oldest === undefined) break
@@ -194,13 +302,12 @@ function activationFor(key, task, cwd) {
 
 /**
  * A task text, or "" when the turn carries nothing the router can resolve.
- * An empty turn carries no task, and an oversized message is not a task.
  */
 function taskText(value) {
   if (typeof value !== "string") return ""
-  const text = value.trim()
-  if (!text || text.length > MAX_TASK_CHARS) return ""
-  return text
+  // A long request is still a request: dropping it left exactly the biggest tasks
+  // without EOS context. The router needs its beginning, so it is cut, not skipped.
+  return value.trim().slice(0, MAX_TASK_CHARS)
 }
 
 function partText(part) {
@@ -260,7 +367,7 @@ async function resolveBlock(event, cwd) {
   // task comes from the messages when they are readable and from the entry the
   // prompt hook warmed otherwise.
   const task = taskText(event && event.prompt && event.prompt.text) || latestUserTask(event && event.messages)
-  if (task) return await activationFor(key, task, cwd)
+  if (task) return await activationFor(key, task, cwd, key)
   const known = activations.get(key)
   return known ? await known.block : ""
 }
@@ -282,7 +389,7 @@ async function install(ctx) {
         return
       }
       const known = activations.get(key)
-      if (!known || known.task !== task) activationFor(key, task, cwd)
+      if (!known || known.task !== task) activationFor(key, task, cwd, key)
     } catch (error) {
       debug(error)
     }
@@ -297,13 +404,25 @@ async function install(ctx) {
       debug(error)
     }
   })
+
+  // A compacted session must re-read the current map and work state instead of
+  // reusing the block that was valid before compaction.
+  try {
+    if (typeof ctx.session.hook === "function") {
+      await ctx.session.hook("compaction", (event) => {
+        activations.delete(sessionKey(event))
+      })
+    }
+  } catch {
+    // The host may not expose compaction; context epoch still invalidates.
+  }
 }
 
 async function serveV1(input, output, cwd) {
   try {
     const task = taskText(lastUserText(input))
     if (!task) return
-    const block = await activationFor(sessionKey(input), task, cwd)
+    const block = await activationFor(sessionKey(input), task, cwd, sessionKey(input))
     if (!block) return
     if (Array.isArray(output?.system)) output.system.push(block)
     else if (typeof output?.system === "string") output.system = output.system + "\n" + block
@@ -316,6 +435,9 @@ export default {
   // V2 reads this definition: `id` identifies the plugin in status and
   // diagnostics, `setup` registers hooks on the domains that own them.
   id: "eos.activation",
+  // Exposed on the definition, not as a named export: a V1 host treats every
+  // exported function as a plugin.
+  resolveEngine: locateEngine,
   async setup(ctx) {
     await install(ctx)
   },
@@ -328,3 +450,5 @@ export default {
     }
   },
 }
+
+
