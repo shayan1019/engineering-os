@@ -231,7 +231,11 @@ function locateEngine(workspace) {
   try {
     const local = workspace ? join(workspace, ".agents") : ""
     if (local && ["decision.py", "eos_activate.py"].some((name) => existsSync(join(local, "tools", name)))) {
-      return { engine: local, python: systemPython(), source: "workspace", version: "" }
+      const bundled = [
+        join(workspace, "runtime", "python", process.platform === "win32" ? "python.exe" : "bin/python3"),
+        join(workspace, "engineering-os", "runtime", "python", process.platform === "win32" ? "python.exe" : "bin/python3"),
+      ].find((candidate) => existsSync(candidate))
+      return { engine: local, python: bundled || systemPython(), source: bundled ? "workspace-bundled" : "workspace", version: "" }
     }
     const override = process.env.EOS_ENGINE
     if (override) {
