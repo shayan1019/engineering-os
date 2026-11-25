@@ -195,7 +195,8 @@
             { "name": "release_gate_selftest", "cmd": ["python", "tools/release_gate.py", "selftest"], "required": true },
             { "name": "orchestrator_runtime_selftest", "cmd": ["python", "tools/orchestrator_runtime.py", "selftest"], "required": true },
             { "name": "permission_contract_selftest", "cmd": ["python", "tools/runtime_permissions.py", "selftest"], "required": true },
-            { "name": "permission_contracts", "cmd": ["python", "tools/runtime_permissions.py", "check-contracts"], "required": true }
+            { "name": "permission_contracts", "cmd": ["python", "tools/runtime_permissions.py", "check-contracts"], "required": true },
+            { "name": "enterprise_selftest", "cmd": ["python", "tools/enterprise_selftest.py"], "required": true }
           ]
         }
       }
@@ -242,3 +243,4 @@
     }
   }
 }
+
