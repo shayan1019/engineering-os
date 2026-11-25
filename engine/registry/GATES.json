@@ -1,8 +1,14 @@
 {
   "version": 2,
-  "note": "Executable command authority for the EOS quality gate. An agent can choose a project and a suite, never a command. `%ENGINE%`, `%WORKSPACE%` and `%SELFTEST%` are the only path tokens; nothing here records a machine-specific absolute path. A suite with no verified entry point is marked NOT_CONFIGURED so the gate returns BLOCKED instead of a fake green.",
+  "note": "Executable command authority for the EOS quality gate. An agent can choose a project and suite, never a command. `%ENGINE%` and `%WORKSPACE%` are the only path tokens; nothing here records a machine-specific absolute path. A suite with no verified entry point is marked NOT_CONFIGURED so the gate returns BLOCKED instead of a fake green. `interpreters` names an interpreter a suite needs; if it is absent the suite is BLOCKED (the tests did not run), not FAIL.",
   "defaults": {
     "timeout_seconds": 300
+  },
+  "interpreters": {
+    "bighero-venv": {
+      "path": "%WORKSPACE%/6.0_final_merge/.venv-win/Scripts/python.exe",
+      "description": "BigHero's Windows virtual environment (Python 3.11.9 + pytest 9.0.3), verified present 2026-10-19. The system interpreter has no pytest, so this suite cannot run without it."
+    }
   },
   "projects": {
     "eos": {
@@ -18,6 +24,16 @@
           "description": "Self-test fixture that must fail. Proves the gate does not rubber-stamp.",
           "commands": [
             { "name": "fail_case", "cmd": ["python", "%SELFTEST%/fail_case.py"], "required": true }
+          ]
+        },
+        "blocked": {
+          "description": "Fixture that exits 2. Proves the gate reports BLOCKED (the check could not run) instead of FAIL (the code failed). Differential suites depend on this distinction: a missing baseline must never look like a regression.",
+          "commands": [
+            {
+              "name": "blocked_case",
+              "cmd": ["python", "%SELFTEST%/blocked_case.py"],
+              "required": true
+            }
           ]
         },
         "mixed": {
@@ -48,14 +64,121 @@
           ]
         },
         "engine": {
-          "description": "Real behavioural suite of the product itself: a full skill-index rebuild followed by the router's routing scenarios, the activation plugin, and the orchestrator registry self-test.",
+          "description": "Real behavioural suite of the product itself: a full skill-index rebuild followed by the router's 14 routing scenarios plus the registry-scope, one-entry-per-file and verified-badge checks. Discovery runs first because routing resolves skill names against the index it produces; a stale or missing index would make the routing cases fail for the wrong reason.",
           "timeout_seconds": 300,
           "commands": [
             { "name": "skill_index_discover", "cmd": ["python", "tools/skill_index.py", "discover"], "required": true },
             { "name": "router_tests", "cmd": ["python", "router/route_tests.py"], "required": true },
             { "name": "plugin_test", "cmd": ["node", "%ENGINE%/host-plugins/opencode/eos-activation.test.mjs"], "required": true },
-            { "name": "agent_dispatch", "cmd": ["python", "tools/agent_dispatch_test.py"], "required": true },
             { "name": "orchestrator_selftest", "cmd": ["python", "tools/orchestrator_registry.py", "test", "--self-test"], "required": true }
+          ]
+        },
+        "vnext": {
+          "description": "The vNext enforcement core: EDR state machine (14 cases), challenge ledger (5), typed team runtime (5), differential pytest wrapper (5), and model-probe parsing (3). A failure here means the gate that stops a bad change is itself broken.",
+          "timeout_seconds": 300,
+          "commands": [
+            {
+              "name": "decision_selftest",
+              "cmd": ["python", "tools/decision.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "review_contract_selftest",
+              "cmd": ["python", "tools/review_contract.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "completion_selftest",
+              "cmd": ["python", "tools/completion.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "work_state_selftest",
+              "cmd": ["python", "tools/work_state.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "tool_evidence_selftest",
+              "cmd": ["python", "tools/tool_evidence.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "auto_decision_selftest",
+              "cmd": ["python", "tools/auto_decision.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "challenge_selftest",
+              "cmd": ["python", "tools/challenge.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "team_selftest",
+              "cmd": ["python", "tools/team.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "pytest_delta_selftest",
+              "cmd": ["python", "tools/pytest_delta.py", "selftest"],
+              "required": true
+            },
+            {
+              "name": "model_probe_selftest",
+              "cmd": ["python", "tools/model_probe.py", "selftest"],
+              "required": true
+            }
+          ]
+        },
+        "deploy": {
+          "description": "Synchronise the product engine into the workspace .agents through the official local installer. The command is fixed in this registry; an agent cannot inject a target or a source. This is the only deploy path the gate knows.",
+          "timeout_seconds": 300,
+          "commands": [
+            {"name": "local_install", "cmd": ["eos", "install", "--local", "%WORKSPACE%/.agents", "--source", "%WORKSPACE%/engineering-os", "--force"], "required": true},
+            {"name": "agents_install", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/agent_install.py", "install", "--target", "project", "--project", "%WORKSPACE%", "--force"], "required": true}
+          ]
+        },
+        "vnext_dev": {
+          "description": "Development-only behavioural suite for the universal runtime. It executes the product tree directly (%WORKSPACE%/engineering-os) so new tools can be verified before deployment. Release gates keep using the fixed 'engine' and 'vnext' suites.",
+          "timeout_seconds": 600,
+          "commands": [
+            {"name": "workspace_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/workspace.py", "selftest"], "required": true},
+            {"name": "project_map_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/project_map.py", "selftest"], "required": true},
+            {"name": "work_state_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/work_state.py", "selftest"], "required": true},
+            {"name": "preflight_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/preflight.py", "selftest"], "required": true},
+            {"name": "post_write_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/post_write.py", "selftest"], "required": true},
+            {"name": "write_gate_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/write_gate.py", "selftest"], "required": true},
+            {"name": "auto_decision_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/auto_decision.py", "selftest"], "required": true},
+            {"name": "tool_evidence_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/tool_evidence.py", "selftest"], "required": true},
+            {"name": "completion_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/completion.py", "selftest"], "required": true},
+            {"name": "review_contract_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/review_contract.py", "selftest"], "required": true},
+            {"name": "ship_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/ship.py", "selftest"], "required": true},
+            {"name": "scope_install_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/scope_install.py", "selftest"], "required": true},
+            {"name": "guard_contract_test", "cmd": ["node", "--test", "%WORKSPACE%/engineering-os/engine/host-plugins/opencode/eos-guard.test.mjs"], "required": true},
+            {"name": "activation_contract_test", "cmd": ["node", "--test", "%WORKSPACE%/engineering-os/engine/host-plugins/opencode/eos-activation.test.mjs"], "required": true},
+            {"name": "router_tests", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/router/route_tests.py"], "required": true},
+            {"name": "p5_benchmark", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p5_benchmark.py", "run", "--workspace", "%WORKSPACE%"], "required": true}
+          ]
+        },
+        "p5": {
+          "description": "P5 mechanical benchmark over real fixture projects: web, backend, python, desktop, security, math, cross-process, new project, multi-project and concurrent writers. No model calls; a model benchmark is a separate conditional stage.",
+          "timeout_seconds": 600,
+          "commands": [
+            {"name": "p5_benchmark", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p5_benchmark.py", "run", "--workspace", "%WORKSPACE%"], "required": true}
+          ]
+        },
+        "p6": {
+          "description": "Read-only P6 metrics over the gate and P5 artifacts. No gate changes, no model calls.",
+          "timeout_seconds": 300,
+          "commands": [
+            {"name": "p6_selftest", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p6_metrics.py", "selftest"], "required": true},
+            {"name": "p6_metrics", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p6_metrics.py", "report", "--workspace", "%WORKSPACE%", "--project", "eos"], "required": true}
+          ]
+        },
+        "p5c": {
+          "description": "Executable P5-C runner, mechanical half: isolated fixtures, hidden oracle, broken/fixed controls, timeout and cancellation. Model execution stays BLOCKED without a provider.",
+          "timeout_seconds": 300,
+          "commands": [
+            {"name": "p5c_validate", "cmd": ["python", "%WORKSPACE%/engineering-os/engine/tools/p5c_runner.py", "validate", "--workspace", "%WORKSPACE%"], "required": true}
           ]
         },
         "security": {
@@ -72,10 +195,52 @@
             { "name": "release_gate_selftest", "cmd": ["python", "tools/release_gate.py", "selftest"], "required": true },
             { "name": "orchestrator_runtime_selftest", "cmd": ["python", "tools/orchestrator_runtime.py", "selftest"], "required": true },
             { "name": "permission_contract_selftest", "cmd": ["python", "tools/runtime_permissions.py", "selftest"], "required": true },
-            { "name": "permission_contracts", "cmd": ["python", "tools/runtime_permissions.py", "check-contracts"], "required": true }
+            { "name": "permission_contracts", "cmd": ["python", "tools/runtime_permissions.py", "check-contracts"], "required": true },
+            { "name": "enterprise_selftest", "cmd": ["python", "tools/enterprise_selftest.py"], "required": true }
           ]
+        }
+      }
+    },
+    "bighero": {
+      "suites": {
+        "thesis_exit": {
+          "status": "CONFIGURED",
+          "description": "Real project tests: the thesis-exit integration file, run in isolation. Measured 2026-10-19: PASS in 10.3 s alone, but 3 of its tests fail inside the full suite, which means those tests are order/state dependent. Recorded as measured fact, not as a project verdict.",
+          "interpreter": "bighero-venv",
+          "timeout_seconds": 300,
+          "commands": [
+            { "name": "pytest_thesis_exit", "cmd": ["python", "-m", "pytest", "python_ai/tests/test_thesis_exit_v1.py", "-q", "--no-header", "-p", "no:cacheprovider"], "required": true }
+          ]
+        },
+        "unit": {
+          "status": "CONFIGURED",
+          "description": "Full python_ai unit suite, measured differentially. The 2026-10-19 run (4138 passed / 17 failed / 2 skipped) is why this suite is no longer all-or-nothing: a stored baseline names the known failures, so the gate reports NEW failures and DISAPPEARED tests separately instead of repeating the same red line. Baseline: .agents/registry/failures/bighero-unit.json. A missing baseline is BLOCKED, never a fake green.",
+          "interpreter": "bighero-venv",
+          "timeout_seconds": 1800,
+          "commands": [
+            { "name": "pytest_python_ai_delta", "cmd": ["python", "%ENGINE%/tools/pytest_delta.py", "--project", "bighero", "--suite", "unit", "--baseline", "%WORKSPACE%/.agents/registry/failures/bighero-unit.json", "--", "python_ai/tests", "-q", "--no-header", "-p", "no:cacheprovider"], "required": true }
+          ]
+        }
+      }
+    },
+    "vpniran": {
+      "suites": {
+        "unit": {
+          "status": "NOT_CONFIGURED",
+          "description": "35 real test files exist at vpniran/iran_resilient_vpn/tests, but no interpreter can run them: the project .venv was built against a Python 3.13 that is no longer installed, and the machine's default interpreter has no pytest. EOS will not install packages into a user project to make its own gate green. Configure an interpreter and this becomes runnable without changing the tests.",
+          "commands": []
+        }
+      }
+    },
+    "zipforge": {
+      "suites": {
+        "unit": {
+          "status": "NOT_CONFIGURED",
+          "description": "No verified entry point. package.json build is `tsc && vite build`, and the installed node_modules is incomplete (no tsc or vite binary in node_modules/.bin), so `npm run build` cannot be trusted as a gate. src-tauri/Cargo.toml exists, so `cargo test` is a candidate once the crate builds reproducibly.",
+          "commands": []
         }
       }
     }
   }
 }
+
