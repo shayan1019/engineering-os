@@ -168,6 +168,15 @@ The CLI never decides whether work passed. It locates things and reports the
 engine's exit code. The engine never installs itself. The installer never
 copies a version into place. Those separations are deliberate.
 
+
+### EOS NEXUS — Mission Control (proposed)
+
+![Animated EOS NEXUS Mission Control concept](docs/assets/eos-nexus-mission-control.svg)
+
+**Design concept / simulated animation — not a live EOS feature.** The proposed observer would display actual host activity, specialist delegation, skills, tools, graph freshness, security decisions and quality-gate evidence without changing EOS execution or permissions. The desktop window would be optional and independently closable.
+
+[Open animated SVG](docs/assets/eos-nexus-mission-control.svg) · [Implementation specification](docs/EOS_NEXUS_IMPLEMENTATION.md)
+
 ## Development
 
 ```bash
