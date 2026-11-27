@@ -12,6 +12,16 @@ actually ran.
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/shayan1019/engineering-os?include_prereleases)](https://github.com/shayan1019/engineering-os/releases)
 
+**Developer tooling · AI agent orchestration · Skill routing · Security and evidence-backed QA**
+
+[Download releases](https://github.com/shayan1019/engineering-os/releases) · [Quick start](#first-run) · [Architecture](#architecture) · [Report an issue](https://github.com/shayan1019/engineering-os/issues)
+
+## EOS NEXUS — Mission Control concept
+
+![Animated EOS NEXUS Mission Control concept](docs/assets/eos-nexus-mission-control.svg)
+
+*Proposed desktop observer, simulated animation only; not a shipped live dashboard.* [Design specification](docs/EOS_NEXUS_IMPLEMENTATION.md)
+
 ## Why EOS
 
 An AI agent working on a real codebase usually lacks five things:
@@ -24,53 +34,33 @@ An AI agent working on a real codebase usually lacks five things:
 | A gate an agent cannot weaken | Commands live in a registry, not in a prompt; PASS/FAIL/BLOCKED comes from an artifact |
 | Evidence that survives | Gates, promotions, install manifests, and rollback records under `~/.eos` |
 
-## Status: `0.2.6-alpha`, unsigned
+## Release status and installation
 
-Readiness is reported as four separate claims. One passing does not imply the
-others.
-
-| Claim | This build |
+| Track | Status |
 | --- | --- |
-| `CORE_READY` | **YES** — engine self-tests, routing regression, and the release gate run on the exact commit |
-| `HOST_READY` | **YES on Windows 11 + OpenCode 2.0.32** — live permission/AST harness; host code unchanged from the 0.2.5 verification |
-| `DISTRIBUTION_READY` | **Windows: YES. macOS: PARTIAL** — unsigned Windows installer and portable ZIP; macOS arm64/Intel packages are built but not notarized |
-| `PRODUCTION_READY` | **NO** — alpha software; no code signing, no notarization, no compatibility guarantee |
+| Latest verified published release at documentation review | [v1.0.8 — Windows x64](https://github.com/shayan1019/engineering-os/releases/tag/v1.0.8) |
+| Source development | [1.0.9 version marker](https://github.com/shayan1019/engineering-os/commit/d0f980c26772521d8792d98a2a89fd00573605d9); not a claim of a published installer |
+| Distribution | The v1.0.8 Windows assets are unsigned; verify the published hashes before running |
+| Production readiness | Not asserted; consult the release-specific evidence and limitations |
 
-See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for the checks behind each claim
-and [CHANGELOG.md](CHANGELOG.md) for the release history.
+See [all releases](https://github.com/shayan1019/engineering-os/releases), [historical 0.2.6 acceptance record](docs/ACCEPTANCE.md) and [historical changelog](CHANGELOG.md). The old acceptance record is not proof for newer versions.
 
 ## Install
 
-### Windows
+### Windows x64
 
-1. Download `EngineeringOS-Setup-0.2.6-alpha.exe` from
-   [Releases](https://github.com/shayan1019/engineering-os/releases).
-2. Verify it against the published `SHA256SUMS.txt`.
-3. Run the installer. It is per-user, does not require administrator rights, and
-   installs the launcher at `%USERPROFILE%\.eos\bin\eos.exe`.
-4. Open a new terminal and run `eos doctor`.
-
-The installer is unsigned. Windows SmartScreen may warn; verify the SHA-256
-before choosing **More info → Run anyway**.
+1. Visit [Releases](https://github.com/shayan1019/engineering-os/releases) and select the published Windows version. The v1.0.8 release includes `EngineeringOS-Setup-1.0.8.exe` and a portable ZIP.
+2. Verify the downloaded file against the release's `SHA256SUMS.txt` before running it. Review the unsigned-package warning and release notes.
+3. Follow the installer instructions and open a new terminal. Run `eos doctor` to check the actual environment.
+4. Use the [first-run examples](#first-run) below.
 
 ### Portable Windows archive
 
-```powershell
-Expand-Archive EngineeringOS-0.2.6-alpha-portable.zip -DestinationPath .\eos
-cd .\eos
-.\eos.exe install --source . --add-to-path
-eos doctor
-```
+The v1.0.8 [release](https://github.com/shayan1019/engineering-os/releases/tag/v1.0.8) includes `EngineeringOS-1.0.8-portable.zip`. Verify its hash and consult the release documentation before installing. Do not mix files from different versions.
 
-The portable archive and installer contain the same engine. The installer only
-hands the payload to `eos install`; it never copies a version into place itself.
+### macOS and Linux
 
-### macOS
-
-The release workflow builds arm64 and Intel archives when an Intel runner is
-available. They are unsigned and not notarized, so Gatekeeper will require an
-explicit open the first time. Treat the macOS package as a preview until signing
-and notarization are added.
+Check the assets and platform notes for the specific release. The v1.0.8 release lists Windows x64 assets only; no equivalent current macOS/Linux installer is claimed here.
 
 ### From source
 
@@ -171,8 +161,6 @@ copies a version into place. Those separations are deliberate.
 
 ### EOS NEXUS — Mission Control (proposed)
 
-![Animated EOS NEXUS Mission Control concept](docs/assets/eos-nexus-mission-control.svg)
-
 **Design concept / simulated animation — not a live EOS feature.** The proposed observer would display actual host activity, specialist delegation, skills, tools, graph freshness, security decisions and quality-gate evidence without changing EOS execution or permissions. The desktop window would be optional and independently closable.
 
 [Open animated SVG](docs/assets/eos-nexus-mission-control.svg) · [Implementation specification](docs/EOS_NEXUS_IMPLEMENTATION.md)
@@ -201,7 +189,9 @@ read-only, and the installer only removes files recorded in its own manifest.
 See [SECURITY.md](SECURITY.md) for reporting and for the limits of the current
 alpha.
 
-## Supported hosts
+## Supported hosts (historical adapter inventory)
+
+The following labels are inherited from the earlier documentation, not newly verified for every current release. Run host detection and release-specific acceptance tests before relying on them.
 
 | Host | Status | Adapter |
 | --- | --- | --- |
@@ -213,6 +203,10 @@ alpha.
 | BLACKBOX AI | DETECTED | engine/tools/blackbox_host.py |
 
 Run `python engine/tools/host_detect.py` to check which hosts are available.
+
+## Feedback and contributions
+
+Try EOS on a disposable sample workspace first. If it helps, consider starring the repository or sharing reproducible feedback. For bugs, include EOS version, host/version, OS, a minimal reproduction and redacted logs. Do not post secrets or proprietary code. See [issues](https://github.com/shayan1019/engineering-os/issues) and [security guidance](SECURITY.md).
 
 ## License
 
