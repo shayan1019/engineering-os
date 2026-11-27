@@ -206,6 +206,8 @@ Run `python engine/tools/host_detect.py` to check which hosts are available.
 
 ## Feedback and contributions
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development loop and regression requirements.
+
 Try EOS on a disposable sample workspace first. If it helps, consider starring the repository or sharing reproducible feedback. For bugs, include EOS version, host/version, OS, a minimal reproduction and redacted logs. Do not post secrets or proprietary code. See [issues](https://github.com/shayan1019/engineering-os/issues) and [security guidance](SECURITY.md).
 
 ## License
