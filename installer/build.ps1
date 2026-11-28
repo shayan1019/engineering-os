@@ -92,6 +92,12 @@ if (-not (Test-Path (Join-Path $runtimeSrc "python.exe"))) {
 New-Item -ItemType Directory -Path (Join-Path $stage "runtime\python") | Out-Null
 Copy-Item -Recurse (Join-Path $runtimeSrc "*") (Join-Path $stage "runtime\python")
 
+$nexusStage = Join-Path $stage "nexus"
+$nexusDesktopStage = Join-Path $nexusStage "desktop"
+New-Item -ItemType Directory -Path $nexusDesktopStage | Out-Null
+& (Join-Path $root "nexus\desktop\build.ps1") -OutputPath (Join-Path $nexusDesktopStage "EOS.Nexus.exe")
+Copy-Item (Join-Path $root "nexus\observer.py") $nexusStage
+
 $stageFiles = (Get-ChildItem $stage -Recurse -File | Measure-Object).Count
 $stageBytes = (Get-ChildItem $stage -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ("      staged {0} files, {1:N1} MB" -f $stageFiles, ($stageBytes / 1MB))

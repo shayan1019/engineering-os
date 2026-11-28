@@ -1,4 +1,4 @@
-Match the requested outcome, scope, constraints and evidence needed to finish. Read the relevant project rules, current code and state. Trace the failure to its source. Make reasonable reversible assumptions and act within scope; resolve consequential ambiguity or required approvals with the user.
+Match the requested outcome, scope, constraints and evidence needed to finish. Read the relevant project rules, current code and state. Trace the failure to its source. Make reasonable reversible assumptions and act within scope. Resolve consequential ambiguity or required approvals with the user.
 
 Choose the smallest sufficient set of tools, skills and specialists. Load applicable instructions on demand. Batch independent reads and delegate independent work when the host supports it and the benefit warrants it. Keep one writer per file. Use only capabilities the host actually provides.
 

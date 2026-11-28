@@ -216,11 +216,12 @@ fn usage() {
 usage: eos <command> [options]
 
 Product
-  open <path> [--host opencode|claude|cursor|blackbox] [--no-integrate] [--print] [--json]
+  open <path> [--host opencode|claude|codex|cursor|blackbox] [--no-integrate] [--print] [--json]
                                        integrate a project and start a host there
   workspace add <path> [--name N] | list [--json] | remove <id> | relocate <id> <path>
                                        project identity and relocation-safe registry
   hosts detect | doctor [--json]       which AI hosts exist and what they can really do
+  nexus [--workspace PATH]             open the active Windows NEXUS desktop app
   install [--local <dir>] [--source D] [--version V] [--force] [--add-to-path] [--json]
                                        install program files; --local syncs a workspace
   uninstall [--purge-config] [--keep-versions]
@@ -733,13 +734,31 @@ fn cmd_open(args: &Args, engine: &Engine) -> i32 {
         say!("    {:<8} {}  ({})", action.status, action.path, action.detail);
     }
     match launch {
-        Ok((bin, argv, cwd)) => {
+        Ok((bin, mut argv, cwd)) => {
             if dry_run {
                 say!("  would run  : {} {} (cwd {})", bin.display(), argv.join(" "), cwd.display());
                 return 0;
             }
             say!("  launching  : {}", bin.display());
-            match hosts::spawn_host(&bin, &argv, &cwd) {
+            let hook_file = if integrate && host.id == "claude" {
+                match hosts::claude_session_hooks(&engine.root, &engine.python) {
+                    Ok(file) => {
+                        argv.extend(["--settings".into(), file.display().to_string()]);
+                        Some(file)
+                    }
+                    Err(error) => {
+                        warn!("EOS Claude session hooks unavailable: {error}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let result = hosts::spawn_host(&bin, &argv, &cwd);
+            if let Some(file) = hook_file {
+                let _ = fs::remove_file(file);
+            }
+            match result {
                 Ok(status) => status.code().unwrap_or(0),
                 Err(e) => {
                     warn!("BLOCKED: {e}");
@@ -1125,6 +1144,87 @@ fn cmd_rollback() -> i32 {
     }
 }
 
+fn cmd_nexus(args: &Args) -> i32 {
+    let launch = (|| -> Result<(), String> {
+        if !cfg!(windows) {
+            return Err("NEXUS desktop is currently packaged for Windows".into());
+        }
+        let home = args.value("eos-home").map(PathBuf::from).unwrap_or_else(paths::eos_home);
+        if !home.is_absolute() || home.to_string_lossy().starts_with("\\\\") {
+            return Err("NEXUS requires an absolute local EOS home".into());
+        }
+        if home.join("state/activation-txn.json").exists() {
+            return Err("EOS version activation is incomplete".into());
+        }
+        let cfg: paths::Config = paths::read_json(&home.join("config.json"))?;
+        let active = cfg.active_version.ok_or("EOS has no active installed version")?;
+        if !paths::valid_version_name(&active) {
+            return Err("the active EOS version has an invalid name".into());
+        }
+        let record = cfg.versions.iter().find(|v| v.version == active).ok_or("active version is missing")?;
+        let prefix = home.join("versions").join(&active);
+        let installed = fs::canonicalize(&prefix).map_err(|error| format!("cannot locate active version: {error}"))?;
+        if fs::canonicalize(&record.dir).map_err(|error| format!("cannot locate install record: {error}"))? != installed {
+            return Err("active EOS path is outside the versions directory".into());
+        }
+        let manifest: install::InstallManifest = paths::read_json(&prefix.join("install-manifest.json"))?;
+        if manifest.version != active {
+            return Err("NEXUS install manifest version mismatch".into());
+        }
+        let mut feed = String::new();
+        for item in &manifest.entries {
+            if let Some(rel) = item.rel.strip_prefix("engine/") {
+                feed.push_str(&format!("{rel}:{}\n", item.sha256));
+            }
+        }
+        if paths::sha256_bytes(feed.as_bytes()) != record.engine_manifest_sha256 {
+            return Err("NEXUS engine manifest does not match the active version".into());
+        }
+        for rel in ["engine/nexus/desktop/EOS.Nexus.exe", "engine/nexus/observer.py", "engine/nexus/runtime.sha256"] {
+            let entry = manifest.entries.iter().find(|item| item.rel == rel)
+                .ok_or_else(|| format!("active EOS version does not package {rel}"))?;
+            if paths::sha256_file(&prefix.join(rel))? != entry.sha256 {
+                return Err(format!("NEXUS hash mismatch: {rel}"));
+            }
+        }
+        let engine = prefix.join("engine");
+        let observer = engine.join("nexus").join("observer.py");
+        let exe = engine.join("nexus").join("desktop").join("EOS.Nexus.exe");
+        let python = prefix.join("runtime/python/python.exe");
+        let runtime_hash = fs::read_to_string(engine.join("nexus/runtime.sha256"))
+            .map_err(|error| format!("cannot read the NEXUS interpreter hash: {error}"))?;
+        if paths::sha256_file(&python)? != runtime_hash.trim() {
+            return Err("NEXUS bundled interpreter hash mismatch".into());
+        }
+        if args.has("print") || args.json() {
+            say!("{}", json!({"version": active, "program": exe, "python": python,
+                              "observer": observer, "verified": true}));
+            return Ok(());
+        }
+        let mut child = Command::new(exe);
+        child.arg("--eos-home").arg(home).arg("--engine").arg(engine).arg("--observer").arg(observer)
+             .arg("--python").arg(python).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        if let Some(ws) = args.value("workspace") {
+            child.arg("--workspace").arg(resolve_workspace(Some(Path::new(&ws))));
+        }
+        if args.has("auto") {
+            let session = args.value("session").ok_or("automatic NEXUS open requires a session")?;
+            let host = args.value("host").ok_or("automatic NEXUS open requires a host")?;
+            child.args(["--auto", "--session", &session, "--host", &host]);
+        }
+        if args.has("startup") {
+            child.arg("--startup");
+        }
+        child.spawn().map_err(|error| format!("cannot start NEXUS: {error}"))?;
+        Ok(())
+    })();
+    if let Err(error) = launch {
+        warn!("BLOCKED: {error}");
+        return 1;
+    }
+    0
+}
+
 fn main() -> ExitCode {
     let raw: Vec<String> = env::args().skip(1).collect();
     if raw.is_empty() || raw[0] == "help" || raw[0] == "--help" || raw[0] == "-h" {
@@ -1151,6 +1251,7 @@ fn main() -> ExitCode {
     let code = match command {
         "workspace" => cmd_workspace(&args),
         "hosts" => cmd_hosts(&args),
+        "nexus" => cmd_nexus(&args),
         "uninstall" => cmd_uninstall(&args),
         "repair" => cmd_repair(&args),
         "update" => cmd_update(&args),

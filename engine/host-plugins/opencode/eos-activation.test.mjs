@@ -11,11 +11,13 @@
  *   2. the block is injected into the system prompt and nothing else changes,
  *   3. one user turn activates EOS once, not once per model step,
  *   4. a resumed session (no prompt hook) still activates from its transcript,
- *   5. a missing engine and an empty turn inject nothing and break nothing.
+ *   5. a missing engine is visible and an empty turn injects nothing.
  *
  * Run: node engine/host-plugins/opencode/eos-activation.test.mjs
  */
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, realpathSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { setTimeout as delay } from "node:timers/promises"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -189,7 +191,7 @@ async function main() {
     rmSync(dir, { recursive: true, force: true })
   }
 
-  // 4. the engine is missing -> nothing is injected, nothing breaks
+  // 4. The engine is missing; the host can see that EOS is unavailable.
   {
     const dir = mkdtempSync(join(tmpdir(), "eos-plugin-empty-"))
     process.env.EOS_ACTIVATE_COMMAND = JSON.stringify([join(dir, "no-such-engine")])
@@ -210,7 +212,8 @@ async function main() {
     rmSync(dir, { recursive: true, force: true })
 
     check("a missing engine does not break the session", !threw)
-    check("a missing engine injects nothing", event.system.length === 1, JSON.stringify(event.system))
+    check("a missing engine injects an explicit unavailable status",
+      event.system.length === 2 && event.system[1].text.includes('status="UNAVAILABLE"'), JSON.stringify(event.system))
   }
 
   // 5. an empty turn carries no task -> nothing is injected, nothing is run
@@ -249,7 +252,58 @@ async function main() {
     check("the V1 hook preserves the system prompt", output.system[0] === "existing system prompt")
   }
 
-  process.env.EOS_ACTIVATE_COMMAND = originalCommand
+  // 7. A selected skill, a real load, and an unrelated session stay distinct.
+  {
+    const dir = mkdtempSync(join(tmpdir(), "eos-nexus-activation-"))
+    const metadata = { routed: true, resolved: true, skills: ["fable-5-1"] }
+    const engine = fakeEngine(dir, `EOS_NEXUS_V1 ${JSON.stringify(metadata)}\n<eos-context>bounded</eos-context>`)
+    writeFileSync(join(dir, "eos_discipline.py"), "", "utf8")
+    const originalHome = process.env.EOS_HOME
+    process.env.EOS_HOME = dir
+    process.env.EOS_ACTIVATE_COMMAND = JSON.stringify(engine.command)
+    try {
+      const plugin = await loadPlugin()
+      const host = fakeHost(dir)
+      let releaseEvents
+      const resumeEvents = new Promise((resolve) => { releaseEvents = resolve })
+      host.ctx.event = { async *subscribe() {
+        await resumeEvents
+        yield { type: "session.skill.activated", data: { sessionID: "foreign", name: "foreign-skill" } }
+        yield { type: "session.skill.activated", data: { sessionID: "s1", name: "fable-5-1", text: "private-skill-body" } }
+        yield { type: "permission.replied", data: { sessionID: "s1", reply: "reject", requestID: "permission-probe" } }
+        yield { type: "session.execution.succeeded", data: { sessionID: "s1" } }
+      } }
+      const cleanup = await plugin.setup(host.ctx)
+      await host.hooks.prompt(promptEvent("validate the activation output"))
+      const event = contextEvent([])
+      await host.hooks.context(event)
+      check("telemetry metadata stays out of model context", !event.system[0]?.text?.includes("EOS_NEXUS_V1"))
+      releaseEvents()
+      let normalized = realpathSync(dir).replace(/\\/g, "/").replace(/\/$/, "")
+      if (process.platform === "win32") normalized = normalized.toLowerCase()
+      const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 24)
+      const streamPath = join(dir, "evidence", "nexus", hash, "s1.jsonl")
+      let data = ""
+      for (let i = 0; i < 40 && !data.includes("session.idle"); i++) {
+        await delay(25)
+        try { data = readFileSync(streamPath, "utf8") } catch { /* asynchronous drain */ }
+      }
+      check("native telemetry reports selection before load",
+        data.includes("skill.selected") && data.includes("skill.loaded") && data.indexOf("skill.selected") < data.indexOf("skill.loaded"))
+      check("trusted lifecycle and denial are observed", data.includes("session.idle") && data.includes("security.denied"))
+      check("raw skill body stays out of telemetry", !data.includes("private-skill-body"))
+      check("other OpenCode session is isolated", !data.includes("foreign-skill"))
+      cleanup?.()
+    } finally {
+      delete process.env.EOS_ACTIVATE_COMMAND
+      if (originalHome === undefined) delete process.env.EOS_HOME
+      else process.env.EOS_HOME = originalHome
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  if (originalCommand === undefined) delete process.env.EOS_ACTIVATE_COMMAND
+  else process.env.EOS_ACTIVATE_COMMAND = originalCommand
   console.log(failures === 0 ? "\nplugin test: PASS" : `\nplugin test: FAIL (${failures})`)
   process.exit(failures === 0 ? 0 : 1)
 }
