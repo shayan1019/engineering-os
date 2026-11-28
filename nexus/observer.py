@@ -28,6 +28,7 @@ MAX_SESSIONS = 256
 MAX_PROJECTS = 16
 MAX_REGISTRY = 1_000_000
 MAX_REGISTRY_ITEMS = 96
+MAX_GRAPH_BUILD_STATE = 16384
 TAIL_BYTES = 65536
 POLL_BYTES = 262144
 LIVE_SECONDS = 60
@@ -235,6 +236,10 @@ def read_registry(engine: Path) -> dict:
             }
             result[name] = {"state": "discovered", "sha256": hashlib.sha256(raw).hexdigest(),
                             "counts": counts, "items": registry_items(name, value)}
+            if name == "ORCHESTRATORS" and isinstance(value.get("providers"), list):
+                result[name]["adapterOnly"] = sorted({item for row in value["providers"][:MAX_REGISTRY_ITEMS]
+                    if isinstance(row, dict) and (item := identifier(row.get("id"), LOCAL_NAME))
+                    and isinstance(row.get("execution"), dict) and row["execution"].get("protocol") is None})
         except (OSError, ValueError, RecursionError):
             result[name] = {"state": "unavailable"}
     installed_skills = []
@@ -437,6 +442,31 @@ def event_digest(*pieces: str) -> str:
     return hashlib.sha256("\0".join(pieces).encode("utf-8")).hexdigest()[:24]
 
 
+def graphify_observation(project: Project, now: datetime) -> dict | None:
+    """Project-scoped observation of Graphify's own completed build stamp."""
+    folder = project.root / "graphify-out"
+    try:
+        graph = checked_stat(folder / "graph.json", directory=False)
+        raw = bounded_bytes(folder / ".graphify_build_state.json", MAX_GRAPH_BUILD_STATE)
+        build = json.loads(raw.decode("utf-8"))
+        if not isinstance(build, dict) or type(build.get("graph_mtime_ns")) is not int or type(build.get("graph_size")) is not int:
+            return None
+        if graph.st_size <= 0 or build["graph_size"] != graph.st_size or build["graph_mtime_ns"] != graph.st_mtime_ns:
+            return None
+        source = build.get("scan_root")
+        if not isinstance(source, str) or not Path(source).is_absolute() or local_path(Path(source)) != project.root:
+            return None
+        stamp = datetime.fromtimestamp(graph.st_mtime, timezone.utc)
+        if stamp > now + timedelta(seconds=5):
+            return None
+    except (OSError, UnicodeError, ValueError, OverflowError, RecursionError):
+        return None
+    receipt = event_digest(project.id, str(graph.st_mtime_ns), str(graph.st_size))
+    return {"id": receipt, "project": project.id, "host": "graphify", "kind": "graph.reported",
+            "family": "graph", "status": "OBSERVED", "source": "graphify-build-state",
+            "mechanism": "graphify-build", "ts": timestamp(stamp.isoformat()), "evidence": f"project:{receipt}"}
+
+
 def typed_event(value: dict, issues: Counter) -> dict | None:
     kind = value.get("kind")
     stamp = timestamp(value.get("ts"))
@@ -520,6 +550,7 @@ class Observer:
     projects: list[Project] = field(default_factory=list)
     registry: dict = field(default_factory=dict)
     metadata_issues: Counter = field(default_factory=Counter)
+    graphify: dict = field(default_factory=dict)
     refreshed: float = -math.inf
     sequence: int = 0
 
@@ -532,6 +563,8 @@ class Observer:
             self.metadata_issues = Counter()
             self.projects = find_projects(self.eos_home, self.explicit, self.metadata_issues)
             self.registry = read_registry(self.engine)
+            self.graphify = {project.id: observation for project in self.projects
+                             if (observation := graphify_observation(project, now)) is not None}
             self.refreshed = monotonic_now
         if not self.projects:
             transient["no_projects"] += 1
@@ -569,7 +602,8 @@ class Observer:
         modes = {row["project"] for row in sessions if row["mode"] == "live"}
         historical = {row["project"] for row in sessions}
         projects = [{"id": project.id, "label": project.label,
-                     "mode": "live" if project.id in modes else ("stale" if project.id in historical else "disconnected")}
+                     "mode": "live" if project.id in modes else ("stale" if project.id in historical else "disconnected"),
+                     "graphify": self.graphify.get(project.id)}
                     for project in self.projects]
         combined = self.issues + self.metadata_issues + transient
         return {"schema": 1, "type": "snapshot", "mode": ("live" if modes else ("stale" if historical else "disconnected")),

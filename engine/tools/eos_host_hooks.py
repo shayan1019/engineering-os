@@ -56,10 +56,15 @@ def context(host):
             return
     except (AttributeError, OSError, ValueError, TypeError):
         return
-    policy = eos_discipline.render(eos_discipline.describe(ep.ENGINE_ROOT))
+    discipline = eos_discipline.describe(ep.ENGINE_ROOT)
+    policy = eos_discipline.render(discipline)
     routes = "Use `eos route` for task-level project, skill and specialist selection when needed."
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
-                                            "additionalContext": policy + "\n" + routes}}))
+                                            "additionalContext": policy + "\n" + routes}}), flush=True)
+    session = nexus_event.opaque(event.get("session_id"))
+    if session and discipline["status"] == "AVAILABLE":
+        nexus_event.emit(root, f"{host}-{session}", host, "context.resolved",
+                         mechanism="activation-discipline", version=f"revision-{discipline['revision']}")
 
 
 def main():

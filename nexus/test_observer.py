@@ -137,6 +137,41 @@ class ObserverStreamTest(unittest.TestCase):
         self.assertEqual(len({row['session'] for row in snap['events']}), 2)
         self.assertEqual(len({row['id'] for row in snap['events']}), 2)
 
+    def test_graphify_build_is_automatic_and_project_scoped(self):
+        self.observer.explicit.append(self.other)
+        folder = self.project / 'graphify-out'
+        folder.mkdir()
+        graph = folder / 'graph.json'
+        graph.write_text('{"nodes":[],"links":[]}', encoding='utf8')
+        os.utime(graph, (self.now.timestamp(), self.now.timestamp()))
+        info = graph.stat()
+        stamp = folder / '.graphify_build_state.json'
+        data = {'scan_root': str(self.project), 'graph_size': info.st_size, 'graph_mtime_ns': info.st_mtime_ns}
+        stamp.write_text(json.dumps(data), encoding='utf8')
+        snap = self.observer.scan(self.now)
+        first, second = snap['projects']
+        self.assertEqual(first['graphify']['source'], 'graphify-build-state')
+        self.assertEqual(first['graphify']['kind'], 'graph.reported')
+        self.assertEqual(first['graphify']['project'], first['id'])
+        self.assertNotIn('session', first['graphify'])
+        self.assertIsNone(second['graphify'])
+        self.assertEqual(snap['mode'], 'disconnected')
+        self.assertFalse(snap['sessions'])
+        self.assertNotIn(str(self.project), json.dumps(first['graphify']))
+        graph.write_text('{"nodes":[1],"links":[]}', encoding='utf8')
+        self.observer.refreshed = -float('inf')
+        self.assertIsNone(self.observer.scan(self.now)['projects'][0]['graphify'])
+
+    def test_declared_adapter_without_execution_contract_is_not_runtime(self):
+        registry = self.engine / 'registry'
+        registry.mkdir()
+        (registry / 'ORCHESTRATORS.json').write_text(json.dumps({'providers': [
+            {'id': 'ruflo', 'execution': {'protocol': None}},
+            {'id': 'registered-worker', 'execution': {'protocol': 'eos-orchestrator/1'}},
+        ]}), encoding='utf8')
+        projected = self.observer.scan(self.now)['registries']['ORCHESTRATORS']
+        self.assertEqual(projected['adapterOnly'], ['ruflo'])
+
     def test_unauthenticated_workspace_logs_cannot_establish_live_or_gate_pass(self):
         spoof = self.project / '.agents' / 'evidence' / 'nexus' / self.log.name
         spoof.parent.mkdir(parents=True)

@@ -680,11 +680,19 @@ namespace Eos.Nexus
             result.Add(Node("projects", L("PROJECT CONTEXT", "PROJE BAĞLAMI"), Palette.Violet,
                 items.Where(x => Matches(x, "context", "project", "activation")).ToList(),
                 last.Projects.Count > 0 ? "DISCOVERED" : "UNKNOWN", mode));
-            result.Add(Node("graphify", "GRAPHIFY", Palette.Violet,
-                items.Where(x => Matches(x, "graph", "graphify")).ToList(), "UNKNOWN", mode));
+            var graphEvidence = items.Where(x => Matches(x, "graph", "graphify")).ToList();
+            string graphProject = SelectedSession == null && last.Projects.Count == 1
+                ? last.Projects.Keys.First() : SelectedSession == null ? "" : SelectedSession.Project;
+            Observation graphBuild;
+            if (!replay && last.Graphify.TryGetValue(graphProject, out graphBuild)) graphEvidence.Add(graphBuild);
+            result.Add(Node("graphify", "GRAPHIFY", Palette.Violet, graphEvidence.OrderBy(x => x.Timestamp).ToList(), "UNKNOWN", mode));
+            var orchestrators = last.Items("ORCHESTRATORS").ToList();
+            var adapters = new HashSet<string>(last.AdapterOnly("ORCHESTRATORS"), StringComparer.Ordinal);
+            string orchestratorState = orchestrators.Count == 0 ? "UNKNOWN"
+                : orchestrators.All(adapters.Contains) ? "ADAPTER_ONLY" : "DISCOVERED";
             result.Add(Node("orchestrators", L("ORCHESTRATORS", "ORKESTRATÖRLER"), Palette.Violet,
                 items.Where(x => Matches(x, "orchestrator", "orchestration", "delegation")).ToList(),
-                last.Items("ORCHESTRATORS").Any() ? "DISCOVERED" : "UNKNOWN", mode));
+                orchestratorState, mode));
             result.Add(Node("recovery", L("RECOVERY / PROMOTION", "KURTARMA / TERFİ"), Palette.Violet,
                 items.Where(x => Matches(x, "recovery", "promotion", "rollback", "ledger")).ToList(), "UNKNOWN", mode));
 
@@ -848,7 +856,9 @@ namespace Eos.Nexus
             {
                 string state = Wire.String(Wire.Map(entry.Value), "state");
                 sb.AppendLine(entry.Key + "  /  " + Unknown(state));
-                foreach (string id in last.Items(entry.Key).Take(12)) sb.AppendLine("  " + id);
+                var adapters = new HashSet<string>(last.AdapterOnly(entry.Key), StringComparer.Ordinal);
+                foreach (string id in last.Items(entry.Key).Take(12))
+                    sb.AppendLine("  " + id + (adapters.Contains(id) ? "  ·  ADAPTER_ONLY" : ""));
             }
             if (last.Registries.Count == 0) sb.AppendLine(Unknown(""));
             SetText(runtime, sb.ToString());

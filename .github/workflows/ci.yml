@@ -27,7 +27,7 @@ jobs:
       - name: Skill index rebuild
         run: python engine/tools/skill_index.py discover
       - name: Skill doctor
-        run: python engine/tools/skill_index.py doctor || true
+        run: python engine/tools/skill_index.py doctor
       - name: Activation plugin test (automatic EOS activation)
         run: node engine/host-plugins/opencode/eos-activation.test.mjs
       - name: Shared activation policy and NEXUS transport

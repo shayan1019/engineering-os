@@ -167,6 +167,7 @@ namespace Eos.Nexus
         internal readonly List<Observation> Events;
         internal readonly Dictionary<string, object> Registries;
         internal readonly Dictionary<string, string> Projects;
+        internal readonly Dictionary<string, Observation> Graphify;
         internal readonly List<string> Issues;
         internal readonly Dictionary<string, object> IssueCounts;
         internal readonly DateTime Received;
@@ -187,10 +188,15 @@ namespace Eos.Nexus
                 .GroupBy(x => x.Project + "\0" + x.Host + "\0" + x.Session + "\0" + x.Id)
                 .Select(x => x.First()).OrderBy(x => x.Timestamp).ToList();
             Projects = new Dictionary<string, string>(StringComparer.Ordinal);
+            Graphify = new Dictionary<string, Observation>(StringComparer.Ordinal);
             foreach (var project in Wire.Array(value, "projects").Take(512).Select(Wire.Map))
             {
                 string id = Wire.String(project, "id");
                 if (id.Length > 0) Projects[id] = Wire.String(project, "label");
+                var build = new Observation(Wire.Get(project, "graphify"));
+                if (id.Length > 0 && build.Project == id && build.Id.Length > 0 && build.Kind == "graph.reported"
+                    && build.Read("source") == "graphify-build-state" && build.Timestamp != DateTime.MinValue)
+                    Graphify[id] = build;
             }
             Issues = Wire.Array(value, "issues").OfType<string>().Take(24).ToList();
             IssueCounts = Wire.Map(Wire.Get(value, "issueCounts"));
@@ -200,6 +206,11 @@ namespace Eos.Nexus
         {
             return Wire.Array(Wire.Map(Wire.Get(Registries, name)), "items").OfType<string>()
                 .Where(x => !String.IsNullOrWhiteSpace(x) && x.Length < 128).Take(512);
+        }
+
+        internal IEnumerable<string> AdapterOnly(string name)
+        {
+            return Wire.Array(Wire.Map(Wire.Get(Registries, name)), "adapterOnly").OfType<string>().Take(96);
         }
 
         internal static Snapshot Demo()
