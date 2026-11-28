@@ -209,8 +209,8 @@ def collect_entries():
     for source_id, base, scope in SOURCES:
         if not os.path.isdir(base):
             continue
-        for name in sorted(os.listdir(base)):
-            skill_dir = os.path.join(base, name)
+        for dir_name in sorted(os.listdir(base)):
+            skill_dir = os.path.join(base, dir_name)
             skill_md = os.path.join(skill_dir, "SKILL.md")
             if not os.path.isfile(skill_md):
                 continue
@@ -219,12 +219,13 @@ def collect_entries():
                 continue
             seen_files.add(real_file)
             try:
-                text = open(skill_md, encoding="utf-8", errors="replace").read()
+                with open(skill_md, encoding="utf-8", errors="replace") as stream:
+                    text = stream.read()
             except OSError:
                 continue
             fm, _body = parse_frontmatter(text)
             meta = fm.get("metadata") if isinstance(fm.get("metadata"), dict) else {}
-            name = str(fm.get("name") or name).strip()
+            name = str(fm.get("name") or dir_name).strip()
             curated = known.get(name, {})
             domains = split_list(meta.get("domains") or meta.get("domain") or fm.get("domains"))
             for d in curated.get("domains", []):
@@ -232,7 +233,7 @@ def collect_entries():
                     domains.append(d)
             entry = {
                 "name": name,
-                "dir_name": name,
+                "dir_name": dir_name,
                 "path": display_path(skill_md),
                 "source": source_id,
                 "scope": scope,
@@ -524,7 +525,8 @@ def diagnose():
                     findings.append({"severity": "WARN", "kind": "TRUST_MARKER_STALE",
                                      "skill": e["name"], "detail": reason})
         if skill_md and os.path.isfile(skill_md):
-            text = open(skill_md, encoding="utf-8", errors="replace").read()
+            with open(skill_md, encoding="utf-8", errors="replace") as stream:
+                text = stream.read()
             # A snippet that *documents* link syntax is not a link, and a
             # template placeholder such as `./src/<pkg>/README.md` is never
             # meant to resolve. Scanning raw text reported three such

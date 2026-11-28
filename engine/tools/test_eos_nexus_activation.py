@@ -14,9 +14,21 @@ import eos_activate
 import eos_discipline
 import eos_host_hooks
 import nexus_event
+import skill_index
 
 
 class ActivationTests(unittest.TestCase):
+    def test_skill_doctor_checks_the_real_directory_name(self):
+        with tempfile.TemporaryDirectory() as root:
+            library = Path(root) / "skills"
+            skill = library / "different-directory"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: declared-skill\ndescription: Doctor test.\n---\n", encoding="utf-8")
+            with patch.object(skill_index, "SOURCES", [("engine", str(library), "engine")]), \
+                    patch.object(skill_index, "INDEX_PATH", str(Path(root) / "index.json")):
+                _, findings = skill_index.diagnose()
+            self.assertEqual([(row["severity"], row["kind"]) for row in findings], [("ERROR", "NAME_DIR_MISMATCH")])
+
     def test_policy_is_identical_across_host_contexts(self):
         selected = {"skills": {"primary": ["fable-5-1"]}, "agents": {"specialists": ["verifier"]}}
         with patch.object(eos_activate, "route", return_value=selected):
