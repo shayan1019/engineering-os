@@ -61,6 +61,8 @@ jobs:
         with:
           python-version: '3.11'
       - uses: dtolnay/rust-toolchain@stable
+      - name: Native hook journal tests
+        run: python -m unittest discover -s engine/tools -p test_eos_nexus_activation.py -v
       - name: Prepare NSIS and bundled Python
         shell: pwsh
         run: |

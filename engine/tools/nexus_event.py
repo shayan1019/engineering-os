@@ -13,6 +13,7 @@ import sys
 from uuid import uuid4
 
 import _eos_paths as ep
+from orchestrator_runtime import file_lock
 
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,95}\Z")
 SECRET = re.compile(r"(?i)(?:^|[/_.-])(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]+|xox[baprs]-[A-Za-z0-9-]+|akia[A-Z0-9]{16})(?:$|[/_.-])")
@@ -47,6 +48,7 @@ def emit(workspace, session, host, kind, **fields):
     home = Path(ep.EOS_HOME).resolve()
     directory = home / "evidence" / "nexus" / workspace_digest(workspace)
     path = directory / (session + ".jsonl")
+    lock_path = path.with_suffix(".lock")
 
     def encode(event_kind, values):
         now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -54,19 +56,27 @@ def emit(workspace, session, host, kind, **fields):
                             "kind": event_kind, **values}, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
 
     try:
-        if directory.resolve() != directory or path.is_symlink():
+        if directory.resolve() != directory or path.is_symlink() or lock_path.is_symlink():
             return
         directory.mkdir(parents=True, exist_ok=True)
-        info = path.stat() if path.exists() else None
-        if info and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+        lock_info = lock_path.stat() if lock_path.exists() else None
+        if lock_info and (not stat.S_ISREG(lock_info.st_mode) or lock_info.st_nlink != 1):
             return
-        if info and info.st_size >= MAX_STREAM_BYTES:
-            # Keep the newest bounded segment and signal the discarded segment.
-            path.replace(path.with_suffix(".previous"))
+        # Windows append can seek before writing. Serialize native hooks across processes.
+        with file_lock(lock_path):
+            if path.is_symlink():
+                return
+            info = path.stat() if path.exists() else None
+            if info and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+                return
+            rotated = info and info.st_size >= MAX_STREAM_BYTES
+            if rotated:
+                # Keep the newest bounded segment and signal the discarded segment.
+                path.replace(path.with_suffix(".previous"))
             with path.open("ab", buffering=0) as stream:
-                stream.write(encode("telemetry.loss", {}))
-        with path.open("ab", buffering=0) as stream:
-            stream.write(encode(kind, {key: value for key, value in fields.items() if value is not None}))
+                if rotated:
+                    stream.write(encode("telemetry.loss", {}))
+                stream.write(encode(kind, {key: value for key, value in fields.items() if value is not None}))
     except OSError:
         return
 

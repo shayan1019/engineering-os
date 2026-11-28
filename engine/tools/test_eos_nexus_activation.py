@@ -67,6 +67,29 @@ class ActivationTests(unittest.TestCase):
             self.assertEqual([json.loads(line)["kind"] for line in raw.splitlines()],
                              ["tool.started", "tool.failed", "tool.completed", "skill.loaded"])
 
+    def test_native_hook_writers_keep_complete_records(self):
+        worker = (
+            "import sys, nexus_event as event; "
+            "[event.emit(sys.argv[1], 'claude-concurrent', 'claude', 'tool.completed', "
+            "tool=f'{sys.argv[2]}-{i}') for i in range(25)]"
+        )
+        tools = Path(nexus_event.__file__).parent
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as home:
+            children = [subprocess.Popen([sys.executable, "-B", "-c", worker, workspace, str(i)],
+                                         cwd=tools, env={**os.environ, "EOS_HOME": home}) for i in range(4)]
+            try:
+                for child in children:
+                    self.assertEqual(child.wait(timeout=20), 0)
+            finally:
+                for child in children:
+                    if child.poll() is None:
+                        child.kill()
+                        child.wait()
+            journal, = Path(home).rglob("*.jsonl")
+            records = [json.loads(line) for line in journal.read_text(encoding="ascii").splitlines()]
+            self.assertEqual(len(records), 100)
+            self.assertEqual({row["tool"] for row in records}, {f"{i}-{j}" for i in range(4) for j in range(25)})
+
 
 if __name__ == "__main__":
     unittest.main()
