@@ -33,7 +33,8 @@ try {
         $ErrorActionPreference = 'Stop'
         $assembly = [Reflection.Assembly]::LoadFrom($env:EOS_TEST_NEXUS_EXE)
         $method = $assembly.GetType('Eos.Nexus.Preferences', $true).GetMethod('ApplyStartup', [Reflection.BindingFlags]'NonPublic,Static')
-        $method.Invoke($null, [object[]]@($true, (Join-Path $env:USERPROFILE '.eos'))) | Out-Null
+        $applyStartup = $method.CreateDelegate([Action[bool,string]])
+        $applyStartup.Invoke($true, (Join-Path $env:USERPROFILE '.eos'))
     }
     if ($LASTEXITCODE) { throw 'Native NEXUS startup registration failed.' }
     $startup = Get-ItemPropertyValue -LiteralPath $runKey -Name 'EOS NEXUS'
