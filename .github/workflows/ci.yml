@@ -71,7 +71,7 @@ jobs:
           Copy-Item -Recurse (Join-Path $source '*') runtime/python
       - name: Build Windows installer
         shell: pwsh
-        run: ./installer/build.ps1
+        run: ./installer/build.ps1 -Version 1.0.10-nexus.1
       - name: Exercise installer in disposable Windows profile
         shell: pwsh
         run: ./installer/test-nexus-install.ps1
