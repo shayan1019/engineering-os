@@ -243,17 +243,18 @@ namespace Eos.Nexus
 
         internal static void ApplyStartup(bool enabled, string home)
         {
-            using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true))
+            const string runKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+            using (var key = enabled ? Registry.CurrentUser.CreateSubKey(runKey) : Registry.CurrentUser.OpenSubKey(runKey, true))
             {
-                if (key == null) throw new InvalidOperationException("Windows startup settings are unavailable.");
                 if (enabled)
                 {
+                    if (key == null) throw new InvalidOperationException("Windows startup settings are unavailable.");
                     string launcher = Path.Combine(home, "bin", "eos.exe");
                     string command = File.Exists(launcher) ? Identity.Quote(launcher) + " nexus --startup --eos-home " + Identity.Quote(home)
                         : Identity.Quote(Application.ExecutablePath) + " --startup --eos-home " + Identity.Quote(home);
                     key.SetValue("EOS NEXUS", command);
                 }
-                else key.DeleteValue("EOS NEXUS", false);
+                else if (key != null) key.DeleteValue("EOS NEXUS", false);
             }
         }
     }

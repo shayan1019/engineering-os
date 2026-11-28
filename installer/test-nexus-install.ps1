@@ -34,7 +34,14 @@ try {
         $assembly = [Reflection.Assembly]::LoadFrom($env:EOS_TEST_NEXUS_EXE)
         $method = $assembly.GetType('Eos.Nexus.Preferences', $true).GetMethod('ApplyStartup', [Reflection.BindingFlags]'NonPublic,Static')
         $applyStartup = $method.CreateDelegate([Action[bool,string]])
-        $applyStartup.Invoke($true, (Join-Path $env:USERPROFILE '.eos'))
+        $eosHome = Join-Path $env:USERPROFILE '.eos'
+        $applyStartup.Invoke($false, $eosHome)
+        $applyStartup.Invoke($true, $eosHome)
+        $applyStartup.Invoke($false, $eosHome)
+        if (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'EOS NEXUS' -ErrorAction SilentlyContinue) {
+            throw 'Disabling Windows startup left the NEXUS registration.'
+        }
+        $applyStartup.Invoke($true, $eosHome)
     }
     if ($LASTEXITCODE) { throw 'Native NEXUS startup registration failed.' }
     $startup = Get-ItemPropertyValue -LiteralPath $runKey -Name 'EOS NEXUS'
