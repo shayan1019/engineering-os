@@ -30,6 +30,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _eos_paths as ep  # noqa: E402
+import eos_discipline  # noqa: E402
 
 # Roles that may be selected for a task, in the order EOS prefers them. The
 # list is the *candidate* set; the router decides which of them are needed.
@@ -132,7 +133,14 @@ def rules_files(workspace: str) -> list:
     return found
 
 
-def build(task: str, project: str, host: str, max_skills: int) -> dict:
+def nexus_metadata(ctx):
+    project_path = ctx.get("project_path")
+    resolved = bool(ctx.get("project") and project_path and os.path.isdir(os.path.join(ctx["workspace"], project_path)))
+    return {"routed": ctx["route_available"], "resolved": resolved,
+            "skills": [skill["name"] for skill in ctx["skills"] if skill.get("name")]}
+
+
+def build(task: str, project: str, host: str, max_skills: int, session: str = "") -> dict:
     workspace = ep.resolve_workspace()
     routed = route(task)
     resolved = routed.get("resolved") or {}
@@ -208,6 +216,9 @@ def build(task: str, project: str, host: str, max_skills: int) -> dict:
         "roles": [{"name": n, "purpose": p} for n, p in ROLE_HINTS],
         "gate": gate,
         "host": host,
+        "session": session,
+        "route_available": bool(routed),
+        "discipline": eos_discipline.describe(ep.ENGINE_ROOT),
         "engine": ep.ENGINE_ROOT,
     }
 
@@ -265,7 +276,7 @@ def render(ctx: dict) -> str:
     block = "\n".join(lines)
     if len(block) > MAX_BLOCK_CHARS:
         block = block[: MAX_BLOCK_CHARS - 20] + "\n...(truncated)</eos-context>"
-    return block
+    return eos_discipline.render(ctx.get("discipline") or {}) + "\n" + block
 
 
 def main() -> int:
@@ -276,8 +287,10 @@ def main() -> int:
                          "task with quotes or shell characters never reaches a command line)")
     ap.add_argument("--project", default="")
     ap.add_argument("--host", default="opencode")
+    ap.add_argument("--session", default="")
     ap.add_argument("--max-skills", type=int, default=6)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--nexus-metadata", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     task = args.task
@@ -293,10 +306,12 @@ def main() -> int:
     if not task:
         print("BLOCKED: empty task")
         return 1
-    ctx = build(task, args.project, args.host, max(1, args.max_skills))
+    ctx = build(task, args.project, args.host, max(1, args.max_skills), args.session)
     if args.json:
         print(json.dumps(ctx, indent=2, ensure_ascii=False))
     else:
+        if args.nexus_metadata:
+            print("EOS_NEXUS_V1 " + json.dumps(nexus_metadata(ctx)))
         print(render(ctx))
     return 0
 

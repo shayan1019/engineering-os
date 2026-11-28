@@ -21,6 +21,10 @@ try:
     import _eos_paths as _ep  # noqa: E402
 except Exception:  # pragma: no cover - routing must still work without it
     _ep = None
+try:
+    import eos_discipline
+except ImportError:
+    eos_discipline = None
 
 
 def registry_dir(root: str) -> str:
@@ -433,6 +437,9 @@ def main():
         "verification": prof.get("verify", []) if prof else [],
         "actions": actions,
     }
+    if eos_discipline:
+        policy = eos_discipline.describe(_ENGINE_ROOT)
+        out["discipline"] = {key: value for key, value in policy.items() if key != "text"}
     # Windows cp1252 stdout crash fix (2026-09-12): ensure_ascii=True keeps
     # output encodable on non-UTF8 consoles; content unchanged semantically.
     print(json.dumps(out, ensure_ascii=True, indent=2))

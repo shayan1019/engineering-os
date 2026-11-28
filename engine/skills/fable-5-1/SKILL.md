@@ -27,6 +27,7 @@ needs. Do not load a whole tree because it exists.
 
 ### Always
 
+- `core/activation-discipline.md` — compact discipline loaded by EOS activation across hosts.
 - `core/scope-contract.md` — intent, scope, acceptance, do-not-regress.
 - `core/execution-discipline.md` — understand, plan, act, verify.
 - `core/task-complexity-classifier.md` — choose direct, planned, graph, or
