@@ -7,7 +7,7 @@ $directory = Join-Path $base ('eos-nexus-' + [Guid]::NewGuid().ToString('N'))
 $homePath = Join-Path $env:USERPROFILE '.eos'
 $launcher = Join-Path $homePath 'bin/eos.exe'
 $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'EngineeringOS'
-$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$runKey = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
 if ((Test-Path -LiteralPath $launcher) -or (Test-Path -LiteralPath $menu)) {
     throw 'The acceptance run requires a fresh EOS profile.'
 }
@@ -38,13 +38,13 @@ try {
         $applyStartup.Invoke($false, $eosHome)
         $applyStartup.Invoke($true, $eosHome)
         $applyStartup.Invoke($false, $eosHome)
-        if (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'EOS NEXUS' -ErrorAction SilentlyContinue) {
+        if ($null -ne [Microsoft.Win32.Registry]::GetValue('HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run', 'EOS NEXUS', $null)) {
             throw 'Disabling Windows startup left the NEXUS registration.'
         }
         $applyStartup.Invoke($true, $eosHome)
     }
     if ($LASTEXITCODE) { throw 'Native NEXUS startup registration failed.' }
-    $startup = Get-ItemPropertyValue -LiteralPath $runKey -Name 'EOS NEXUS'
+    $startup = [Microsoft.Win32.Registry]::GetValue($runKey, 'EOS NEXUS', $null)
     if ($startup -ne ('"{0}" nexus --startup --eos-home "{1}"' -f $launcher, $homePath)) { throw 'Unexpected startup command.' }
     $evidence = Join-Path $homePath 'evidence/installer-acceptance.txt'
     New-Item -ItemType Directory -Force (Split-Path $evidence) | Out-Null
@@ -57,5 +57,5 @@ foreach ($item in @($launcher,(Join-Path $menu 'EOS NEXUS.lnk'),(Join-Path $dire
     if (Test-Path -LiteralPath $item) { throw "Uninstall left $item behind." }
 }
 if (!(Test-Path -LiteralPath $evidence)) { throw 'Uninstall removed EOS evidence.' }
-if (Get-ItemPropertyValue -LiteralPath $runKey -Name 'EOS NEXUS' -ErrorAction SilentlyContinue) { throw 'Uninstall left the owned startup registration.' }
+if ($null -ne [Microsoft.Win32.Registry]::GetValue($runKey, 'EOS NEXUS', $null)) { throw 'Uninstall left the owned startup registration.' }
 Write-Output 'NSIS install, Start Menu and startup registration, uninstall and evidence retention passed.'
