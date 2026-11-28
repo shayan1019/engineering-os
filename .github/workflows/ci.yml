@@ -52,11 +52,30 @@ jobs:
           ./cli/target/release/eos hosts detect
 
   nexus-windows:
-    name: NEXUS native Windows build
+    name: NEXUS Windows installer acceptance
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Compile desktop payload
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Prepare NSIS and bundled Python
         shell: pwsh
-        run: ./nexus/desktop/build.ps1
+        run: |
+          choco install nsis -y --no-progress
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $source = python -c 'import sys; print(sys.base_prefix)'
+          New-Item -ItemType Directory -Force runtime/python | Out-Null
+          Copy-Item -Recurse (Join-Path $source '*') runtime/python
+      - name: Build Windows installer
+        shell: pwsh
+        run: ./installer/build.ps1
+      - name: Exercise installer in disposable Windows profile
+        shell: pwsh
+        run: ./installer/test-nexus-install.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-installer-acceptance-hashes
+          path: installer/out/SHA256SUMS.txt

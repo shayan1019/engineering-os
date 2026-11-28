@@ -132,6 +132,10 @@ Function finish_install
 FunctionEnd
 
 Section "Uninstall"
+  ReadRegStr $1 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "EOS NEXUS"
+  StrCmp $1 '$"$PROFILE\.eos\bin\eos.exe$" nexus --startup --eos-home $"$PROFILE\.eos$"' 0 keep_other_nexus_startup
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "EOS NEXUS"
+  keep_other_nexus_startup:
   Delete "$SMPROGRAMS\EngineeringOS\EOS NEXUS.lnk"
   ; Remove the installed version and the PATH entry, but keep the evidence and
   ; baselines: a machine's audit trail is not the installer's to delete.
