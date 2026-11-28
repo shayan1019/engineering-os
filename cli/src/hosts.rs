@@ -100,6 +100,16 @@ pub const HOSTS: &[HostSpec] = &[
         documented: "docs/hosts.md",
         caps: no_caps,
     },
+    HostSpec {
+        id: "codex",
+        label: "Codex CLI",
+        binaries: &["codex"],
+        launch: LaunchStyle::CwdOnly,
+        config_dir: ".codex",
+        verification: "Native hook configuration requires project and hook approval in Codex.",
+        documented: "docs/EOS_NEXUS_WINDOWS.md",
+        caps: codex_caps,
+    },
 ];
 
 fn opencode_caps() -> Capabilities {
@@ -133,6 +143,18 @@ fn cursor_caps() -> Capabilities {
         permission_enforcement: false,
         skills: false,
         hooks: false,
+        mcp: true,
+        rules: true,
+    }
+}
+
+fn codex_caps() -> Capabilities {
+    Capabilities {
+        agents: true,
+        subagents: true,
+        permission_enforcement: false,
+        skills: true,
+        hooks: true,
         mcp: true,
         rules: true,
     }
@@ -315,6 +337,26 @@ pub fn integrate(
         };
     }
 
+    if host.id == "codex" {
+        let target = project.join(".codex").join("hooks.json");
+        let result = if dry_run {
+            Ok(("PLANNED", "configure EOS hooks if hooks.json is absent"))
+        } else {
+            codex_project_hooks(engine, python, project, &target)
+        };
+        let (status, detail) = match result {
+            Ok((status, detail)) => (status, detail.to_string()),
+            Err(error) => ("FAILED", error),
+        };
+        push(target, status, detail);
+        return Integration {
+            host: host.id.to_string(),
+            status: if status == "FAILED" { "FAILED" } else { "DONE" }.into(),
+            actions,
+            detail: "Codex project trust and the exact hook review remain host-controlled".into(),
+        };
+    }
+
     // opencode: reuse the verified engine installer instead of re-implementing
     // the V2 permission renderer here.
     let script = engine.join("tools").join("agent_install.py");
@@ -448,11 +490,56 @@ pub fn spawn_host(bin: &Path, args: &[String], cwd: &Path) -> Result<std::proces
         cmd.arg(a);
     }
     cmd.current_dir(cwd)
+        .env("EOS_NEXUS_WORKSPACE", cwd)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
         .map_err(|e| format!("cannot start {}: {e}", bin.display()))
+}
+
+fn nexus_hook_config(engine: &Path, python: &Path, host: &str) -> Result<serde_json::Value, String> {
+    let shell = if cfg!(windows) && host == "codex" { "powershell" } else { "bash" };
+    let result = Command::new(python)
+        .arg("-B")
+        .arg(engine.join("tools").join("eos_host_hooks.py"))
+        .args(["config", host, "--shell", shell])
+        .output()
+        .map_err(|error| format!("cannot prepare EOS session hooks: {error}"))?;
+    if !result.status.success() {
+        return Err("EOS hook configuration did not complete successfully".into());
+    }
+    serde_json::from_slice(&result.stdout)
+        .map_err(|error| format!("invalid EOS hook configuration: {error}"))
+}
+
+pub fn claude_session_hooks(engine: &Path, python: &Path) -> Result<PathBuf, String> {
+    let config = nexus_hook_config(engine, python, "claude")?;
+    let root = paths::state_dir().join("host-hooks");
+    fs::create_dir_all(&root).map_err(|error| format!("cannot prepare hook directory: {error}"))?;
+    let path = root.join(format!("claude-{}.json", uuid::Uuid::new_v4()));
+    paths::write_json(&path, &config)?;
+    Ok(path)
+}
+
+fn codex_project_hooks(engine: &Path, python: &Path, project: &Path, target: &Path)
+    -> Result<(&'static str, &'static str), String> {
+    use std::io::Write;
+    let directory = target.parent().ok_or("missing Codex hooks directory")?;
+    fs::create_dir_all(directory).map_err(|error| format!("cannot prepare Codex directory: {error}"))?;
+    let expected = fs::canonicalize(project).map_err(|error| error.to_string())?.join(".codex");
+    if fs::canonicalize(directory).map_err(|error| error.to_string())? != expected {
+        return Err("Codex hooks directory is redirected".into());
+    }
+    if fs::symlink_metadata(target).is_ok() {
+        return Ok(("PRESENT", "existing hooks preserved; review or merge the EOS hook definitions"));
+    }
+    let config = nexus_hook_config(engine, python, "codex")?;
+    let bytes = serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?;
+    let mut file = fs::OpenOptions::new().create_new(true).write(true).open(target)
+        .map_err(|error| format!("cannot create Codex hooks: {error}"))?;
+    file.write_all(&bytes).map_err(|error| format!("cannot write Codex hooks: {error}"))?;
+    Ok(("WRITTEN", "EOS hooks created; approve exact definitions in Codex /hooks"))
 }
 
 /// Build the launch command for a host in a project directory.

@@ -20,7 +20,7 @@ actually ran.
 
 ![Animated EOS NEXUS Mission Control concept](docs/assets/eos-nexus-mission-control.svg)
 
-*Proposed desktop observer, simulated animation only; not a shipped live dashboard.* [Design specification](docs/EOS_NEXUS_IMPLEMENTATION.md)
+*Animated design reference.* [Windows desktop candidate](docs/EOS_NEXUS_WINDOWS.md) · [Design specification](docs/EOS_NEXUS_IMPLEMENTATION.md)
 
 ## Why EOS
 
@@ -159,11 +159,11 @@ engine's exit code. The engine never installs itself. The installer never
 copies a version into place. Those separations are deliberate.
 
 
-### EOS NEXUS — Mission Control (proposed)
+### EOS NEXUS — Windows desktop candidate
 
-**Design concept / simulated animation — not a live EOS feature.** The proposed observer would display actual host activity, specialist delegation, skills, tools, graph freshness, security decisions and quality-gate evidence without changing EOS execution or permissions. The desktop window would be optional and independently closable.
+The native Windows desktop reads live host events and recorded EOS evidence. Its mission control shows observed agents, skills, tools, queries, model metadata, security decisions and verified quality-gate receipts. Availability depends on the host's event coverage. The window can close independently of EOS and the coding host.
 
-[Open animated SVG](docs/assets/eos-nexus-mission-control.svg) · [Implementation specification](docs/EOS_NEXUS_IMPLEMENTATION.md)
+[Build and run NEXUS](docs/EOS_NEXUS_WINDOWS.md) · [Open animated SVG](docs/assets/eos-nexus-mission-control.svg)
 
 ## Development
 

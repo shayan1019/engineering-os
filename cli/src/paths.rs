@@ -70,6 +70,11 @@ pub struct VersionRecord {
     pub runtime_mode: String,
 }
 
+pub fn valid_version_name(version: &str) -> bool {
+    version.len() <= 64 && version.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+        && version.bytes().all(|c| c.is_ascii_alphanumeric() || b"._+-".contains(&c))
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Config {
     #[serde(default)]

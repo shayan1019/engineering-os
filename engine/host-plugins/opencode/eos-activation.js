@@ -34,11 +34,12 @@
 
 import { spawn, spawnSync } from "node:child_process"
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, realpathSync, statSync, existsSync } from "node:fs"
-import { createHash } from "node:crypto"
-import { tmpdir } from "node:os"
+import { appendFile, mkdir, readFile, realpath, rename, stat } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { homedir, tmpdir } from "node:os"
 import { join, dirname, resolve, isAbsolute } from "node:path"
 
-const MAX_BLOCK_CHARS = 6000
+const MAX_BLOCK_CHARS = 8000
 const MAX_TASK_CHARS = 4000
 const TIMEOUT_MS = 60000
 const CACHE_LIMIT = 32
@@ -199,7 +200,8 @@ function run(args, cwd) {
     let child
     try {
       child = spawn(args[0], args.slice(1), { cwd, windowsHide: true })
-    } catch {
+    } catch (error) {
+      debug(error)
       done(null)
       return
     }
@@ -211,7 +213,10 @@ function run(args, cwd) {
     child.stderr?.on("data", (d) => {
       if (err.length < 2000) err += d.toString()
     })
-    child.on("error", () => done(null))
+    child.on("error", (error) => {
+      debug(error)
+      done(null)
+    })
     const timer = setTimeout(() => {
       try {
         child.kill()
@@ -221,7 +226,10 @@ function run(args, cwd) {
     child.on("close", (code) => {
       clearTimeout(timer)
       if (code === 0 && out.trim()) done(out.trim())
-      else done(null)
+      else {
+        debug(new Error(`EOS activation subprocess exited ${code}; stdout=${out.length} bytes, stderr=${err.length} bytes`))
+        done(null)
+      }
     })
   })
 }
@@ -235,6 +243,10 @@ function debug(error) {
   console.error("EOS activation error:", error && error.stack ? error.stack : error)
 }
 
+function debugStatus(message) {
+  if (process.env.EOS_ACTIVATION_DEBUG) console.error("EOS activation:", message)
+}
+
 async function activateBlock(task, cwd, session) {
   let taskFile = null
   try {
@@ -245,9 +257,22 @@ async function activateBlock(task, cwd, session) {
     taskFile = join(dir, "task.txt")
     writeFileSync(taskFile, task, "utf8")
     const args = [...activateCommand(cwd), "--task-file", taskFile]
+    const metadataSupported = args[1] && await stat(join(dirname(args[1]), "eos_discipline.py"))
+      .then((file) => file.isFile(), () => false)
+    debugStatus(`request received; observation metadata ${metadataSupported ? "available" : "unavailable"}`)
+    if (metadataSupported) args.push("--nexus-metadata")
     if (session) args.push("--session", String(session))
-    const block = await run(args, cwd)
+    let block = await run(args, cwd)
     if (!block) return unavailableBlock("the engine returned no context")
+    if (metadataSupported && block.startsWith("EOS_NEXUS_V1 ")) {
+      const newline = block.indexOf("\n")
+      if (newline > 0) {
+        const metadata = JSON.parse(block.slice(13, newline))
+        block = block.slice(newline + 1)
+        nexusActivated(cwd, session, metadata)
+      }
+    }
+    debugStatus("context rendered")
     return block.length > MAX_BLOCK_CHARS ? block.slice(0, MAX_BLOCK_CHARS) : block
   } catch (error) {
     debug(error)
@@ -365,6 +390,267 @@ function sessionKey(event) {
   return id || "default"
 }
 
+const NEXUS_STREAM_BYTES = 2 * 1024 * 1024
+const nexusSinks = new Map()
+
+function safeIdentifier(value) {
+  return typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,95}$/.test(value) &&
+    !/(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]+|xox[baprs]-[A-Za-z0-9-]+|AKIA[A-Z0-9]{16})/i.test(value)
+    ? value : undefined
+}
+
+function nexusHome() {
+  return resolve(process.env.EOS_HOME || join(homedir(), ".eos"))
+}
+
+function nexusEvent(cwd, session, kind, fields = {}) {
+  if (!/^[a-zA-Z0-9_-]{1,95}$/.test(session || "") || session === "default") return
+  let sink = nexusSinks.get(cwd)
+  if (!sink) {
+    if (nexusSinks.size >= CACHE_LIMIT) return
+    sink = { queue: [], losses: new Set(), sessions: new Set(), draining: false }
+    nexusSinks.set(cwd, sink)
+  }
+  // A hot session never waits for disk. The observation queue drops excess
+  // work and reports loss once the consumer can keep up again.
+  if (sink.queue.length >= 128) {
+    if (sink.losses.size < 64) sink.losses.add(session)
+    return
+  }
+  sink.queue.push({ session, kind, fields, ts: new Date().toISOString() })
+  if (sink.draining) return
+  sink.draining = true
+  setImmediate(() => void drainNexus(cwd, sink))
+}
+
+function encodeNexus(kind, fields, ts = new Date().toISOString()) {
+  return JSON.stringify({ schema: 1, id: randomUUID(), ts, host: "opencode", kind, ...fields }) + "\n"
+}
+
+async function drainNexus(cwd, sink) {
+  try {
+    const normalized = (await realpath(cwd)).replace(/\\/g, "/").replace(/\/$/, "")
+    const key = createHash("sha256").update(process.platform === "win32" ? normalized.toLowerCase() : normalized).digest("hex").slice(0, 24)
+    const directory = join(await realpath(nexusHome()).catch(() => nexusHome()), "evidence", "nexus", key)
+    await mkdir(directory, { recursive: true })
+    const equal = (left, right) => process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
+    if (!equal(await realpath(directory), directory)) throw new Error("NEXUS evidence path is redirected")
+    while (sink.queue.length || sink.losses.size) {
+      const lost = sink.losses.values().next().value
+      const event = sink.queue.length ? sink.queue.shift() : { session: lost, kind: "telemetry.loss", fields: {} }
+      if (event.kind === "telemetry.loss") sink.losses.delete(event.session)
+      const path = join(directory, `${event.session}.jsonl`)
+      try {
+        const existing = await realpath(path).catch(() => null)
+        if (existing && !equal(existing, path)) continue
+        const info = existing ? await stat(path) : null
+        if (info && (!info.isFile() || info.nlink !== 1)) continue
+        if (info && info.size >= NEXUS_STREAM_BYTES) {
+          await rename(path, path + ".previous")
+          await appendFile(path, encodeNexus("telemetry.loss", {}))
+        }
+        await appendFile(path, encodeNexus(event.kind, event.fields, event.ts))
+      } catch {
+        if (event.kind !== "telemetry.loss" && sink.losses.size < 64) sink.losses.add(event.session)
+      }
+    }
+  } catch (error) {
+    debug(error)
+    for (const event of sink.queue.splice(0)) {
+      if (sink.losses.size < 64) sink.losses.add(event.session)
+    }
+  } finally {
+    sink.draining = false
+  }
+}
+
+function nexusActivated(cwd, session, metadata) {
+  if (!/^[a-zA-Z0-9_-]{1,95}$/.test(session || "") || session === "default") return
+  const first = !nexusSinks.get(cwd)?.sessions.has(session)
+  nexusEvent(cwd, session, first ? "session.started" : "session.resumed")
+  const activeSink = nexusSinks.get(cwd)
+  if (activeSink && !activeSink.sessions.has(session)) {
+    activeSink.sessions.add(session)
+    if (activeSink.sessions.size > 128) activeSink.sessions.delete(activeSink.sessions.values().next().value)
+    if (process.platform === "win32") setImmediate(() => void tryNexusOpen(cwd, session))
+  }
+  if (metadata.routed === true) nexusEvent(cwd, session, "query.routed")
+  if (metadata.resolved === true) nexusEvent(cwd, session, "context.resolved")
+  for (const skill of (Array.isArray(metadata.skills) ? metadata.skills : []).slice(0, 8)) {
+    if (safeIdentifier(skill)) nexusEvent(cwd, session, "skill.selected", { skill })
+  }
+}
+
+async function tryNexusOpen(cwd, session) {
+  try {
+    const home = nexusHome()
+    const prefPath = join(home, "nexus", "preferences.json")
+    if ((await stat(prefPath)).size > 32768) return
+    const preferences = JSON.parse((await readFile(prefPath, "utf8")).replace(/^\uFEFF/, ""))
+    if (preferences.autoOpen !== true) return
+    const configPath = join(home, "config.json")
+    if ((await stat(configPath)).size > 32768) return
+    const config = JSON.parse((await readFile(configPath, "utf8")).replace(/^\uFEFF/, ""))
+    const version = config.active_version
+    if (typeof version !== "string" || !VERSION_NAME.test(version)) return
+    const prefix = join(home, "versions", version)
+    const executable = join(prefix, "eos.exe")
+    const manifest = JSON.parse(await readFile(join(prefix, "install-manifest.json"), "utf8"))
+    const entry = manifest.entries?.find((item) => item.rel === "eos.exe")
+    if (!entry || digest(await readFile(executable)) !== String(entry.sha256).toUpperCase()) return
+    const child = spawn(executable, ["nexus", "--auto", "--workspace", cwd, "--session", session, "--host", "opencode"],
+      { detached: true, stdio: "ignore", windowsHide: true })
+    child.on("error", debug)
+    child.unref()
+  } catch { /* observing has no effect on the host */ }
+}
+
+function toolObservation(cwd, event, mode, children, pendingSkills) {
+  const session = event?.sessionID
+  const tool = safeIdentifier(event?.tool)
+  if (!tool || !session || (!nexusSinks.get(cwd)?.sessions.has(session) && !children.has(session))) return
+  const callId = event.callID || event.toolCallID || event.callId || event.id
+  const correlation = typeof callId === "string" ? createHash("sha256").update(callId).digest("hex").slice(0, 24) : undefined
+  nexusEvent(cwd, session, `tool.${mode}`, { tool, correlation })
+  if (tool !== "skill") return
+  const skill = safeIdentifier(event.input?.id || event.input?.name)
+  const key = correlation ? `${session}:${correlation}` : null
+  if (mode === "started" && skill && key) {
+    if (pendingSkills.size >= 128) pendingSkills.delete(pendingSkills.keys().next().value)
+    pendingSkills.set(key, skill)
+  } else if (mode !== "started") {
+    const loaded = skill || pendingSkills.get(key)
+    pendingSkills.delete(key)
+    if (mode === "completed" && loaded) nexusEvent(cwd, session, "skill.loaded", { skill: loaded, correlation })
+    if (mode === "failed" && loaded) nexusEvent(cwd, session, "skill.unavailable", { skill: loaded, correlation })
+  }
+}
+
+function observeRuntime(cwd, event, children, steps, activeAgents) {
+  const data = event?.data || event?.properties || {}
+  const location = event?.location?.directory || data.location?.directory
+  const normalized = (path) => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path)
+  if (typeof location === "string" && normalized(location) !== normalized(cwd)) return
+  const session = data.sessionID
+  if (!session) return
+  const known = (id) => nexusSinks.get(cwd)?.sessions.has(id) || children.has(id)
+  if (event.type === "session.created" && data.parentID && known(data.parentID)) {
+    if (children.size >= 128) children.delete(children.keys().next().value)
+    children.set(session, { parent: data.parentID, agent: safeIdentifier(data.agent), running: false })
+    return
+  }
+  if (!known(session)) return
+  const child = children.get(session)
+  const correlation = safeIdentifier(data.assistantMessageID)
+  if (event.type === "session.step.started") {
+    const provider = safeIdentifier(data.model?.providerID)
+    const model = safeIdentifier(data.model?.id || data.model?.modelID)
+    if (correlation) {
+      if (steps.size >= 256) steps.delete(steps.keys().next().value)
+      steps.set(correlation, { provider, model })
+    }
+    nexusEvent(cwd, session, "session.resumed")
+    const currentAgent = safeIdentifier(data.agent)
+    if (!activeAgents.has(session) && currentAgent) {
+      if (activeAgents.size >= 128) activeAgents.delete(activeAgents.keys().next().value)
+      activeAgents.set(session, currentAgent)
+      if (!child) nexusEvent(cwd, session, "agent.started", { agent: currentAgent, correlation: session })
+    }
+    if (child && !child.running) {
+      const agent = currentAgent || child.agent
+      if (agent) {
+        child.agent = agent
+        child.running = true
+        nexusEvent(cwd, child.parent, "agent.started", { agent, correlation: session,
+          parent: children.get(child.parent)?.agent || activeAgents.get(child.parent) })
+      }
+    }
+    if (model || provider) nexusEvent(cwd, session, "model.reported", { model, provider, correlation })
+  } else if (event.type === "session.step.ended") {
+    const fields = { ...steps.get(correlation), correlation }
+    steps.delete(correlation)
+    for (const [key, value] of [["input_tokens", data.tokens?.input], ["output_tokens", data.tokens?.output], ["cost", data.cost]]) {
+      if (Number.isFinite(value) && value >= 0) fields[key] = value
+    }
+    nexusEvent(cwd, session, "model.reported", fields)
+  } else if (event.type === "session.skill.activated") {
+    const skill = safeIdentifier(data.name)
+    if (skill) nexusEvent(cwd, session, "skill.loaded", { skill, correlation: safeIdentifier(data.id) })
+  } else if (event.type === "permission.replied" && data.reply === "reject") {
+    nexusEvent(cwd, session, "security.denied", { correlation: safeIdentifier(data.requestID) })
+  } else if (event.type === "session.deleted" || event.type?.startsWith("session.execution.")) {
+    const terminal = event.type.split(".").at(-1)
+    nexusEvent(cwd, session, terminal === "deleted" ? "session.ended" : "session.idle")
+    const agent = activeAgents.get(session)
+    if (agent && !child && terminal !== "deleted") {
+      nexusEvent(cwd, session, terminal === "succeeded" ? "agent.completed" : "agent.failed", { agent, correlation: session })
+    }
+    activeAgents.delete(session)
+    if (child?.running && ["succeeded", "failed", "interrupted"].includes(terminal)) {
+      nexusEvent(cwd, child.parent, terminal === "succeeded" ? "agent.completed" : "agent.failed",
+        { agent: child.agent, correlation: session })
+      child.running = false
+    }
+    if (terminal === "deleted") children.delete(session)
+  }
+}
+
+async function observeV2(ctx, cwd) {
+  const children = new Map()
+  const steps = new Map()
+  const activeAgents = new Map()
+  const pendingSkills = new Map()
+  const lastMcpCheck = new Map()
+  await ctx.tool?.hook("execute.before", (event) => toolObservation(cwd, event, "started", children, pendingSkills))
+  await ctx.tool?.hook("execute.after", (event) => {
+    if (event.status === "completed" || event.status === "error") {
+      toolObservation(cwd, event, event.status === "completed" ? "completed" : "failed", children, pendingSkills)
+    }
+  })
+  await ctx.session.hook("model.request", (event) => {
+    if (event.kind !== "primary") return
+    const session = event.sessionID
+    if (!nexusSinks.get(cwd)?.sessions.has(session) && !children.has(session)) return
+    const model = safeIdentifier(event.model?.id)
+    const provider = safeIdentifier(event.model?.providerID)
+    nexusEvent(cwd, session, "session.heartbeat")
+    if (model || provider) nexusEvent(cwd, session, "model.reported", { model, provider })
+    if (typeof ctx.mcp?.list === "function" && Date.now() - (lastMcpCheck.get(session) || 0) > 15000) {
+      if (lastMcpCheck.size >= 128) lastMcpCheck.delete(lastMcpCheck.keys().next().value)
+      lastMcpCheck.set(session, Date.now())
+      void reportMcp(ctx, cwd, session)
+    }
+  })
+  if (typeof ctx.event?.subscribe === "function") {
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal,
+          types: ["session.created", "session.deleted", "session.step.started", "session.step.ended", "session.skill.activated",
+            "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted", "permission.replied"] })) {
+          observeRuntime(cwd, event, children, steps, activeAgents)
+        }
+      } catch (error) { debug(error) }
+    })()
+    return () => controller.abort()
+  }
+}
+
+async function reportMcp(ctx, cwd, session) {
+  try {
+    const result = await ctx.mcp.list()
+    const entries = Array.isArray(result) ? result : result?.data
+    if (!Array.isArray(entries)) return
+    for (const item of entries.slice(0, 64)) {
+      const server = safeIdentifier(item?.name)
+      if (!server) continue
+      const status = typeof item.status === "string" ? item.status : item.status?.type || item.status?.status
+      const observed = ["connected", "pending", "disabled", "failed", "needs_auth"].includes(status) ? status : undefined
+      nexusEvent(cwd, session, "mcp.reported", { server, connection_status: observed })
+    }
+  } catch (error) { debug(error) }
+}
+
 async function resolveBlock(event, cwd) {
   const key = sessionKey(event)
   // The context event carries the transcript, not the prompt draft, so the
@@ -443,7 +729,11 @@ export default {
   // exported function as a plugin.
   resolveEngine: locateEngine,
   async setup(ctx) {
+    debugStatus("registering OpenCode hooks")
     await install(ctx)
+    try {
+      return await observeV2(ctx, (ctx?.location?.directory) || process.cwd())
+    } catch (error) { debug(error) }
   },
   // V1 hosts call `server()`; V2 reads `id`/`setup` and ignores it. One
   // deployed file therefore works on either host.

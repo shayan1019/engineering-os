@@ -27,9 +27,13 @@ jobs:
       - name: Skill index rebuild
         run: python engine/tools/skill_index.py discover
       - name: Skill doctor
-        run: python engine/tools/skill_index.py doctor || true
+        run: python engine/tools/skill_index.py doctor
       - name: Activation plugin test (automatic EOS activation)
         run: node engine/host-plugins/opencode/eos-activation.test.mjs
+      - name: Shared activation policy and NEXUS transport
+        run: |
+          python -m unittest discover -s engine/tools -p test_eos_nexus_activation.py -v
+          python -m unittest discover -s nexus -v
       - name: Secret scan over the engine
         run: python engine/tools/secret_scan.py engine --include-tests
 
@@ -46,3 +50,34 @@ jobs:
           ./cli/target/release/eos version
           ./cli/target/release/eos --help
           ./cli/target/release/eos hosts detect
+
+  nexus-windows:
+    name: NEXUS Windows installer acceptance
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Native hook journal tests
+        run: python -m unittest discover -s engine/tools -p test_eos_nexus_activation.py -v
+      - name: Prepare NSIS and bundled Python
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $source = python -c 'import sys; print(sys.base_prefix)'
+          New-Item -ItemType Directory -Force runtime/python | Out-Null
+          Copy-Item -Recurse (Join-Path $source '*') runtime/python
+      - name: Build Windows installer
+        shell: pwsh
+        run: ./installer/build.ps1 -Version 1.0.10-nexus.1
+      - name: Exercise installer in disposable Windows profile
+        shell: pwsh
+        run: ./installer/test-nexus-install.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-installer-acceptance-hashes
+          path: installer/out/SHA256SUMS.txt

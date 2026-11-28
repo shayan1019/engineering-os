@@ -208,6 +208,35 @@ pub fn install(
     add_to_path: bool,
     force: bool,
 ) -> Result<InstallReport, String> {
+    if !paths::valid_version_name(version) {
+        return Err("invalid EOS version name".into());
+    }
+    let engine_src = if source.join("engine").is_dir() {
+        source.join("engine")
+    } else {
+        source.to_path_buf()
+    };
+    if !paths::is_engine(&engine_src) {
+        return Err(format!("source {} does not contain an EOS engine", engine_src.display()));
+    }
+    let staged_nexus = source.join("nexus");
+    let embedded_nexus = engine_src.join("nexus");
+    let nexus_src = if staged_nexus.join("desktop/EOS.Nexus.exe").is_file() {
+        Some(staged_nexus)
+    } else if embedded_nexus.is_dir() {
+        Some(embedded_nexus)
+    } else {
+        None
+    };
+    let runtime_src = source.join("runtime");
+    let runtime_hash = if let Some(nexus) = nexus_src.as_ref().filter(|_| cfg!(windows)) {
+        if !nexus.join("desktop/EOS.Nexus.exe").is_file() || !nexus.join("observer.py").is_file() {
+            return Err("NEXUS payload is incomplete".into());
+        }
+        Some(paths::sha256_file(&runtime_src.join("python/python.exe"))?)
+    } else {
+        None
+    };
     let version_dir = paths::versions_dir().join(version);
     if version_dir.exists() {
         if !force {
@@ -215,6 +244,11 @@ pub fn install(
                 "version {version} is already installed at {}. Use --force to reinstall.",
                 version_dir.display()
             ));
+        }
+        let source_root = fs::canonicalize(&engine_src).map_err(|error| error.to_string())?;
+        let target_root = fs::canonicalize(&version_dir).map_err(|error| error.to_string())?;
+        if source_root.starts_with(&target_root) {
+            return Err("reinstallation needs a source outside the target version".into());
         }
         fs::remove_dir_all(&version_dir)
             .map_err(|e| format!("cannot clear {}: {e}", version_dir.display()))?;
@@ -228,28 +262,29 @@ pub fn install(
     fs::copy(&me, &dest_exe).map_err(|e| format!("cannot copy CLI: {e}"))?;
 
     // 2. engine
-    let engine_src = if source.join("engine").is_dir() {
-        source.join("engine")
-    } else {
-        source.to_path_buf()
-    };
-    if !paths::is_engine(&engine_src) {
-        return Err(format!(
-            "source {} does not contain engine/tools/quality_gate.py",
-            engine_src.display()
-        ));
-    }
     let engine_dst = version_dir.join("engine");
     copy_tree(&engine_src, &engine_dst, true)?;
 
     // 3. optional bundled runtime
-    let runtime_src = source.join("runtime");
     let runtime_mode = if runtime_src.join("python").is_dir() {
         copy_tree(&runtime_src, &version_dir.join("runtime"), true)?;
         "bundled".to_string()
     } else {
         "system".to_string()
     };
+
+    if let Some(nexus_src) = nexus_src.as_ref().filter(|_| cfg!(windows)) {
+        let nexus_dst = engine_dst.join("nexus");
+        let desktop = nexus_dst.join("desktop");
+        fs::create_dir_all(&desktop).map_err(|error| format!("cannot stage NEXUS: {error}"))?;
+        fs::copy(nexus_src.join("desktop/EOS.Nexus.exe"), desktop.join("EOS.Nexus.exe"))
+            .map_err(|error| format!("cannot copy NEXUS: {error}"))?;
+        fs::copy(nexus_src.join("observer.py"), nexus_dst.join("observer.py"))
+            .map_err(|error| format!("cannot copy NEXUS observer: {error}"))?;
+        let runtime_hash = runtime_hash.as_ref().ok_or("missing bundled NEXUS interpreter")?;
+        fs::write(nexus_dst.join("runtime.sha256"), format!("{runtime_hash}\n"))
+            .map_err(|error| format!("cannot seal the NEXUS interpreter: {error}"))?;
+    }
 
     // 4. manifest
     let (engine_entries, engine_manifest_sha256) = hash_relative(&engine_dst)?;
@@ -402,7 +437,11 @@ pub fn repair(source: &Path, version: Option<&str>) -> Result<(usize, usize, usi
         let rel = rel.split(" (").next().unwrap_or(rel);
         let target = dir.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
         // engine files come from the source tree; anything else from the CLI dir
-        let candidate = if let Some(rest) = rel.strip_prefix("engine/") {
+        let candidate = if let Some(rest) = rel.strip_prefix("engine/nexus/") {
+            let relative = rest.replace('/', std::path::MAIN_SEPARATOR_STR);
+            let staged = source.join("nexus").join(&relative);
+            if staged.is_file() { staged } else { engine_src.join("nexus").join(&relative) }
+        } else if let Some(rest) = rel.strip_prefix("engine/") {
             engine_src.join(rest.replace('/', std::path::MAIN_SEPARATOR_STR))
         } else if rel == "eos.exe" || rel == "eos" {
             std::env::current_exe().map_err(|e| e.to_string())?
@@ -415,6 +454,19 @@ pub fn repair(source: &Path, version: Option<&str>) -> Result<(usize, usize, usi
             }
             fs::copy(&candidate, &target).map_err(|e| e.to_string())?;
             restored += 1;
+        } else if rel == "engine/nexus/runtime.sha256" {
+            if let Ok(hash) = paths::sha256_file(&source.join("runtime/python/python.exe")) {
+                let content = format!("{hash}\n");
+                let matches = manifest.entries.iter().any(|entry| entry.rel == rel
+                    && paths::sha256_bytes(content.as_bytes()) == entry.sha256);
+                if matches {
+                    if let Some(parent) = target.parent() {
+                        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                    }
+                    fs::write(&target, content).map_err(|error| error.to_string())?;
+                    restored += 1;
+                }
+            }
         }
     }
     let (ok, still_missing, still_changed) = verify_install(&version)?;

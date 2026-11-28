@@ -59,3 +59,4 @@ engine/registry/SKILL_CATALOG.json
 /runtime/
 /installer/out/
 /installer/stage/
+/nexus/desktop/bin/
